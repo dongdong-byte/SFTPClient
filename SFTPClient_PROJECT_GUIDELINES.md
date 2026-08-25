@@ -5,6 +5,16 @@
 > 단, 실제 개발 순서는 원문과 달리 **PUT → DOWNLOAD → BOTH → PUT 성능 개선 → Linux 대응**으로 진행한다.
 > 이 개발 순서의 차이 외에 원문 요구사항을 임의로 삭제·축소·대체하지 않는다.
 
+### 개정 이력
+
+| 일자 | 내용 |
+|---|---|
+| 2026-08-25 | 병렬 처리 방침 정정 — Scan은 순차, 전송은 MVP 1부터 `MaxWorkers=4` 병렬. 기존 "worker=1 순차" 표기를 전면 수정 (4·5절) |
+| 2026-08-25 | 9.1 대상 확장자 항목 정정. 비압축 유입이 실재하며 Hourly 는 비압축만 있는 경우 확인 (9.7 신설) |
+| 2026-08-25 | 9.3 Hourly Scan 근거 정정. 산술 오류(×4 → ×2) 수정 및 근거를 원격 왕복 비용으로 교체 |
+| 2026-08-25 | Deep Scan 주기 관리 방식 확정. `scan_state` 테이블 대신 `DeepScanHour` (9.8 신설) |
+| 2026-08-25 | 7절 테스트 항목에서 미구현 파서(`rinexname.go`) 요구 제거 |
+
 ### 관련 문서
 
 | 문서 | 역할 |
@@ -77,20 +87,31 @@ SFTPClient/
 │
 ├─ internal/                    외부 모듈에서 import 불가. Go가 언어 차원에서 강제한다.
 │   │
-│   ├─ config/                  config.ini 파싱 및 시작 시 유효성 검사.
-│   │                           Mode, MaxWorkers, Path Template 원문, 인증 경로, 필터값을 구조체로 변환.
+│   ├─ config/       [진행]    config.ini 파싱 및 시작 시 유효성 검사.
+│   │                           Mode, MaxWorkers, Path Template 원문, 인증 경로를 구조체로 변환.
 │   │                           RepostDownloaded와 경로 겹침 같은 위험 조합을 시작 시 거부. (설계안 10, 10.1)
+│   │                           SFTP 접속 정보는 [PUT.SFTP] 처럼 방향 아래에 둔다.
+│   │                           BOTH 에서 수신 서버와 송신 서버가 다르기 때문이다.
+│   │                           Daily 경로에 (HH) 가 있거나 Hourly 경로에 없으면 실행을 중단한다.
+│   │                           관측소 필터는 두지 않는다. 전체 관측소가 대상이다.
 │   │
-│   ├─ domain/                  프로젝트의 핵심 개념 정의. File, Category, Status, Origin, file_name.
-│   │                           경로 비의존 식별자 계산이 여기 있다. (설계안 9.1, CONCEPT 4.1)
-│   │                           파일명 정규화는 이 패키지의 함수 하나에서만 수행한다.
-│   │                           상태 문자열(VERIFIED, READY, LOCAL 등)은 전부 여기 상수로 선언하고
-│   │                           다른 패키지는 리터럴을 직접 쓰지 않는다.
-│   │                           내부 패키지를 하나도 import하지 않는다. 의존 그래프의 최하단.
+│   ├─ domain/         [완료]   프로젝트의 핵심 개념 정의. 내부 패키지를 하나도 import하지 않는다.
+│   │                           category.go — Category 4값, IsHourly/IsDaily, MatchesName(3-값 대조)
+│   │                           status.go   — PUT status 4값, CanTransitionTo, IsTerminal
+│   │                           state.go    — common state 2값 (READY/CHANGED)
+│   │                           origin.go   — LOCAL/DOWNLOAD
+│   │                           filename.go — NormalizeName, BaseName, IsPartFile, IdentityRule
+│   │                           mode.go     — PUT/DOWNLOAD/BOTH, DoesPut, DoesDownload
+│   │                           파일명 정규화는 이 패키지의 함수 하나에서만 수행한다. (CONCEPT 5②)
+│   │                           상태 문자열은 전부 여기 상수로 선언하고 리터럴을 직접 쓰지 않는다.
+│   │                           File 구조체는 두지 않는다. ledger.CommonInput과 역할이 겹친다.
 │   │
-│   ├─ pathpl/                  (YYYY)/(DOY)/(HH)/(SITE) 토큰을 실제 경로로 확장. (설계안 10)
+│   ├─ pathtpl/        [완료]   (YYYY)(YY)(DOY)(MM)(DD)(HH) 토큰을 실제 경로로 확장. (설계안 10)
 │   │                           입출력만 있는 순수 함수. PUT과 DOWNLOAD가 공유한다.
-│   │                           단위 테스트가 가장 쉬운 패키지.
+│   │                           (SITE)는 두지 않는다. 실제 기관 경로가 관측소별 디렉터리를
+│   │                           두지 않으며, 관측소 조회는 file_name 접두어로 SQL에서 한다.
+│   │                           시각은 Expand 내부에서 UTC로 강제한다.
+│   │                           알 수 없는 토큰과 짝 없는 괄호는 Parse 단계에서 거부한다.
 │   │
 │   ├─ verify/                  판정 로직 전담. 전송도 기록도 하지 않고 "정상인가"만 답한다.
 │   │                           Ingress  — size>0, mtime grace, 작성 중 파일 제외 (설계안 7)
@@ -108,20 +129,26 @@ SFTPClient/
 │   │                           필요한 원격 동작을 인터페이스로 직접 선언한다(consumer-side).
 │   │                           transport를 import하지 않으므로 fake 주입으로 전체 테스트 가능.
 │   │
-│   ├─ pipeline/       [다음 주] Worker Pool과 Global Limiter. (설계안 12.1)
+│   ├─ pipeline/       [MVP 1] Worker Pool과 Global Limiter. (설계안 12.1)
 │   │                           버퍼드 채널 세마포어로 전체 동시 SFTP 작업 수를 제한.
 │   │                           PUT/DOWNLOAD가 같은 Limiter 인스턴스를 공유한다.
-│   │                           이번 주는 worker=1 순차 루프로 대체.
+│   │                           전송은 MVP 1부터 병렬로 수행한다. 기본 MaxWorkers=4.
+│   │                           Scan은 병렬화 대상이 아니다. 항상 순차로 수행한다.
 │   │
 │   ├─ ledger/                  common/put/download Ledger. (설계안 9)
 │   │                           schema.sql — 물리 스키마 원본. go:embed로 실행파일에 포함하고
 │   │                                        시작 시 실행한다. 스키마는 이 파일이 유일한 원본이며
 │   │                                        Go 코드에 CREATE TABLE 문자열을 중복해 두지 않는다.
-│   │                           [이번 주] common/put Ledger를 worker=1 순차 처리 기준으로 구현.
-│   │                           [다음 주] 단일 Writer 고루틴 + 배치 커밋 + WAL + IN_PROGRESS 복구,
-│   │                                     download Ledger까지 확장.
+│   │                           db.go      — Open/PRAGMA/schema 적용/identity_rule 대조   [완료]
+│   │                           common.go  — CommonInput, UpsertCommon (3분기 UPSERT)     [완료]
+│   │                           put.go     — put_ledger 접근                              [예정]
+│   │                           판정은 하지 않되 revision·state 갱신은 여기서 한다. (CONCEPT 2.1)
+│   │                           SetMaxOpenConns(1)이 쓰기를 직렬화하므로 MaxWorkers>1 에서도
+│   │                           정합성은 안전하다. 단일 Writer 고루틴 + 배치 커밋은
+│   │                           처리량 최적화이며 MVP 4 범위이다. (CONCEPT 4.8)
+│   │                           [MVP 2] download Ledger까지 확장.
 │   │
-│   ├─ download/       [다음 주] 수신 흐름 조립. put과 대칭 구조.
+│   ├─ download/       [MVP 2] 수신 흐름 조립. put과 대칭 구조.
 │   │                           Origin=DOWNLOAD 기록으로 Ping-Pong 방지에 관여. (설계안 9.1)
 │   │
 │   └─ security/       [나중]   자격증명 및 설정값 보호. (설계안 15.1)
@@ -130,7 +157,7 @@ SFTPClient/
 │                               dpapi_other.go     — 비Windows 스텁. Linux 빌드 보호
 │
 ├─ docs/
-│   └─ SFTPClient_LEDGER_CONCEPT.md
+│   └─ SFTPClient_LEDGER_CONCEPT.md   (schema.sql과 짝. 항상 함께 갱신)
 │                               Ledger 개념·논리 모델. 엔티티 정의, 관계, 식별자 근거,
 │                               의도적 비정규화 사유, 미결 항목, 설계안 대비 변경 요약.
 │                               schema.sql과 짝이며 항상 함께 갱신한다.
@@ -138,7 +165,11 @@ SFTPClient/
 ├─ config.example.ini           설정 템플릿. 실제 config.ini는 커밋하지 않는다.
 ├─ .gitignore                   config.ini, keys/, logs/, data/, *.db, *.db-wal,
 │                               *.db-shm, *.exe 등을 제외한다.
-└─ go.mod                       모듈 경로, Go 버전 및 의존성 목록.
+└─ go.mod                       모듈 경로(SFTPClient), Go 버전 및 의존성 목록.
+                                modernc.org/sqlite  — CGO 불필요. 순수 Go 포팅이라
+                                                      CGO_ENABLED=0으로 Linux 크로스 빌드 가능
+                                github.com/pkg/sftp — [예정]
+                                폐쇄망 반입 전 go mod vendor로 vendor/를 확보한다.
 ```
 
 ### 패키지 책임 및 의존 방향
@@ -148,7 +179,7 @@ SFTPClient/
 - `put`과 `download`는 필요한 인터페이스를 consumer-side에서 선언한다.
 - PUT에만 필요한 로직은 `put`에 둔다.
 - DOWNLOAD에만 필요한 로직은 `download`에 둔다.
-- 양쪽에서 사용하는 기능은 `domain`, `pathpl`, `verify`, `transport`, `ledger`, `config`, `logging` 등 공통 패키지로 분리한다.
+- 양쪽에서 사용하는 기능은 `domain`, `pathtpl`, `verify`, `transport`, `ledger`, `config`, `logging` 등 공통 패키지로 분리한다.
 - 동일 기능을 PUT과 DOWNLOAD 양쪽에 복사하여 중복 구현하지 않는다.
 - `utils`, `helper`, `common`처럼 책임이 불명확한 범용 패키지를 만들지 않는다.
 - `internal/sftp`라는 패키지명은 사용하지 않는다. `github.com/pkg/sftp`와 이름 충돌을 피하기 위해 `transport`를 사용한다.
@@ -206,13 +237,21 @@ MVP 5: Linux 대응
 ### 현재 MVP 1 PUT 구현 순서
 
 ```text
+domain                        ✅ 완료  (mode.go 포함)
+    ↓
+ledger/db.go, common.go       ✅ 완료
+    ↓
+pathtpl                       ✅ 완료
+    ↓
+config                        ← 다음
+    ↓
 Local Scanner
     ↓
 Ingress Verification
     ↓
-Common Ledger
+Common Ledger 적재            ← 1차 목표: 여기까지 동작
     ↓
-PUT 처리(worker=1 순차)
+PUT 처리(Worker Pool, 기본 4)
     ↓
 SFTP .part Upload
     ↓
@@ -225,10 +264,23 @@ Rename
 put_ledger VERIFIED/FAILED 기록
 ```
 
-- 이번 주에는 **정확성, 무결성, 중복 방지, 실패 추적**을 우선한다.
-- 이번 주 PUT은 `worker=1` 순차 처리로 구현할 수 있다.
-- 다음 주 `pipeline`에서 bounded Worker Pool과 Global Limiter를 추가한다.
-- Worker Pool 추가 시 Ledger 쓰기는 Channel → 단일 Ledger Writer 고루틴으로 전환한다.
+**1차 목표는 "스캔 → Ingress 검증 → common_ledger 적재"까지다.**
+전송은 그 뒤에 붙인다. 검증 없이 SUCCESS를 기록하는 것보다
+범위를 명시적으로 자르는 편이 안전하다.
+
+- MVP 1 에서는 **정확성, 무결성, 중복 방지, 실패 추적**을 우선한다.
+- **Scan은 순차, 전송은 병렬이다.** 두 가지를 혼동하지 않는다.
+  Scan은 디렉터리를 하나씩 훑으며 병렬화 대상이 아니다.
+  전송은 MVP 1부터 Worker Pool로 병렬 처리한다. 기본 `MaxWorkers = 4`.
+  Go를 선택한 이유가 이 병렬 전송이며, 적정값은 MVP 4 Benchmark로 확정한다. (설계안 12.2)
+- `SetMaxOpenConns(1)`이 Ledger 쓰기를 직렬화하므로 `MaxWorkers > 1`에서도
+  Ledger 정합성은 안전하다. 단일 Ledger Writer 고루틴 + 배치 커밋은
+  정합성 요건이 아니라 **처리량 최적화**이며 MVP 4 범위이다.
+- 병렬 전송에서 유일한 실질 위험은 **트랜잭션 안의 중첩 쿼리**이다.
+  `BeginTx`가 단 하나의 커넥션을 점유한 상태에서 다른 쿼리를 호출하면
+  커넥션 풀 레벨에서 영구 데드락이 된다. `busy_timeout`은 여기서 걸리지 않는다.
+  트랜잭션 안에서는 반드시 `*sql.Tx` 핸들만 사용한다. (CONCEPT 4.8)
+- 동시성 코드를 추가한 시점부터 `go test -race ./...`를 기본 절차에 포함한다.
 - 성능 튜닝은 MVP 4 이전에 과도하게 진행하지 않는다.
 
 ## 6. 오류 처리
@@ -253,7 +305,11 @@ put_ledger VERIFIED/FAILED 기록
 - 테스트가 불필요하게 `time.Sleep`에 의존하지 않도록 한다.
 - 다음 영역은 반드시 테스트한다.
   - `file_name` 정규화 규칙 (소문자 통일, `.part` 제거, 압축 확장자 유지, 경로 비의존)
-  - RINEX 파일명 파싱 (필드 5개/6개 가변. 항법 파일에는 샘플링 필드가 없다)
+  - `Category.MatchesName` — RINEX3 주기 필드(`_` 분리 인덱스 3) 대조.
+    항법 파일은 샘플링 필드가 없어 전체 필드 수가 줄지만 주기 위치는 같다.
+    RINEX2는 `CategoryMatchUnknown`을 돌려주는지 확인한다. (CONCEPT 6.3)
+    별도의 RINEX 파일명 파서(`rinexname.go`)는 두지 않는다.
+    현재 필요한 것은 주기 필드 하나이며, 쓰이지 않는 파서를 미리 만들지 않는다.
   - Path Template 토큰 확장
   - Ingress Verification
   - Transfer Verification
@@ -290,7 +346,166 @@ go test -race ./...
 - 암호화 대상 정보가 로그에서 평문으로 다시 노출되지 않도록 필요 시 마스킹한다.
 - Linux의 자격증명 보호 방식은 MVP 5에서 확정한다.
 
-## 9. Git 제외 권장 항목
+## 9. 기존 운영 스크립트에서 확인한 사실
+
+측위원에서 실제로 운용 중인 WinSCP 기반 스크립트(다운로드용 PowerShell,
+전송용 배치, 원격 정리용 PowerShell)를 분석하여 확인한 항목이다.
+설계안에 없거나 설계안과 다른 것만 적는다.
+
+### 9.1 경로와 값
+
+| 항목 | 확인된 사실 |
+|---|---|
+| DOY 표기 | **3자리 0채움**. 정리 스크립트가 `'^\d{3}$'` 로 폴더를 매칭한다 |
+| 시각 기준 | **UTC**. 스케줄은 서버 로컬시간이나 대상 날짜 계산은 UTC이다 |
+| 실행 주기 | 매시각 :10, `schtasks /SC HOURLY /MO 1` |
+| 전송·수신 범위 | 오늘 포함 **7일**. `ScanRecentDays` 를 7로 정한 근거이다 |
+| 원격 보관 | 30일 |
+| 대상 확장자 | 스크립트는 `*.gz` 만 전송·수신한다. 그러나 실제 디렉터리에는 비압축이 함께 있다. 아래 9.7 참조 |
+| 파일명 대소문자 | RINEX2 소문자 / RINEX3 대문자 혼재. `NormalizeName` 의 소문자 통일 근거 |
+| Category 구분 | RNX2_D / RNX2_H / RNX3_D / RNX3_H 4종. `domain.Category` 와 1:1 |
+| 파일 생성 방식 | **append 형**. 0바이트로 생성된 뒤 채워진다 (BNC) |
+
+경로 문자열 자체는 세 스크립트가 서로 다르다(하이픈/언더스코어, 드라이브, 기관 접미사).
+전부 Path Template 의 리터럴 구간이므로 `config.ini` 값만 바꾸면 되며,
+이것이 설계안 10절이 의도한 바이다. 실서버 반입 전에 실제 경로를 확정한다.
+
+### 9.2 설계안에 없는 필수 절차 — 원격 디렉터리 사전 생성
+
+전송 스크립트는 `put` 전에 목적지 경로를 세그먼트 단위로 재귀 생성한다.
+설계안 8절에 이 절차가 없다. **없으면 첫 전송이 전부 실패한다.**
+
+구현 시 반영할 세부는 세 가지다.
+
+- 경로를 `/` 로 쪼개 상위부터 순차 `mkdir` 한다
+- 드라이브 세그먼트(`E:`)는 건너뛴다
+- 이미 만든 경로는 집합으로 기억하여 중복 호출하지 않는다
+
+### 9.3 Hourly Scan 은 (HH) 를 계산하지 않는다
+
+스크립트는 시간 디렉터리를 00~23 으로 순회하지 않고,
+DOY 디렉터리까지만 만든 뒤 **실제 존재하는 하위 디렉터리를 나열한다.**
+
+Deep Scan 30일 기준으로 두 방식을 비교하면 다음과 같다.
+Hourly Category 는 4종 중 2종(`RNX2_H`, `RNX3_H`)이며 Daily 에는 `(HH)` 레벨이 없다.
+
+| 방식 | Hourly 2종 기준 디렉터리 접근 |
+|---|---|
+| 00~23 계산 순회 | 30 × 24 × 2 = 1,440회 |
+| 하위 디렉터리 나열 | 30 × 2 = 60회 + 실존 HH 만 |
+
+**로컬 파일시스템에서는 이 차이가 크지 않다.**
+Hourly 디렉터리는 시간당 데이터가 계속 유입되므로 대부분 실제로 존재하며,
+없는 디렉터리를 여는 시도는 빠르게 실패한다.
+
+실질적인 근거는 **DOWNLOAD 의 원격 Scan** 이다.
+SFTP 에서 24회 조회는 왕복 24회지만 목록 조회는 1회이며,
+설계안 12.2 의 데이터셋 A(소파일 다수) 조건에서는 왕복 횟수가 처리시간을 지배한다.
+설계안 11.1 이 "스캔 자체가 병목이 된다"고 지적한 부분의 답이 여기 있다.
+
+`pathtpl` 은 그대로 두고, Scanner 가 Hourly 에서 `(HH)` 앞까지만 확장하여
+디렉터리를 나열하는 방식으로 구현한다.
+
+**대가 한 가지** — 나열 방식은 계산 방식과 달리 예상 밖 디렉터리를 주워온다.
+`00_backup`, `temp` 같은 이름이 그대로 Scan 대상이 된다.
+나열 결과에 `^\d{2}$` 및 00~23 범위 검증을 적용한다.
+정리 스크립트가 `^\d{4}$` / `^\d{3}$` 로 폴더를 매칭하는 것과 같은 이유이다.
+
+### 9.4 Transfer Verification 이 필요한 실증 근거
+
+전송 스크립트는 `option batch continue` 와 `option failonnomatch off` 를 사용하며,
+스크립트 자체에 다음 주석이 있다.
+
+```
+[NOTE] WinSCP returns 0 even if files were skipped (option batch continue).
+[NOTE] If you saw "No such file (code 2)", NOTHING was uploaded
+```
+
+**한 건도 올라가지 않아도 종료코드가 0 이다.**
+"전송 함수가 오류 없이 끝났다는 사실만으로 VERIFIED 로 두지 않는다"(설계안 8.1)는
+원칙이 추상적 방어가 아니라 현장에서 실제로 발생한 문제임을 보여준다.
+
+### 9.5 RemotePath 형태 주의
+
+SFTP 서버가 파일시스템을 어떻게 노출하느냐에 따라 경로 형태가 달라진다.
+
+```
+전체 파일시스템 노출 → /E:/RINEX2Outgoing/...
+E:\ 로 chroot        → /RINEX2Outgoing/...      ( /E: 를 뺀다 )
+```
+
+형태가 틀리면 모든 `mkdir` / `put` 이 `No such file (code 2)` 로 실패한다.
+`config.ini` 의 `RemotePath` 값 하나로 흡수되므로 코드에 분기를 두지 않는다.
+
+### 9.6 범위에 넣지 않은 것
+
+| 항목 | 판단 |
+|---|---|
+| 관측소 필터 (`STATIONS`) | 신규 프로그램은 전체 관측소 대상이므로 두지 않는다 |
+| 원격 보관기간 정리 | **미결정.** 원격 삭제는 오작동 시 복구가 불가능하므로 MVP 1 에서는 제외하는 쪽을 검토 중이다. 대표 요구인 "단일 통합 프로그램"과 상충할 수 있어 확정 필요 |
+
+### 9.7 확장자 필터를 두지 않는다
+
+기존 스크립트는 송·수신 모두 `*.gz` 만 처리한다.
+그러나 실제 디렉터리를 확인한 결과 비압축 파일이 함께 존재한다.
+
+```
+RINEX-V3-D\2026\182\   (Daily)
+  GAGE00KOR_R_20261820000_01D_30S_MO.rnx        16,514KB
+  GAGE00KOR_R_20261820000_01D_30S_MO.crx         5,211KB
+  GAGE00KOR_R_20261820000_01D_30S_MO.crx.gz      1,868KB
+
+RINEX-V3-H\2026\182\00\   (Hourly)
+  EOCH00KOR_R_20261820000_01H_30S_MO.rnx         1,424KB
+  ... 5개 전부 비압축 .rnx
+```
+
+**Hourly 폴더는 비압축만 있다.** 이 경로가 실제 송신 원본이라면
+`*.gz` 필터 때문에 Hourly 가 전혀 전송되지 않고 있을 수 있으며,
+`option batch continue` + `failonnomatch off` 때문에 종료코드는 0 으로 끝난다.
+스크린샷 경로와 배치의 원본 경로가 달라 단정할 수는 없으나 확인이 필요하다.
+
+신규 프로그램은 **확장자 필터 개념 자체를 두지 않는다.**
+기관의 파일 규칙은 시간에 따라 바뀌므로, 거르지 않는 편이 누락 위험이 낮다.
+특정 기관이 요구하면 그때 `config.ini` 항목으로 추가한다.
+
+**운영상 대가** — 같은 관측 데이터가 여러 형태로 존재하므로 전송량이 늘어난다.
+위 GAGE 하루치 기준 `.crx.gz` 만 보낼 때 1.8MB, 전부 보낼 때 약 23MB 이다.
+Target 디스크 용량과 회선이 `.gz` 기준으로 산정되어 있을 수 있으므로
+실서버 반입 전에 용량을 재확인한다.
+
+**Hatanaka 압축(`.crx`)** — 설계안과 CONCEPT 에 언급이 없다.
+`BaseName` 은 `.gz` / `.Z` 만 제거하므로 `.rnx` 계열과 `.crx` 계열은
+서로 다른 `base_name` 그룹이 된다. `.crx` 는 단순 압축이 아니라 포맷 변환이므로
+현재는 이 동작을 유지한다. `base_name` 은 식별자가 아니라 관측 수단이므로
+나중에 규칙을 넓혀도 되돌리는 비용이 없다. (CONCEPT 4.7, 7)
+
+### 9.8 Deep Scan 주기는 상태를 저장하지 않는다
+
+주기 실행(매시 :10) 구조에서는 매 실행이 새 프로세스이므로
+"오늘 Deep Scan 을 했는가"를 메모리에 둘 수 없다.
+
+`scan_state` 테이블을 두는 안을 검토했으나 **채택하지 않았다.**
+`config.ini` 의 `DeepScanHour` 와 실행 시각의 시(hour)를 비교하면
+상태 저장 없이 하루 한 번이 보장된다.
+
+| | 해당 시각 실행이 걸러졌을 때 |
+|---|---|
+| `DeepScanHour` 비교 | 그날 Deep Scan 없음. 다음날 같은 시각에 수행 |
+| `scan_state` 테이블 | 다음 실행에 "24시간 경과"로 판정하여 수행 |
+
+차이는 최대 하루 지연뿐이다.
+Deep Scan 은 안전망이지 주 경로가 아니며, 30일 구간 안에서 매일 회수 기회가 있다.
+반면 테이블을 두면 DDL · 읽기/쓰기 코드 · 스키마 개정 · CONCEPT 갱신이 따라온다.
+운영 중 Deep Scan 누락이 잦은 것이 확인되면 그때 도입한다.
+
+**`DeepScanHour` 의 시간대에 주의한다.**
+`pathtpl` 의 토큰 확장은 UTC 로 강제하지만, `DeepScanHour` 는 스케줄러와 기준을 맞춘다.
+`schtasks` 는 서버 로컬시간으로 동작하며 "전송량이 적은 시간대"도 로컬 개념이다.
+UTC 로 둘 경우 `4` 는 KST 13시(한낮)가 되므로 값과 주석이 어긋나기 쉽다.
+`config.ini` 주석에 어느 기준인지 반드시 명시한다.
+
+## 10. Git 제외 권장 항목
 
 ```gitignore
 config.ini
@@ -303,7 +518,7 @@ data/
 *.exe
 ```
 
-## 10. 프로젝트 별도 지침 원문
+## 11. 프로젝트 별도 지침 원문
 
 아래 내용은 기존 프로젝트 지침 파일의 원문이다.
 
