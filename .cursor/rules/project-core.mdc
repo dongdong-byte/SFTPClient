@@ -24,7 +24,7 @@ alwaysApply: true
 - 실행 시점의 구현체 wiring은 `cmd/rinexclient/main.go`에서 담당한다.
 - `main.go`에는 비즈니스 로직을 두지 않는다.
 - PUT 전용 로직은 `put`에, DOWNLOAD 전용 로직은 `download`에 둔다.
-- 양쪽 공통 기능은 `domain`, `pathtpl`, `verify`, `transport`, `ledger`, `config`, `logging` 등으로 분리한다.
+- 양쪽 공통 기능은 `domain`, `pathpl`, `verify`, `transport`, `ledger`, `config`, `logging` 등으로 분리한다.
 - `utils`, `helper`, `common`처럼 책임이 불명확한 범용 패키지를 만들지 않는다.
 - `internal/sftp` 패키지명은 사용하지 않는다. `github.com/pkg/sftp`와 혼동을 피하기 위해 `transport`를 사용한다.
 - 기관별 차이는 Core 코드의 기관명 조건문이 아니라 `config.ini`와 Path Template으로 처리한다.

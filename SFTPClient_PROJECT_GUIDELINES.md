@@ -88,7 +88,7 @@ SFTPClient/
 │   │                           다른 패키지는 리터럴을 직접 쓰지 않는다.
 │   │                           내부 패키지를 하나도 import하지 않는다. 의존 그래프의 최하단.
 │   │
-│   ├─ pathtpl/                 (YYYY)/(DOY)/(HH)/(SITE) 토큰을 실제 경로로 확장. (설계안 10)
+│   ├─ pathpl/                  (YYYY)/(DOY)/(HH)/(SITE) 토큰을 실제 경로로 확장. (설계안 10)
 │   │                           입출력만 있는 순수 함수. PUT과 DOWNLOAD가 공유한다.
 │   │                           단위 테스트가 가장 쉬운 패키지.
 │   │
@@ -148,7 +148,7 @@ SFTPClient/
 - `put`과 `download`는 필요한 인터페이스를 consumer-side에서 선언한다.
 - PUT에만 필요한 로직은 `put`에 둔다.
 - DOWNLOAD에만 필요한 로직은 `download`에 둔다.
-- 양쪽에서 사용하는 기능은 `domain`, `pathtpl`, `verify`, `transport`, `ledger`, `config`, `logging` 등 공통 패키지로 분리한다.
+- 양쪽에서 사용하는 기능은 `domain`, `pathpl`, `verify`, `transport`, `ledger`, `config`, `logging` 등 공통 패키지로 분리한다.
 - 동일 기능을 PUT과 DOWNLOAD 양쪽에 복사하여 중복 구현하지 않는다.
 - `utils`, `helper`, `common`처럼 책임이 불명확한 범용 패키지를 만들지 않는다.
 - `internal/sftp`라는 패키지명은 사용하지 않는다. `github.com/pkg/sftp`와 이름 충돌을 피하기 위해 `transport`를 사용한다.

@@ -51,12 +51,22 @@ func ParseCategory(s string) (Category, error) {
 	return "", fmt.Errorf("unknown category %q", s)
 }
 
+// String 은 Category 의 저장 표기를 반환한다.
+func (c Category) String() string {
+	return string(c)
+}
+
 // IsHourly 는 이 Category 가 시간 단위 파일인지 답한다.
 //
 // Scanner 가 (HH) 디렉터리를 0~23 순회할지 결정하는 데 사용한다.
 // Daily 면 그 레벨이 존재하지 않으므로 순회하지 않는다.
 func (c Category) IsHourly() bool {
 	return c == CategoryRINEX2Hourly || c == CategoryRINEX3Hourly
+}
+
+// IsDaily 는 이 Category 가 일 단위 파일인지 답한다.
+func (c Category) IsDaily() bool {
+	return c == CategoryRINEX2Daily || c == CategoryRINEX3Daily
 }
 
 // CategoryMatch 는 config 가 지정한 Category 와 파일명의 대조 결과이다.
@@ -82,6 +92,21 @@ const (
 	CategoryMatchMismatch
 )
 
+// String 은 로그·테스트용 표기를 반환한다.
+// int 기반 타입이므로 기본 출력은 0/1/2 가 되므로 명시적으로 이름을 돌린다.
+func (m CategoryMatch) String() string {
+	switch m {
+	case CategoryMatchUnknown:
+		return "Unknown"
+	case CategoryMatchOK:
+		return "OK"
+	case CategoryMatchMismatch:
+		return "Mismatch"
+	default:
+		return fmt.Sprintf("CategoryMatch(%d)", int(m))
+	}
+}
+
 // rinex3PeriodField 는 RINEX3 긴 파일명에서 파일 주기 필드의 위치이다.
 //
 //	SONP00KOR_R_20260010300_01H_01S_MS.rnx.gz
@@ -91,7 +116,7 @@ const (
 // 주기 필드의 위치는 그대로이므로 인덱스 3 을 사용한다.
 const rinex3PeriodField = 3
 
-// CategoryMatchesName 은 config 가 지정한 Category 와 파일명이 함의하는 주기를
+// MatchesName 은 config 가 지정한 Category 와 파일명이 함의하는 주기를
 // 대조한다. Config 오기입 탐지 장치이다.
 //
 // 입력 name 은 함수 내부에서 NormalizeName 을 적용한다.
@@ -100,7 +125,7 @@ const rinex3PeriodField = 3
 // 현재 MVP 1 에서는 RINEX3 의 _01D_ / _01H_ 만 확실한 규칙으로 판정한다.
 // RINEX2 또는 15M 등 아직 프로젝트에서 의미가 확정되지 않은 주기는
 // CategoryMatchUnknown 을 반환하여 정상 파일 누락을 방지한다.
-func (c Category) CategoryMatchesName(name string) CategoryMatch {
+func (c Category) MatchesName(name string) CategoryMatch {
 	name = NormalizeName(name)
 
 	if c != CategoryRINEX3Daily && c != CategoryRINEX3Hourly {
