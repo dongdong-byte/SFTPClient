@@ -1,0 +1,16 @@
+# 운영 설정 · 비밀 · 산출물 (GUIDELINES 10절)
+config.ini
+keys/
+logs/
+data/
+
+*.db
+*.db-wal
+*.db-shm
+*.exe
+
+# IDE / OS
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
