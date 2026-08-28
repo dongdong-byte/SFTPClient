@@ -13,18 +13,27 @@
 --        정규화 전 : SONP00KOR_R_20260010300_01H_01S_MS.rnx.gz
 --        정규화 후 : sonp00kor_r_20260010300_01h_01s_ms.rnx.gz   ← 저장되는 값
 --    따라서 해시를 거치지 않고 정규화한 파일명을 그대로 키로 사용한다.
---    원안의 목적인 "경로 비의존" 은 그대로 유지된다. 경로는 키가 아니라
---    속성이므로 local_path 컬럼에 별도로 기록한다.
 --
---    Domain 은 인스턴스별로 DB 파일이 분리되어 있어(9.3) 한 DB 안에서
---    타 기관 파일과 만날 일이 없으므로 식별자에서 제외한다.
---    config 값과 로그 태그로만 유지한다.
+--    원안의 목적인 "경로 비의존" 은 그대로 유지된다.
+--    v5 에서 local_path 컬럼을 삭제하였으므로 경로는 이제 키도 속성도 아니다.
+--    삭제 근거는 아래 common_ledger 말미의 [v5 개정 주석] 을 참조한다.
+--
+--    Domain 은 사용하지 않는다.
+--    인스턴스별로 DB 파일이 분리되어 있어(9.3) 한 DB 안에서
+--    타 기관 파일과 만날 일이 없으므로 식별자 구성요소로 필요하지 않으며,
+--    최신 설계에서는 config 에서도 제거하였다.
 --
 --  NormalizedName 규칙
 --    - 디렉터리 경로 제외, 파일명만 사용
 --    - 대소문자는 소문자로 통일
 --    - .part 등 임시 접미사 제거
---    - 압축 확장자(.gz, .Z) 는 유지
+--    - 압축 확장자는 제거하지 않고 그대로 보존
+--        규칙이 "보존" 이므로 알려진 확장자 목록을 유지할 필요가 없다.
+--        현장에서 .Z / .gz / .zip 이 관측소마다 혼재하는 것이 확인되었고,
+--        새로운 압축 형식이 등장해도 코드를 수정하지 않는다.
+--        단, .Z 는 소문자화되어 .z 가 되므로 같은 디렉터리에 .Z 와 .z 가
+--        공존하면 식별자가 충돌한다. 발생 가능성은 없다고 판단하나
+--        Ingress 단계에서 충돌 시 경고 로그를 남긴다.
 --    이 규칙을 변경하면 누적된 Ledger 이력 전체가 무효화된다.
 --    변경 여부를 프로그램이 감지할 수 있도록 schema_meta.identity_rule 에 기록한다.
 --
@@ -45,6 +54,7 @@
 --
 --  개념·논리 모델의 근거는 SFTPClient_LEDGER_CONCEPT.md 에 별도로 남긴다.
 --  본 파일은 그 결론의 물리 구현이다. 두 문서는 함께 갱신한다.
+--  v5 결정 경위는 SFTPClient_SCAN_DESIGN_DECISIONS.md 6절에 있다.
 --
 --  개정 이력
 --    v1  최초 (해시 file_id)
@@ -53,6 +63,9 @@
 --    v4  verified_at 을 ingress_/transfer_ 로 분리
 --        state 를 필터에서 관측 용도로 재정의 (후보 판정은 revision 매칭)
 --        후보 선정 인덱스를 (category, origin, state) 순서로 교정
+--    v5  local_path 컬럼 삭제
+--        후보 선정을 DB 주도에서 Scan 주도로 변경
+--        (파괴적 변경이다. 아래 마이그레이션 주석 참조)
 --
 --  적용 범위
 --    [현재] common_ledger, put_ledger, schema_meta
@@ -78,9 +91,13 @@ CREATE TABLE IF NOT EXISTS common_ledger (
         -- CHECK 는 소문자 정규화를 DB 차원에서 강제한다. 규칙을 지키지 않은
         -- 코드 경로가 하나라도 있으면 같은 파일이 두 행으로 등록되어
         -- 중복 전송이 발생하므로, 코드 규율에만 맡기지 않는다.
+        --
+        -- v5 부터 이 컬럼은 Scan 이 디렉터리 단위로 던지는
+        --   WHERE file_name IN (?, ?, ...)
+        -- 조회의 대상이기도 하다. PK 인덱스를 그대로 타므로 별도 인덱스가 없다.
 
     base_name   TEXT    NOT NULL,
-        -- 압축 확장자(.gz, .Z) 를 제거한 이름.
+        -- 압축 확장자(.gz, .Z, .zip) 를 제거한 이름.
         -- 같은 관측 데이터가 .rnx 와 .rnx.gz 두 형태로 유입되는지 탐지한다.
         -- 두 형태는 바이트열도 크기도 다르므로 서로 다른 file_name 으로
         -- 등록되며(누락을 막기 위한 의도적 선택), 이 컬럼은 그 상황이
@@ -94,14 +111,30 @@ CREATE TABLE IF NOT EXISTS common_ledger (
                                             'RINEX3_DAILY',  'RINEX3_HOURLY')),
         -- 식별자에 포함되지 않는 일반 컬럼이다. 값은 Scanner 가 판정하지 않고
         -- config.ini 의 [PUT.<CATEGORY>] 섹션에서 그대로 전달받는다.
-        -- RINEX3 파일명에 01D / 01H 가 들어 있으므로, verify 단계에서
-        -- config 가 지정한 category 와 파일명이 함의하는 주기를 대조하여
-        -- 불일치 시 Ingress 를 거부한다. Config 오기입 탐지 장치이다.
+        --
+        -- 한 디렉터리에 두 버전이 섞이는 상황은 상정하지 않는다.
+        -- 현장에서 RINEX2 디렉터리에 RINEX3 파일이 관측된 사례가 있으나
+        -- 이는 오류이며, 기관 측에서 버전별 디렉터리를 분리할 예정이다.
+        --
+        -- 그럼에도 verify 단계에서 config 가 지정한 category 와
+        -- 파일명이 함의하는 버전·주기를 대조하여 불일치 시 Ingress 를 거부한다.
+        --   RINEX3  _R_ 포함, _01D_ / _01H_ 필드
+        --   RINEX2  SSSSDDDh.YYt 형태. h='0' 이면 Daily, 'a'~'x' 면 Hourly
+        -- 혼입을 상정하지 않되 감지는 한다. 비용은 문자열 비교 하나이며,
+        -- 원인 불명의 혼입이 실제로 관측된 이상 조용히 지나가게 두지 않는다.
+        --
+        -- 주의: 항법 파일은 관측 파일과 필드 구성이 다르다.
+        --   관측  SONP00KOR_R_20260010200_01H_01S_MO.crx.gz   ← 데이터율 필드 있음
+        --   항법  SONP00KOR_R_20260010000_01D_MN.rnx          ← 없음
+        -- 고정 오프셋으로 자르면 항법 파일에서 어긋난다.
+        -- 반드시 '_' 분리 후 필드 단위로 검사한다.
         --
         -- 정수(iota)가 아닌 문자열로 저장하여 순서 변경에 영향받지 않게 한다.
 
     size        INTEGER NOT NULL CHECK (size >= 0),
         -- 최근 관측된 바이트 크기. Transfer 검증의 기준값이 된다. (8.1)
+        -- v5 부터 Scan 이 이 값을 읽어 디스크 실측치와 비교하여
+        -- revision 증가 여부를 판정한다. 아래 후보 선정 주석 참조.
 
     mtime       INTEGER NOT NULL,
         -- 최종 수정시각 (Unix epoch 초, UTC).
@@ -121,22 +154,39 @@ CREATE TABLE IF NOT EXISTS common_ledger (
         -- Scanner 는 디렉터리에 놓인 파일만 볼 뿐 누가 썼는지 판별할 수 없어
         -- RECEIVER 와 LOCAL 을 구분할 근거가 없고 동작 차이도 없다.
         -- 검증 불가능한 값을 남기지 않기 위해 LOCAL 로 통합한다.
-        -- 되돌릴 경우 위 CHECK 에 'RECEIVER' 를 추가하면 되며, 그때 그 값은
-        -- config 선언에 의존하는 미검증 메타데이터임을 전제해야 한다.
+        --
+        -- 현재 알려진 모든 기관에서 DOWNLOAD 는 사용되지 않는다.
+        -- 원본 서버와 중간 서버 양쪽에 본 프로그램을 설치할 수 있으므로
+        -- 다단 구성도 PUT 두 번으로 성립한다. DOWNLOAD 는 "타 기관 소유라
+        -- 설치가 불가한 서버" 가 나타날 때를 위한 예비 값이다.
 
     revision    INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
         -- 동일 파일명이 서로 다른 size 또는 mtime 으로 재관측될 때 1 증가한다.
         --
         -- 실제 발생 사유는 두 가지이다.
         --   1) 관측소에서 결측 구간을 채워 파일을 재생성하는 경우 (9.1)
-        --   2) 0바이트로 먼저 생성된 뒤 내용이 나중에 채워지는 경우
+        --   2) 전송이 중단되어 절반짜리 파일이 남았다가 재시도로 완성되는 경우
         --
-        -- 2) 는 대부분 Ingress Verification 의 size>0 / mtime grace 판정에서
-        -- 전송 전에 보류되므로 Ledger 에 등록되지 않는다. revision 은 그 판정을
-        -- 통과한 뒤에 내용이 변경된 경우를 회수하는 안전망이다.
+        -- 2) 가 v5 에서 새로 확인된 주된 사유이다.
+        -- 우리 서버가 받는 것은 QC 를 마친 완제품이므로 관측 중 append 성장은
+        -- 존재하지 않는다. 크기가 변하는 구간은 수신기가 밀어 넣는 전송 중뿐이며
+        -- 수 초~수 분이다. 그러나 전송이 중간에 끊기면 그 파일은 더 이상
+        -- 커지지 않으므로 Grace Time 을 통과해버린다. 원리적으로 막을 수 없다.
+        -- 완성본으로 덮어써질 때 size 가 달라져 revision 이 오르고 회수된다.
         --
         -- revision 없이 UPDATE 로 덮어쓰면 과거 전송 이력을 잃고,
         -- 무조건 skip 하면 보정된 데이터가 영영 전송되지 않는다.
+        --
+        -- size 와 mtime 을 OR 로 본다. size 가 같고 mtime 만 달라도 올린다.
+        -- 내용이 같은데 재전송하는 경우가 생기지만, 반대 방향의 실수
+        -- (내용이 바뀌었는데 안 보냄)보다 낫다는 판단이다.
+        -- AND 로 두면 크기가 우연히 같은 보정 파일을 놓친다.
+        --
+        -- 대신 볼륨 이전이나 대량 복사로 mtime 이 일괄 갱신되면
+        -- Scan 범위 안의 모든 파일이 revision +1 로 재전송된다.
+        -- 이는 규칙의 결함이 아니라 위 선택의 대가이며,
+        -- MaxFilesPerRun 이 그때의 방어선이다.
+        -- 스토리지 작업이 예정되어 있다면 사전에 그 값을 확인한다.
         --
         -- 주의: 파일명의 시각 필드가 다르면(예: ..._20260040000_ 과
         -- ..._20260041856_) 서로 다른 file_name 이므로 revision 이 아니라
@@ -153,8 +203,8 @@ CREATE TABLE IF NOT EXISTS common_ledger (
         -- 재전송 여부는 아래 put_ledger 와의 revision 매칭이 결정한다.
         --
         -- 그럼에도 컬럼을 두는 이유는 운영 가시성이다. 결측 보정이나
-        -- 0바이트 선생성 후 채워지는 현상이 현장에서 실제로 얼마나
-        -- 발생하는지는 아직 관측된 바 없고, 이 값이 그것을 답한다.
+        -- 전송 중단 후 재시도가 현장에서 실제로 얼마나 발생하는지는
+        -- 아직 관측된 바 없고, 이 값이 그것을 답한다.
         --   SELECT COUNT(*) FROM common_ledger WHERE state='CHANGED';
         -- base_name 과 같은 성격의 관측 수단이다.
         --
@@ -167,10 +217,6 @@ CREATE TABLE IF NOT EXISTS common_ledger (
         -- Ingress 를 통과하지 못한 파일(size=0, Grace Time 미충족 등)은
         -- 행을 만들지 않는다. 다음 Scan 에서 다시 판정한다. (7, 14)
         -- 따라서 이 테이블에 존재한다는 것 자체가 검증 통과를 뜻한다.
-
-    local_path  TEXT    NOT NULL,
-        -- 파일이 관측된 로컬 경로. 식별자가 아니라 속성이다. (9.1)
-        -- 운영 장애 분석 시 "이 파일이 어느 디렉터리에 있었는가" 를 답한다.
 
     first_seen  INTEGER NOT NULL,
         -- 이 파일을 처음 발견한 시각 (Unix epoch 초, UTC).
@@ -188,23 +234,62 @@ CREATE TABLE IF NOT EXISTS common_ledger (
         -- 접두어로 구분한다.
 );
 
--- PUT 후보 선정 경로. 스캔마다 타는 가장 빈번한 조회이다.
+-- -----------------------------------------------------------------------------
+--  [v5 개정 주석]  local_path 컬럼 삭제와 후보 선정 방식 변경
 --
---   SELECT c.file_name, c.revision, c.local_path, c.size
---     FROM common_ledger c
---     LEFT JOIN put_ledger p
---       ON  p.file_name = c.file_name
---       AND p.revision  = c.revision
---    WHERE c.category = ?
---      AND c.origin   = 'LOCAL'
---      AND (p.status IS NULL OR p.status = 'FAILED');
+--  v4 는 아래와 같이 DB 가 "무엇을 어디서 보낼지" 를 모두 지시했다.
 --
--- 후보 판정의 주체는 state 가 아니라 revision 매칭이다.
---   - 한 번도 보낸 적 없으면          put 행이 없음        → NULL  → 후보
---   - 보냈고 검증까지 끝났으면        VERIFIED             → 제외
---   - 파일이 갱신되어 revision 이 올랐으면 그 revision 의 행이 없음 → 후보
---   - 실패했으면                      FAILED               → 재시도 후보
--- state 는 조건에 넣지 않는다. READY / CHANGED 둘 다 대상이기 때문이다.
+--    SELECT c.file_name, c.revision, c.local_path, c.size
+--      FROM common_ledger c
+--      LEFT JOIN put_ledger p
+--        ON  p.file_name = c.file_name AND p.revision = c.revision
+--     WHERE c.category = ? AND c.origin = 'LOCAL'
+--       AND (p.status IS NULL OR p.status = 'FAILED');
+--
+--  삭제 근거
+--    장부의 존재 목적은 "완제품이 잘 받아졌는가 / 잘 보내졌는가" 에 답하는
+--    것이다. "어디에 있었는가" 는 그 목적에 기여하지 않는다.
+--    경로는 통보와 함께 실제로 자주 바뀌며, DB 에 적어두면 코드가 그 값에
+--    의존하게 되어 경로 변경이 중복 전송으로 이어질 여지가 생긴다.
+--    로컬 디스크에 10년치가 보관되는 환경이므로 이 위험은 작지 않다.
+--
+--  v5 의 후보 선정 (Scan 주도)
+--    Scan 은 디렉터리를 나열한 시점에 이미 (경로, 파일명, size, mtime) 을
+--    모두 알고 있다. 장부에는 "이 이름들 중 무엇을 아직 안 보냈는가" 만 묻는다.
+--
+--    1) Scan 이 디렉터리 하나를 나열한다
+--    2) 그 안의 파일명들로 장부를 한 번에 조회한다
+--
+--         SELECT c.file_name, c.revision, c.size, c.mtime, p.status
+--           FROM common_ledger c
+--           LEFT JOIN put_ledger p
+--             ON  p.file_name = c.file_name AND p.revision = c.revision
+--          WHERE c.file_name IN (?, ?, ?, ...);
+--
+--    3) 메모리에서 대조한다
+--         장부에 없음                         → 신규.        Ingress 후 전송
+--         있고 size/mtime 동일, VERIFIED      → 제외
+--         있고 size/mtime 동일, NULL / FAILED → 전송 (또는 재시도)
+--         있고 size/mtime 상이                → revision +1 후 전송
+--
+--    PK 인덱스를 그대로 타므로 별도 인덱스가 필요 없다.
+--    IN 절의 항목 수는 SQLITE_MAX_VARIABLE_NUMBER(기본 32766) 이내로 나눈다.
+--    관측소별 디렉터리가 없어 한 디렉터리에 수백 개가 들어오므로
+--    실무상 한두 번의 조회로 끝난다.
+--
+--  파생 효과
+--    v4 에서는 FAILED 행이 Scan 범위 밖으로 밀려나도 영구히 후보로 남았으나,
+--    v5 에서는 자연히 만료된다. Deep Scan 범위(기본 7일)를 벗어나면 후보에서
+--    빠지고, 필요하면 Recovery Scan 으로 명시적으로 부른다.
+--    자동 재시도와 수동 복구의 경계가 명확해진다.
+-- -----------------------------------------------------------------------------
+
+-- category 별 집계·조회 경로.
+--   RINEXClient.exe db status   (9.2)
+--
+-- v4 에서는 이 인덱스가 후보 선정의 주 경로였으나, v5 의 후보 선정은
+-- file_name PK 를 타므로 더 이상 그렇지 않다. 그럼에도 유지하는 이유는
+-- category 별 집계와 origin 필터(Ping-Pong 방지 확인)에 계속 쓰이기 때문이다.
 --
 -- 컬럼 순서 주의: category 와 origin 은 등가 비교이므로 앞에 두고,
 -- 선택도가 낮은 state 를 뒤에 둔다. state 를 중간에 두면 그 뒤 컬럼이
@@ -249,7 +334,17 @@ CREATE TABLE IF NOT EXISTS put_ledger (
         --
         -- 비정상 종료 시 IN_PROGRESS 로 남은 항목이 발생한다.
         -- 프로그램 시작 시 이를 조회하여 아래 part_path 의 잔여 .part 파일을
-        -- 삭제하고 상태를 PENDING 으로 되돌린다. 이 절차가 없으면 .part 가 누적된다.
+        -- 삭제하고 상태를 FAILED 로 되돌린다. 이 절차가 없으면 .part 가 누적된다.
+        --
+        -- v5 주의: 회수 시 로컬 경로가 필요하지 않다. 로컬 파일은 그대로 있고
+        -- Scan 범위 안이라면 다음 Scan 이 다시 발견하므로, 회수 절차는
+        -- 원격 .part 정리와 상태 되돌리기까지만 한다.
+        --
+        -- 범위 밖이면(중단 후 ScanDays 를 넘겨 방치된 경우) 자동으로는
+        -- 회수되지 않는다. 이는 결함이 아니라 v5 의 의도된 성질이다.
+        -- FAILED 가 영구히 후보로 남지 않고 자연히 만료되도록 한 것이며,
+        -- 그런 항목은 Recovery Scan 으로 명시적으로 부른다.
+        -- (SCAN_DESIGN_DECISIONS 6절 파생 효과)
         --
         -- 전송 함수가 오류 없이 끝났다는 사실만으로 VERIFIED 로 두지 않는다.
         -- 목적지 파일의 존재와 Size 대조를 마친 뒤에만 확정한다. (8.1)
@@ -267,6 +362,13 @@ CREATE TABLE IF NOT EXISTS put_ledger (
 
     remote_path TEXT,
         -- 최종 목적지 경로. Path Template 확장 결과이다.
+        --
+        -- common_ledger 의 local_path 는 v5 에서 삭제했으나 이 컬럼은 남긴다.
+        -- 성격이 다르기 때문이다. local_path 는 "파일이 어디 있는가" 라는
+        -- 현재 상태의 사본이라 원본과 어긋날 수 있었지만,
+        -- remote_path 는 "어디로 보냈는가" 라는 과거 사실의 기록이며
+        -- 나중에 설정이 바뀌어도 그때 그 경로로 보냈다는 사실은 변하지 않는다.
+
     part_path   TEXT,
         -- 업로드에 사용한 원격 .part 경로.
         --
@@ -299,6 +401,14 @@ CREATE TABLE IF NOT EXISTS put_ledger (
         -- 대응하는 전송 이력도 함께 정리된다. (14)
         -- 헤더의 PRAGMA foreign_keys = ON 이 켜져 있어야 동작한다.
         --
+        -- ★ 보존기간 주의 (v5)
+        --   LedgerRetentionDays 는 반드시 ScanDays 보다 길어야 한다.
+        --   짧으면 디스크에는 있는데 장부에서만 지워진 파일이 생기고,
+        --   그 파일은 다음 Scan 에서 신규로 판정되어 재전송된다.
+        --   로컬 보존이 10년이므로 이 조건이 깨지면 피해가 크다.
+        --   config 검증에서 LedgerRetentionDays > ScanDays 를 강제한다.
+        --   또한 이 값이 Recovery Scan 의 실질 상한이 된다.
+        --
         -- 한계: FK 는 file_name 만 참조하므로 revision 정합성은 강제되지 않는다.
         -- 부모가 revision=1 인데 자식에 revision=99 를 넣어도 DB 는 막지 못한다.
         -- 후보 선정 쿼리가 common 에서 읽은 revision 을 그대로 쓰는 한
@@ -310,6 +420,30 @@ CREATE TABLE IF NOT EXISTS put_ledger (
 -- 재시작 시 IN_PROGRESS 잔여 항목 회수에도 같은 인덱스를 탄다. (9.3)
 CREATE INDEX IF NOT EXISTS idx_put_status
     ON put_ledger (status);
+
+
+-- -----------------------------------------------------------------------------
+--  Ledger Retention Cleanup 정책 (v5)
+--
+--  RetentionDays 는 애플리케이션 설정값이며 SQLite 가 자동으로 행을 지우지 않는다.
+--  하루 1회 Deep Scan 완료 후 애플리케이션에서 다음 기준으로 정리한다.
+--
+--      DELETE FROM common_ledger
+--       WHERE ingress_verified_at < ?;   -- now - RetentionDays
+--
+--  put_ledger 는 ON DELETE CASCADE 로 함께 삭제된다.
+--
+--  first_seen 이 아니라 ingress_verified_at 을 기준으로 하는 이유:
+--    오래전에 처음 발견된 파일이 최근 다시 갱신되어 revision 이 증가했다면
+--    최신 Ingress 검증 시각을 보존해야 하기 때문이다.
+--
+--  정리 순서:
+--    시작 시 IN_PROGRESS 복구 → Scan/전송 → Deep Scan 실행일이면 Retention Cleanup.
+--
+--  VACUUM 은 정기 실행하지 않는다.
+--  DELETE 로 생긴 free page 는 이후 INSERT 에 재사용하며,
+--  실제 DB 파일 축소가 필요한 경우에만 별도 유지보수 절차로 수행한다.
+-- -----------------------------------------------------------------------------
 
 
 -- -----------------------------------------------------------------------------
@@ -327,7 +461,61 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     updated_at  INTEGER NOT NULL
 );
 
+-- schema_version 은 파일명의 v 번호와 별개로 증가시켜 온 값이다.
+-- v4 파일에서 '1' 이었으므로 v5 에서 '2' 로 올린다.
+--   ※ 두 계열이 헷갈릴 소지가 있다. 파일명과 일치시키려면 '5' 로 두어야
+--     하나, 그러면 기존 DB 의 '1' 과 건너뛰는 구간이 생긴다.
+--     현 단계에서는 증분을 택했다. 다르게 가려면 여기만 고치면 된다.
+--
+-- ★ 시작 시 검증 규칙 (v5 에서 명시)
+--
+--   identity_rule   기대값과 다르면 즉시 중단.
+--                   누적 이력 전체가 무효가 되므로 진행 여지가 없다.
+--
+--   schema_version  기대값과 다르면 즉시 중단. 방향에 따라 안내만 달리한다.
+--                     DB < 실행파일 → 마이그레이션 미수행. 절차 안내 후 종료
+--                     DB > 실행파일 → 구버전 실행파일. 배포 오류. 종료
+--                   구버전 실행파일이 신버전 DB 에 쓰면 컬럼 불일치로
+--                   조용히 잘못된 행이 생길 수 있으므로 양방향 모두 막는다.
+--
+--   mvp_stage       검증하지 않는다. 로그 태그 용도이다.
+--
+-- 아래 INSERT 는 OR IGNORE 이므로 기존 DB 의 값을 덮어쓰지 않는다.
+-- 즉 v4 DB 에 이 스크립트를 적용해도 schema_version 은 '1' 로 남고,
+-- 위 시작 시 검증이 그것을 잡아 중단시킨다. 의도된 동작이다.
+-- 스크립트가 조용히 버전만 올려놓고 데이터는 v4 구조로 두는 사고를 막는다.
+-- 버전 갱신은 아래 마이그레이션 절차의 UPDATE 로만 수행한다.
 INSERT OR IGNORE INTO schema_meta (key, value, updated_at) VALUES
-    ('schema_version', '1',           strftime('%s', 'now')),
+    ('schema_version', '2',           strftime('%s', 'now')),
     ('identity_rule',  'FILENAME_V1', strftime('%s', 'now')),
     ('mvp_stage',      'MVP1_PUT',    strftime('%s', 'now'));
+
+
+-- =============================================================================
+--  v4 → v5 마이그레이션
+--
+--  현재는 운영 배포 전 개발 단계이므로 기존 v4 DB 를 보존하여 마이그레이션하기보다
+--  DB 파일을 삭제하고 v5 스키마로 새로 생성하는 것을 기본 절차로 한다.
+--
+--      del rinex_ledger.db rinex_ledger.db-wal rinex_ledger.db-shm
+--
+--  운영 이력을 보존해야 하는 시점이 온 뒤에는 별도의 검증된 migration 절차를
+--  작성하여 적용한다. 그 절차는 반드시 다음을 만족해야 한다.
+--
+--    1) common_ledger_new 를 v5 정의로 생성
+--    2) v4 데이터에서 local_path 를 제외한 컬럼만 복사
+--    3) 기존 common_ledger 교체
+--    4) schema_version 을 '2' 로 갱신
+--    5) 본 파일의 CREATE INDEX 문을 다시 실행하여 인덱스 재생성
+--       (기존 테이블 DROP 시 그 테이블의 인덱스도 함께 제거된다)
+--    6) PRAGMA foreign_keys = ON 복구
+--    7) PRAGMA foreign_key_check 결과가 비어 있는지 확인
+--
+--  주의:
+--    CREATE TABLE IF NOT EXISTS 는 이미 존재하는 테이블 정의를 다시 쓰지 않는다.
+--    따라서 이 파일을 단순 재실행한다고 sqlite_master 의 CREATE TABLE 원문이나
+--    주석이 기존 테이블에 다시 반영되는 것은 아니다.
+--
+--  실제 migration SQL 은 운영 이력 보존이 필요해지는 시점에 사본 DB 로
+--  실행 검증한 뒤 별도 절차로 제공한다.
+-- =============================================================================

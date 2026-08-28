@@ -26,7 +26,9 @@ const partSuffix = ".part"
 // NormalizeName 은 이 확장자를 유지한다.
 //
 // 소문자로 적는다. BaseName 이 NormalizeName 을 거친 값을 다루기 때문이다.
-var compressExts = []string{".gz", ".z"}
+// 현장에서 .gz / .Z / .zip 이 관측소마다 혼재하므로 세 형태를 모두 포함한다.
+// (schema.sql base_name 주석, SCAN DESIGN 10.2)
+var compressExts = []string{".gz", ".z", ".zip"}
 
 // NormalizeName 은 경로 또는 파일명을 Ledger 의 논리적 파일 식별자로 변환한다.
 // 반환값은 common_ledger.file_name 에 저장된다.
@@ -35,7 +37,7 @@ var compressExts = []string{".gz", ".z"}
 //   - 디렉터리 경로를 제외하고 파일명만 사용한다.
 //   - 대소문자를 소문자로 통일한다.
 //   - .part 임시 접미사를 제거한다.
-//   - 압축 확장자(.gz, .Z)는 유지한다.
+//   - 압축 확장자(.gz, .Z, .zip)는 유지한다.
 //
 // 파일명 정규화 규칙은 반드시 이 함수 하나에서만 구현한다.
 // schema.sql 의 CHECK (file_name = lower(file_name)) 는 최후 방어선이며,
@@ -88,9 +90,10 @@ func trimDir(p string) string {
 //
 // 예:
 //
-//	aaaa.rnx.gz -> aaaa.rnx
-//	aaaa.rnx.Z  -> aaaa.rnx
-//	aaaa.rnx    -> aaaa.rnx
+//	aaaa.rnx.gz  -> aaaa.rnx
+//	aaaa.rnx.Z   -> aaaa.rnx
+//	aaaa.rnx.zip -> aaaa.rnx
+//	aaaa.rnx     -> aaaa.rnx
 //
 // 호출자가 별도로 정규화할 필요가 없도록 내부에서 NormalizeName 을 호출한다.
 func BaseName(pathOrName string) string {

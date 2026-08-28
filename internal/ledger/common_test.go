@@ -9,8 +9,11 @@ import (
 )
 
 const (
-	testRawName   = "SONP00KOR_R_20260010300_01H_01S_MS.rnx.gz"
-	testLocalPath = `D:\RINEX3\2026\001\03\` + testRawName
+	testRawName = "SONP00KOR_R_20260010300_01H_01S_MS.rnx.gz"
+
+	// testPathLike 는 "경로가 섞인 file_name" 을 거부하는지 확인할 때만 쓴다.
+	// schema v5 에서 local_path 컬럼이 삭제되었으므로 저장되는 값이 아니다.
+	testPathLike = `D:\RINEX3\2026\001\03\` + testRawName
 )
 
 // newInput 은 Ingress 검증을 통과한 정상적인 CommonInput 하나를 만든다.
@@ -23,7 +26,6 @@ func newInput() CommonInput {
 		Size:              1_048_576,
 		MTime:             1_767_225_600,
 		Origin:            domain.OriginLocal,
-		LocalPath:         testLocalPath,
 		IngressVerifiedAt: 1_767_225_900,
 	}
 }
@@ -37,7 +39,6 @@ type commonRow struct {
 	origin            string
 	revision          int64
 	state             string
-	localPath         string
 	firstSeen         int64
 	ingressVerifiedAt int64
 }
@@ -58,7 +59,6 @@ func readCommon(t *testing.T, db *DB, fileName string) commonRow {
 			origin,
 			revision,
 			state,
-			local_path,
 			first_seen,
 			ingress_verified_at
 		  FROM common_ledger
@@ -73,7 +73,6 @@ func readCommon(t *testing.T, db *DB, fileName string) commonRow {
 		&r.origin,
 		&r.revision,
 		&r.state,
-		&r.localPath,
 		&r.firstSeen,
 		&r.ingressVerifiedAt,
 	)
@@ -120,6 +119,14 @@ func upsert(t *testing.T, db *DB, in CommonInput) Result {
 
 	return got
 }
+
+// schema v5 는 common_ledger 에서 local_path 를 삭제했다.
+//
+// 컬럼이 되살아나면 "무엇을 어디서 보낼지" 를 DB 가 지시하는 v4 구조로
+// 되돌아갈 여지가 생긴다. 그 회귀는 컴파일 오류를 내지 않고,
+// UpsertCommon 이 그 컬럼을 쓰지 않는 한 다른 테스트도 모두 통과한다.
+// 스키마 파일이 v4 로 되돌려지는 사고를 여기서 잡는다.
+//
 
 func TestUpsertCommonInserts(t *testing.T) {
 	db := newTestDB(t)
@@ -189,14 +196,6 @@ func TestUpsertCommonInserts(t *testing.T) {
 		)
 	}
 
-	if row.localPath != in.LocalPath {
-		t.Errorf(
-			"local_path = %q, want %q",
-			row.localPath,
-			in.LocalPath,
-		)
-	}
-
 	if row.firstSeen <= 0 {
 		t.Errorf(
 			"first_seen = %d, 채워지지 않았다",
@@ -218,8 +217,13 @@ func TestUpsertCommonInserts(t *testing.T) {
 // 이미 등록된 파일을 다음 Scan 에서 다시 보더라도
 // size 와 mtime 이 모두 같으면 아무 것도 변경하지 않는다.
 //
-// local_path 와 ingress_verified_at 을 의도적으로 다르게 넣어
+// ingress_verified_at 을 의도적으로 다르게 넣어
 // SQL 의 WHERE 조건이 false 일 때 UPDATE 자체가 일어나지 않는지도 확인한다.
+// v5 에서 local_path 가 사라졌으므로 이 값이 유일한 확인 수단이다.
+//
+// WHERE 조건을 두는 이유는 쓰기 비용이다.
+// 조건 없이 DO UPDATE 를 두면 값이 같아도 페이지가 갱신되어 WAL 이 커진다.
+// 한 번의 Scan 이 수만 건을 훑고 그 대부분이 이 경로이므로 차이가 크다.
 func TestUpsertCommonUnchanged(t *testing.T) {
 	db := newTestDB(t)
 	in := newInput()
@@ -229,7 +233,6 @@ func TestUpsertCommonUnchanged(t *testing.T) {
 	before := readCommon(t, db, in.FileName)
 
 	rescanned := in
-	rescanned.LocalPath = `E:\ANOTHER\PATH\` + testRawName
 	rescanned.IngressVerifiedAt = in.IngressVerifiedAt + 3600
 
 	if got := upsert(t, db, rescanned); got != ResultUnchanged {
@@ -262,14 +265,6 @@ func TestUpsertCommonUnchanged(t *testing.T) {
 			"first_seen 이 변했다: %d → %d",
 			before.firstSeen,
 			after.firstSeen,
-		)
-	}
-
-	if after.localPath != before.localPath {
-		t.Errorf(
-			"local_path 가 변경되었다: %q → %q",
-			before.localPath,
-			after.localPath,
 		)
 	}
 
@@ -334,7 +329,14 @@ func TestUpsertCommonSizeChanged(t *testing.T) {
 }
 
 // size 는 그대로인데 mtime 만 바뀌는 경우도 실제 운영에서 존재할 수 있다.
-// 결측 보정 등으로 같은 크기의 파일이 다시 쓰이는 상황을 감지한다.
+// 같은 크기의 파일이 다시 쓰이거나 복구되는 경우를 놓치지 않기 위해
+// mtime 변경만으로도 revision 을 증가시킨다.
+//
+// 이 테스트는 SQL 의 OR 선택을 고정한다. AND 로 바꾸면 여기서 깨진다.
+// 그 대가로 볼륨 이전이나 대량 복사처럼 mtime 이 일괄 갱신되는 상황에서는
+// Scan 범위 안의 파일이 전부 재전송된다. 결함이 아니라
+// "누락보다 헛전송이 낫다" 는 선택의 결과이다.
+// (upsertCommonSQL 주석, CONCEPT 4.9)
 func TestUpsertCommonMTimeChanged(t *testing.T) {
 	db := newTestDB(t)
 	in := newInput()
@@ -541,7 +543,6 @@ func TestUpsertCommonKeepsCompressedAndPlainSeparate(t *testing.T) {
 	plain.FileName = domain.NormalizeName(plainRaw)
 	plain.BaseName = domain.BaseName(plainRaw)
 	plain.Size = gz.Size * 3
-	plain.LocalPath = `D:\RINEX3\2026\001\03\` + plainRaw
 
 	upsert(t, db, gz)
 	upsert(t, db, plain)
@@ -582,7 +583,7 @@ func TestCommonInputValidate(t *testing.T) {
 		{
 			name: "경로가 섞인 file_name",
 			modify: func(in *CommonInput) {
-				in.FileName = testLocalPath
+				in.FileName = testPathLike
 			},
 		},
 		{
@@ -607,12 +608,6 @@ func TestCommonInputValidate(t *testing.T) {
 			name: "지원하지 않는 RECEIVER origin",
 			modify: func(in *CommonInput) {
 				in.Origin = domain.Origin("RECEIVER")
-			},
-		},
-		{
-			name: "빈 local_path",
-			modify: func(in *CommonInput) {
-				in.LocalPath = ""
 			},
 		},
 		{
@@ -667,29 +662,29 @@ func TestCommonInputValidate(t *testing.T) {
 	})
 }
 
-// 0 byte 파일은 운영에서 흔하게 관측된다.
+// Scanner 는 0 byte 파일도 사실로서 발견할 수 있다.
 //
-// 수집 프로그램이 파일을 먼저 생성한 뒤 내용을 계속 기록하므로
+// 본 프로그램이 대상으로 삼는 최종 DOY/Hourly 경로에는
+// QC·배분이 끝난 완제품이 놓이는 것이 정상이다.
+// 다만 파일이 서버로 전달되는 짧은 순간에 Scan 이 겹치거나,
+// 비정상 전송이 남긴 파일을 관측하면 0 byte 또는 부분 파일이
+// 보일 가능성을 완전히 배제할 수 없다.
 //
-//	0 byte → 수 KB → 수 MB
-//
-// 형태로 증가한다.
-//
-// 따라서 Scanner 는 0 byte 파일도 발견해야 하고,
-// verify 는 다음 Scan 에서 계속 재판정해야 한다.
-//
-// 다만 size>0 만으로는 부족하다. 0 byte 를 지나 일부만 쓰인 시점에
-// Scan 하면 통과해 버리므로, 작성 중 파일 배제는 Grace Time 이 담당한다.
-//
+// 이런 파일을 거르는 책임은 Scanner 가 아니라 verify 에 있다.
 // CommonInput 은 "Ingress 검증을 이미 통과한 파일"이라는 의미이므로
 // size=0 상태에서는 Ledger 에 기록해서는 안 된다.
+//
+// 이후 정상 파일이 관측되면 다음 Scan 에서 다시 검증하고 등록한다.
 func TestUpsertCommonDoesNotRecordZeroSizeYet(t *testing.T) {
 	db := newTestDB(t)
 
 	in := newInput()
 	in.Size = 0
 
-	got, err := db.UpsertCommon(context.Background(), in)
+	got, err := db.UpsertCommon(
+		context.Background(),
+		in,
+	)
 
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf(

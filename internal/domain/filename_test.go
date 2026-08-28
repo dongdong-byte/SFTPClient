@@ -39,6 +39,11 @@ func TestNormalizeName(t *testing.T) {
 			want: "sonp00kor_r_20260010300_01h_01s_ms.rnx.z",
 		},
 		{
+			name: ".zip 압축 확장자도 유지한다",
+			in:   "SONP00KOR_R_20260010300_01H_01S_MS.rnx.zip",
+			want: "sonp00kor_r_20260010300_01h_01s_ms.rnx.zip",
+		},
+		{
 			name: "비압축 파일은 그대로 둔다",
 			in:   "SONP00KOR_R_20260010300_01H_01S_MS.rnx",
 			want: "sonp00kor_r_20260010300_01h_01s_ms.rnx",
@@ -122,8 +127,18 @@ func TestBaseName(t *testing.T) {
 			want: "sonp00kor_r_20260010300_01h_01s_ms.rnx",
 		},
 		{
+			name: ".zip 을 제거한다",
+			in:   "sonp00kor_r_20260010300_01h_01s_ms.rnx.zip",
+			want: "sonp00kor_r_20260010300_01h_01s_ms.rnx",
+		},
+		{
 			name: "대문자 압축 확장자도 제거한다",
 			in:   "SONP00KOR_R_20260010300_01H_01S_MS.rnx.Z",
+			want: "sonp00kor_r_20260010300_01h_01s_ms.rnx",
+		},
+		{
+			name: "대문자 .ZIP 도 제거한다",
+			in:   "SONP00KOR_R_20260010300_01H_01S_MS.rnx.ZIP",
 			want: "sonp00kor_r_20260010300_01h_01s_ms.rnx",
 		},
 		{
@@ -157,18 +172,27 @@ func TestBaseName(t *testing.T) {
 	}
 }
 
-// .rnx 와 .rnx.gz 가 같은 base_name 으로 묶여야
+// .rnx 와 .rnx.gz / .rnx.Z / .rnx.zip 이 같은 base_name 으로 묶여야
 // 압축/비압축 형태의 동시 유입을 관측할 수 있다. (CONCEPT 4.7)
 func TestBaseNameGroupsCompressedAndPlain(t *testing.T) {
-	plain := BaseName("SONP00KOR_R_20260010300_01H_01S_MS.rnx")
-	gzipped := BaseName("SONP00KOR_R_20260010300_01H_01S_MS.rnx.gz")
+	const stem = "SONP00KOR_R_20260010300_01H_01S_MS.rnx"
 
-	if plain != gzipped {
-		t.Errorf(
-			"두 형태의 base_name 이 다르다: %q vs %q",
-			plain,
-			gzipped,
-		)
+	plain := BaseName(stem)
+	variants := []string{
+		stem + ".gz",
+		stem + ".Z",
+		stem + ".zip",
+	}
+
+	for _, v := range variants {
+		if got := BaseName(v); got != plain {
+			t.Errorf(
+				"BaseName(%q) = %q, want %q",
+				v,
+				got,
+				plain,
+			)
+		}
 	}
 }
 
@@ -177,13 +201,21 @@ func TestBaseNameGroupsCompressedAndPlain(t *testing.T) {
 // 이 구분이 사라지면 서로 다른 데이터가 하나로 합쳐져 영구 누락된다. (CONCEPT 4.2)
 func TestNormalizeNameKeepsCompressedAndPlainDistinct(t *testing.T) {
 	plain := NormalizeName("SONP00KOR_R_20260010300_01H_01S_MS.rnx")
-	gzipped := NormalizeName("SONP00KOR_R_20260010300_01H_01S_MS.rnx.gz")
 
-	if plain == gzipped {
-		t.Errorf(
-			"압축 여부가 다른 파일이 같은 식별자를 갖는다: %q",
-			plain,
-		)
+	compressed := []string{
+		"SONP00KOR_R_20260010300_01H_01S_MS.rnx.gz",
+		"SONP00KOR_R_20260010300_01H_01S_MS.rnx.Z",
+		"SONP00KOR_R_20260010300_01H_01S_MS.rnx.zip",
+	}
+
+	for _, name := range compressed {
+		got := NormalizeName(name)
+		if got == plain {
+			t.Errorf(
+				"압축 여부가 다른 파일이 같은 식별자를 갖는다: %q",
+				got,
+			)
+		}
 	}
 }
 

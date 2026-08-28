@@ -18,6 +18,18 @@ import (
 //
 // 호출자가 revision 을 직접 구성하는 코드 경로를 만들지 않는다.
 // (CONCEPT 5④)
+//
+// 로컬 경로는 담지 않는다. (schema v5)
+// common_ledger 는 "Ingress 검증을 통과한 어떤 파일을 관측했는가"를 기록하며,
+// 파일의 현재 위치를 기억하는 것이 목적이 아니다.
+//
+// 전송에 필요한 현재 경로는 Scan 이 디렉터리를 나열한 시점부터
+// 메모리로 들고 다니며 DB 를 거치지 않는다.
+//
+// 경로는 실제 운영에서 변경될 수 있으므로 Ledger 가 이를 전송 경로의
+// 기준으로 삼지 않는다. PUT 후보는 DB 단독 조회가 아니라
+// 이번 Scan Entry 와 Ledger 상태를 대조하여 결정한다.
+// (SCAN DESIGN 6절, CONCEPT 4.1·4.5)
 type CommonInput struct {
 	// FileName 은 domain.NormalizeName 을 거친 값이어야 한다.
 	FileName string
@@ -43,12 +55,12 @@ type CommonInput struct {
 	// 동일 file_name 이 재관측되어도 기존 origin 을 유지한다.
 	Origin domain.Origin
 
-	// LocalPath 는 파일이 관측된 로컬 경로이다.
-	// 식별자가 아니라 운영 조회를 위한 속성이다. (설계안 9.1)
-	LocalPath string
-
 	// IngressVerifiedAt 은 Ingress 검증을 통과한 시각이다.
 	// Unix epoch 초, UTC 기준이다. (설계안 7)
+	//
+	// Retention Cleanup 의 기준 컬럼이기도 하다. revision 이 증가하면
+	// 갱신되므로, 오래전에 처음 발견된 파일이 최근 다시 갱신된 경우에도
+	// 최신 검증 시각이 보존된다. (SCAN DESIGN 5절 Retention Cleanup)
 	IngressVerifiedAt int64
 }
 
@@ -94,12 +106,6 @@ func (in CommonInput) Validate() error {
 			in.Origin,
 		)
 
-	case in.LocalPath == "":
-		return fmt.Errorf(
-			"%w: local_path is empty",
-			ErrInvalidInput,
-		)
-
 	case in.Size <= 0:
 		// common_ledger 에 존재한다는 것 자체가 Ingress 검증 통과를 뜻한다.
 		// 따라서 0바이트 파일은 이 계층까지 들어오면 안 된다.
@@ -142,6 +148,11 @@ func (in CommonInput) Validate() error {
 }
 
 // Result 는 UpsertCommon 이 common_ledger 에 실제로 수행한 작업을 나타낸다.
+//
+// 이 값은 관측 수단이지 후보 선정 수단이 아니다.
+// 무엇을 전송할지는 put_ledger 와의 revision 매칭이 결정하며,
+// Result 는 Scan 요약 로그의 new= / changed= 집계에 쓴다.
+// (CONCEPT 4.5)
 type Result int
 
 const (
@@ -216,13 +227,40 @@ func (r Result) String() string {
 //
 // 주의: category 는 갱신 대상이다.
 // config 오기입으로 같은 파일이 다른 Category 섹션에 걸리면 값이 덮어써진다.
-// 정상 경로에서는 verify 의 MatchesName 이 앞단에서 걸러내지만,
-// RINEX2 는 현재 판정을 유보하므로 이 경로가 열려 있다. (CONCEPT 4.7)
+// RINEX3 는 verify 의 MatchesName 이 파일명의 _R_ 와 _01D_/_01H_ 로 앞단에서
+// 걸러내지만, RINEX2 는 아직 CategoryMatchUnknown 을 돌려주고 통과시키므로
+// 이 경로가 열려 있다. (CONCEPT 4.7, 6절 항목 6)
+//
+// 판정 규칙 자체는 SCAN DESIGN 12절에서 확정되었다.
+//
+//	RINEX2  SSSSDDDh.YYt 형태. h='0' 이면 Daily, 'a'~'x' 면 Hourly
+//
+// MatchesName 이 이 규칙을 구현하면 CONCEPT 6절 항목 6 과 이 주석을 함께 닫는다.
+//
+// v5 변경: local_path 컬럼이 삭제되어 INSERT·UPDATE 양쪽에서 사라졌다.
+// 파라미터는 총 10개이다.
+// VALUES 절의 바인딩 9개 + DO UPDATE 의 state 1개이다.
+//
+// WHERE 조건은 size 와 mtime 을 OR 로 본다.
+// size 가 같고 mtime 만 달라도 revision 을 올린다.
+// AND 로 두면 크기가 우연히 같은 보정 파일을 놓칠 수 있다.
+//
+// 그 방향의 실수(내용이 바뀌었는데 안 보냄)가
+// 반대 방향의 실수(불필요한 재전송)보다 위험하다.
+// 누락은 조용히 사라질 수 있지만 헛전송은 Ledger/Log 에 남는다.
+//
+// 대가로 볼륨 이전이나 대량 복사 등으로 mtime 이 일괄 변경되면
+// Scan 범위 안의 파일이 변경 파일로 판정되어 재전송될 수 있다.
+// (CONCEPT 4.9)
+//
+// WHERE 절을 없애면 Unchanged 도 RETURNING 을 돌려주게 되어 편해 보이지만,
+// 값이 같아도 페이지가 갱신되어 WAL 이 커진다. 한 번의 Scan 이 수만 건을
+// 훑고 그 대부분이 Unchanged 이므로 이 조건은 유지한다.
 //
 // RETURNING revision 으로 INSERT / UPDATE 를 구분한다.
 // WHERE 가 false 여서 아무 행도 변경되지 않으면 QueryRow.Scan 은
-// sql.ErrNoRows 를 반환한다. 이 동작은 실제 SQLite 로 검증했으며
-// common_test.go 가 회귀를 막는다.
+// sql.ErrNoRows 를 반환한다.
+// 이 동작은 실제 SQLite 로 검증했으며 common_test.go 가 회귀를 막는다.
 const upsertCommonSQL = `
 INSERT INTO common_ledger (
     file_name,
@@ -233,10 +271,9 @@ INSERT INTO common_ledger (
     origin,
     revision,
     state,
-    local_path,
     first_seen,
     ingress_verified_at
-) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
 ON CONFLICT (file_name) DO UPDATE SET
     base_name           = excluded.base_name,
     category            = excluded.category,
@@ -244,7 +281,6 @@ ON CONFLICT (file_name) DO UPDATE SET
     mtime               = excluded.mtime,
     revision            = common_ledger.revision + 1,
     state               = ?,
-    local_path          = excluded.local_path,
     ingress_verified_at = excluded.ingress_verified_at
 WHERE common_ledger.size  <> excluded.size
    OR common_ledger.mtime <> excluded.mtime
@@ -257,6 +293,24 @@ RETURNING revision;
 // Ingress Verification 을 통과했다는 의미이다.
 // 미통과 파일은 이 함수를 호출하지 않고 다음 Scan 에서 다시 판정한다.
 // (CONCEPT 4.4)
+//
+// revision 을 반환하지 않는 이유:
+//
+//	Unchanged 는 갱신된 행이 없어 RETURNING 이 비므로 revision 을 알 수 없고,
+//	정상 운영에서는 그것이 대부분이다. 그러나 호출자는 어차피 디렉터리
+//	단위로 put_ledger 상태를 일괄 조회하며, 그 조회는 이 Upsert 들이 모두
+//	끝난 뒤에 돌므로 common_ledger.revision 이 이미 최신이다.
+//
+//	  SELECT c.file_name, c.revision, p.status
+//	    FROM common_ledger c
+//	    LEFT JOIN put_ledger p
+//	      ON  p.file_name = c.file_name
+//	      AND p.revision  = c.revision
+//	   WHERE c.file_name IN (?, ?, ...);
+//
+//	즉 revision 의 주인은 이 조회이고, 여기서 중복해서 돌려주지 않는다.
+//	시그니처에 revision 을 추가하면 같은 사실에 주인이 둘이 된다.
+//	(SCAN DESIGN 6절 v5 후보 선정)
 func (db *DB) UpsertCommon(
 	ctx context.Context,
 	in CommonInput,
@@ -282,7 +336,6 @@ func (db *DB) UpsertCommon(
 		in.MTime,
 		string(in.Origin),
 		string(domain.StateReady),
-		in.LocalPath,
 		firstSeen,
 		in.IngressVerifiedAt,
 		string(domain.StateChanged),
