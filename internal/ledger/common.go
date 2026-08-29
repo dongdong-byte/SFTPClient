@@ -201,20 +201,25 @@ func (r Result) String() string {
 //	  → revision=1
 //	  → state=READY
 //
-//	같은 file_name + 같은 size·mtime
+//	같은 (category, file_name) + 같은 size·mtime
 //	  → ON CONFLICT 의 WHERE 가 false
 //	  → 아무 행도 변경하지 않음
 //	  → RETURNING 결과 없음
 //
-//	같은 file_name + 다른 size 또는 mtime
+//	같은 (category, file_name) + 다른 size 또는 mtime
 //	  → UPDATE
 //	  → revision + 1
 //	  → state=CHANGED
 //
 // UPDATE 하지 않는 값:
 //
-//	file_name
-//	  논리적 식별자이자 충돌 키이므로 변경하지 않는다.
+//	file_name / category
+//	  논리 식별자(복합키)이므로 변경하지 않는다.
+//	  (2026-08-30) 단독 file_name PK 시절에는 category 를 UPDATE 대상에
+//	  넣어 config 오기입 시 덮어쓸 수 있었고, RINEX3/RINEX4 동일
+//	  file_name 이 서로를 "변경됨"으로 만드는 재전송 루프가 열렸다.
+//	  복합키 ON CONFLICT (category, file_name) 로 그 경로를 닫았다.
+//	  category 는 키의 일부이므로 DO UPDATE SET 에 두지 않는다.
 //
 //	first_seen
 //	  최초 발견 시각이다. revision 이 증가해도 유지한다.
@@ -224,18 +229,6 @@ func (r Result) String() string {
 //	  DOWNLOAD 로 생성된 파일이 이후 Local Scanner 에서 재관측되더라도
 //	  LOCAL 로 덮어쓰지 않는다.
 //	  그래야 PUT 후보 기본 제외 규칙과 Ping-Pong 방지가 유지된다.
-//
-// 주의: category 는 갱신 대상이다.
-// config 오기입으로 같은 파일이 다른 Category 섹션에 걸리면 값이 덮어써진다.
-// RINEX3 는 verify 의 MatchesName 이 파일명의 _R_ 와 _01D_/_01H_ 로 앞단에서
-// 걸러내지만, RINEX2 는 아직 CategoryMatchUnknown 을 돌려주고 통과시키므로
-// 이 경로가 열려 있다. (CONCEPT 4.7, 6절 항목 6)
-//
-// 판정 규칙 자체는 SCAN DESIGN 12절에서 확정되었다.
-//
-//	RINEX2  SSSSDDDh.YYt 형태. h='0' 이면 Daily, 'a'~'x' 면 Hourly
-//
-// MatchesName 이 이 규칙을 구현하면 CONCEPT 6절 항목 6 과 이 주석을 함께 닫는다.
 //
 // v5 변경: local_path 컬럼이 삭제되어 INSERT·UPDATE 양쪽에서 사라졌다.
 // 파라미터는 총 10개이다.
@@ -274,9 +267,8 @@ INSERT INTO common_ledger (
     first_seen,
     ingress_verified_at
 ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-ON CONFLICT (file_name) DO UPDATE SET
+ON CONFLICT (category, file_name) DO UPDATE SET
     base_name           = excluded.base_name,
-    category            = excluded.category,
     size                = excluded.size,
     mtime               = excluded.mtime,
     revision            = common_ledger.revision + 1,
@@ -304,9 +296,11 @@ RETURNING revision;
 //	  SELECT c.file_name, c.revision, p.status
 //	    FROM common_ledger c
 //	    LEFT JOIN put_ledger p
-//	      ON  p.file_name = c.file_name
+//	      ON  p.category  = c.category
+//	      AND p.file_name = c.file_name
 //	      AND p.revision  = c.revision
-//	   WHERE c.file_name IN (?, ?, ...);
+//	   WHERE c.category = ?
+//	     AND c.file_name IN (?, ?, ...);
 //
 //	즉 revision 의 주인은 이 조회이고, 여기서 중복해서 돌려주지 않는다.
 //	시그니처에 revision 을 추가하면 같은 사실에 주인이 둘이 된다.
@@ -343,7 +337,7 @@ func (db *DB) UpsertCommon(
 
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		// 동일 file_name 이 이미 존재하고 size·mtime 도 같아
+		// 동일 (category, file_name) 이 이미 존재하고 size·mtime 도 같아
 		// DO UPDATE WHERE 조건이 false 였다.
 		return ResultUnchanged, nil
 

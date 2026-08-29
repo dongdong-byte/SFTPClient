@@ -39,6 +39,8 @@ const (
 	// 배포 DB 구조 세대를 1 → 2 로 올렸다.
 	// schema v6 에서 category CHECK 에 RINEX4 를 추가하면서
 	// 배포 DB 구조 세대를 2 → 3 으로 올렸다.
+	// schema v7 에서 식별자를 (category, file_name) 복합키로
+	// 바꾸면서 배포 DB 구조 세대를 3 → 4 로 올렸다.
 	//
 	// domain 이 아니라 ledger 에 두는 이유는 이 값이
 	// 파일 식별 규칙이 아니라 DB 스키마의 성질이기 때문이다.
@@ -46,14 +48,14 @@ const (
 	//
 	// ★ 이 값은 schema.sql 에도 같은 리터럴로 들어 있다.
 	//
-	//	INSERT OR IGNORE INTO schema_meta ... ('schema_version', '3', ...)
+	//	INSERT OR IGNORE INTO schema_meta ... ('schema_version', '4', ...)
 	//
 	// 한쪽만 올리면 새로 만든 DB 가 곧바로 열리지 않는다.
 	// 스크립트가 넣은 값과 실행파일이 기대하는 값이 달라
 	// verifySchemaVersion 이 첫 Open 에서 실패하기 때문이다.
 	// 반드시 두 곳을 함께 올린다.
 	// db_test.go 의 TestSchemaVersionMatchesSchemaSQL 이 이를 고정한다.
-	schemaVersion = "3"
+	schemaVersion = "4"
 )
 
 var (

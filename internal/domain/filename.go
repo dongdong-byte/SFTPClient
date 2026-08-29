@@ -11,6 +11,10 @@ import "strings"
 // NormalizeName 의 규칙을 변경하면 기존 Ledger 의 file_name 의미가 달라질 수 있으므로
 // 반드시 IdentityRule 도 함께 변경한다.
 //
+// identity_rule 은 NormalizeName 의 정규화 의미를 지키는 값이다.
+// 키 구조 변경(단독 → 복합키)은 schema_version 의 관할이며
+// 이 값과 무관하다. (2026-08-30, 복합키 전환 시 결정)
+//
 // 식별자 규칙 변경은 누적 Ledger 전체에 영향을 줄 수 있어
 // 프로젝트에서 변경 비용이 가장 큰 항목이다. (CONCEPT 4.1, 7)
 const IdentityRule = "FILENAME_V1"

@@ -71,6 +71,11 @@
 --        schema_meta.schema_version 을 '2' → '3' 으로 올린다
 --        (CREATE TABLE IF NOT EXISTS 는 기존 CHECK 를 바꾸지 않으므로
 --         개발 DB 는 삭제 후 재생성한다)
+--    v7  2026-08-30  식별자를 (category, file_name) 복합키로 변경.
+--        RINEX3/RINEX4 는 동일 long filename 을 가질 수 있어
+--        file_name 단독 PK 에서는 서로 revision 을 올리고 category 를
+--        덮어쓰는 영구 재전송 루프가 된다. put_ledger 도
+--        (category, file_name, revision) 으로 맞추고 schema_version 3 → 4.
 --
 --  적용 범위
 --    [현재] common_ledger, put_ledger, schema_meta
@@ -87,19 +92,24 @@
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS common_ledger (
 
-    file_name   TEXT    NOT NULL PRIMARY KEY
+    file_name   TEXT    NOT NULL
                         CHECK (file_name = lower(file_name)),
-        -- 정규화된 파일명. 경로를 포함하지 않는 논리적 식별자이다.
-        -- DOWNLOAD LocalPath 와 PUT LocalPath 가 달라도 동일 파일은
-        -- 동일 값을 가지며, 이 성질이 BOTH 모드의 재전송 방지를 성립시킨다.
+        -- 정규화된 파일명. 경로를 포함하지 않는다.
+        -- 단독 식별자가 아니라 category 와 함께 PRIMARY KEY 를 구성한다.
+        -- (2026-08-30 복합키 전환)
+        --
+        -- DOWNLOAD LocalPath 와 PUT LocalPath 가 달라도 동일 파일명은
+        -- 동일 file_name 값을 가지며, 같은 Category 안에서는 그 성질이
+        -- BOTH 모드의 재전송 방지를 성립시킨다.
         --
         -- CHECK 는 소문자 정규화를 DB 차원에서 강제한다. 규칙을 지키지 않은
         -- 코드 경로가 하나라도 있으면 같은 파일이 두 행으로 등록되어
         -- 중복 전송이 발생하므로, 코드 규율에만 맡기지 않는다.
         --
-        -- v5 부터 이 컬럼은 Scan 이 디렉터리 단위로 던지는
-        --   WHERE file_name IN (?, ?, ...)
-        -- 조회의 대상이기도 하다. PK 인덱스를 그대로 타므로 별도 인덱스가 없다.
+        -- Scan 이 디렉터리 단위로 던지는
+        --   WHERE category = ? AND file_name IN (?, ?, ...)
+        -- 조회의 대상이다. 복합 PK 인덱스를 그대로 타므로
+        -- file_name 단독 인덱스는 두지 않는다.
 
     base_name   TEXT    NOT NULL,
         -- 압축 확장자(.gz, .Z, .zip) 를 제거한 이름.
@@ -115,8 +125,16 @@ CREATE TABLE IF NOT EXISTS common_ledger (
             CHECK (category IN ('RINEX2_DAILY',  'RINEX2_HOURLY',
                                 'RINEX3_DAILY',  'RINEX3_HOURLY',
                                 'RINEX4_DAILY',  'RINEX4_HOURLY')),
-        -- 식별자에 포함되지 않는 일반 컬럼이다. 값은 Scanner 가 판정하지 않고
-        -- config.ini 의 [PUT.<CATEGORY>] 섹션에서 그대로 전달받는다.
+        -- file_name 과 함께 논리 식별자(PRIMARY KEY)를 구성한다.
+        -- (2026-08-30 복합키 전환)
+        --
+        -- 값은 Scanner 가 판정하지 않고 config.ini 의 [PUT.<CATEGORY>]
+        -- 섹션에서 그대로 전달받는다.
+        --
+        -- RINEX3 과 RINEX4 는 파일명 규칙이 같아 같은 file_name 이
+        -- 두 Category 에 동시에 존재할 수 있다. category 를 키에 넣지
+        -- 않으면 두 파일이 서로를 "변경됨"으로 만들어 revision 이
+        -- 끝없이 오르는 재전송 루프가 된다.
         --
         -- 한 디렉터리에 두 버전이 섞이는 상황은 상정하지 않는다.
         -- 현장에서 RINEX2 디렉터리에 RINEX3 파일이 관측된 사례가 있으나
@@ -124,8 +142,8 @@ CREATE TABLE IF NOT EXISTS common_ledger (
         --
         -- 그럼에도 verify 단계에서 config 가 지정한 category 와
         -- 파일명이 함의하는 버전·주기를 대조하여 불일치 시 Ingress 를 거부한다.
-        --   RINEX3  _R_ 포함, _01D_ / _01H_ 필드
-        --   RINEX2  SSSSDDDh.YYt 형태. h='0' 이면 Daily, 'a'~'x' 면 Hourly
+        --   RINEX3/4  긴 파일명의 _01D_ / _01H_ 필드
+        --   RINEX2    SSSSDDDh.YYt 형태. h='0' 이면 Daily, 'a'~'x' 면 Hourly
         -- 혼입을 상정하지 않되 감지는 한다. 비용은 문자열 비교 하나이며,
         -- 원인 불명의 혼입이 실제로 관측된 이상 조용히 지나가게 두지 않는다.
         --
@@ -228,7 +246,7 @@ CREATE TABLE IF NOT EXISTS common_ledger (
         -- 이 파일을 처음 발견한 시각 (Unix epoch 초, UTC).
         -- revision 이 올라가도 갱신하지 않는다. 최초 입고 시점을 보존한다.
 
-    ingress_verified_at INTEGER NOT NULL
+    ingress_verified_at INTEGER NOT NULL,
         -- Ingress Verification 을 통과한 시각 (Unix epoch 초, UTC). (7)
         -- 위 state 주석대로 미통과 파일은 행이 생기지 않으므로 NULL 이 없다.
         -- revision 이 올라가면 재검증 시각으로 갱신한다.
@@ -238,6 +256,10 @@ CREATE TABLE IF NOT EXISTS common_ledger (
         --   transfer — 목적지에 제대로 도착했는가   (설계안 8.1)
         -- 양쪽을 같은 이름으로 두면 조인 조회에서 어느 쪽 시각인지 알 수 없어
         -- 접두어로 구분한다.
+
+    PRIMARY KEY (category, file_name)
+        -- RINEX3/RINEX4 동일 file_name 공존을 허용하면서
+        -- Category 간 교차 revision 루프를 막는다. (2026-08-30)
 );
 
 -- -----------------------------------------------------------------------------
@@ -294,8 +316,11 @@ CREATE TABLE IF NOT EXISTS common_ledger (
 --   RINEXClient.exe db status   (9.2)
 --
 -- v4 에서는 이 인덱스가 후보 선정의 주 경로였으나, v5 의 후보 선정은
--- file_name PK 를 타므로 더 이상 그렇지 않다. 그럼에도 유지하는 이유는
+-- PK 를 타므로 더 이상 그렇지 않다. 그럼에도 유지하는 이유는
 -- category 별 집계와 origin 필터(Ping-Pong 방지 확인)에 계속 쓰이기 때문이다.
+--
+-- v7(복합키) 이후 PK 가 (category, file_name) 이라 category 접두가 겹치지만,
+-- origin·state 필터용으로 존치한다. PK 만으로는 origin 등가 비교를 좁히지 못한다.
 --
 -- 컬럼 순서 주의: category 와 origin 은 등가 비교이므로 앞에 두고,
 -- 선택도가 낮은 state 를 뒤에 둔다. state 를 중간에 두면 그 뒤 컬럼이
@@ -316,13 +341,21 @@ CREATE INDEX IF NOT EXISTS idx_common_base_name
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS put_ledger (
 
+    category    TEXT    NOT NULL
+            CHECK (category IN ('RINEX2_DAILY',  'RINEX2_HOURLY',
+                                'RINEX3_DAILY',  'RINEX3_HOURLY',
+                                'RINEX4_DAILY',  'RINEX4_HOURLY')),
+        -- common_ledger.category 와 동일한 값 집합이다.
+        -- (category, file_name) 복합 FK 의 일부이므로 생략할 수 없다.
+        -- (2026-08-30 복합키 전환)
+
     file_name   TEXT    NOT NULL,
         -- common_ledger.file_name 을 참조한다.
         -- 부모가 소문자로 강제되므로 여기에는 별도 CHECK 를 두지 않는다.
 
     revision    INTEGER NOT NULL CHECK (revision >= 1),
         -- 전송을 시도한 시점의 common_ledger.revision 값이다.
-        -- (file_name, revision) 을 키로 두어 이력을 누적하므로
+        -- (category, file_name, revision) 을 키로 두어 이력을 누적하므로
         -- 파일이 갱신되어 재전송되어도 과거 기록이 덮어써지지 않는다. (9.1)
 
     status      TEXT    NOT NULL
@@ -398,10 +431,10 @@ CREATE TABLE IF NOT EXISTS put_ledger (
         -- 최근 실패 원인. 성공 시 NULL.
         -- 성공은 집계 중심으로 기록하고 실패는 상세 원인을 남긴다. (14)
 
-    PRIMARY KEY (file_name, revision),
+    PRIMARY KEY (category, file_name, revision),
 
-    FOREIGN KEY (file_name)
-        REFERENCES common_ledger (file_name)
+    FOREIGN KEY (category, file_name)
+        REFERENCES common_ledger (category, file_name)
         ON DELETE CASCADE
         -- Ledger 보존기간 경과로 common_ledger 행을 정리하면
         -- 대응하는 전송 이력도 함께 정리된다. (14)
@@ -415,10 +448,11 @@ CREATE TABLE IF NOT EXISTS put_ledger (
         --   config 검증에서 LedgerRetentionDays > ScanDays 를 강제한다.
         --   또한 이 값이 Recovery Scan 의 실질 상한이 된다.
         --
-        -- 한계: FK 는 file_name 만 참조하므로 revision 정합성은 강제되지 않는다.
-        -- 부모가 revision=1 인데 자식에 revision=99 를 넣어도 DB 는 막지 못한다.
-        -- 후보 선정 쿼리가 common 에서 읽은 revision 을 그대로 쓰는 한
-        -- 발생하지 않지만, 값을 직접 구성하는 코드 경로를 만들지 않는다.
+        -- 한계: FK 는 (category, file_name) 만 참조하므로 revision 정합성은
+        -- 강제되지 않는다. 부모가 revision=1 인데 자식에 revision=99 를
+        -- 넣어도 DB 는 막지 못한다. 후보 선정 쿼리가 common 에서 읽은
+        -- revision 을 그대로 쓰는 한 발생하지 않지만,
+        -- 값을 직접 구성하는 코드 경로를 만들지 않는다.
 );
 
 -- 실패 항목 조회와 Retry 대상 선정에 사용한다.
@@ -469,6 +503,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 -- schema_version 은 파일명의 v 번호와 별개로 증가시켜 온 값이다.
 --   v4 파일 '1' → v5 '2' (local_path 삭제) → v6 '3' (category CHECK 확장)
+--   → v7 '4' (식별자 복합키 전환)
 --   ※ 두 계열이 헷갈릴 소지가 있다. 파일명과 일치시키려면 설계 개정 번호와
 --     같게 두어야 하나, 그러면 기존 DB 와 건너뛰는 구간이 생긴다.
 --     현 단계에서는 증분을 택했다. 다르게 가려면 여기만 고치면 된다.
@@ -492,7 +527,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 -- 스크립트가 조용히 버전만 올려놓고 데이터는 v4 구조로 두는 사고를 막는다.
 -- 버전 갱신은 아래 마이그레이션 절차의 UPDATE 로만 수행한다.
 INSERT OR IGNORE INTO schema_meta (key, value, updated_at) VALUES
-    ('schema_version', '3',           strftime('%s', 'now')),
+    ('schema_version', '4',           strftime('%s', 'now')),
     ('identity_rule',  'FILENAME_V1', strftime('%s', 'now')),
     ('mvp_stage',      'MVP1_PUT',    strftime('%s', 'now'));
 
