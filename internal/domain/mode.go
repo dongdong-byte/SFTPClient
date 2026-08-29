@@ -57,6 +57,28 @@ func ParseMode(s string) (Mode, error) {
 	return "", fmt.Errorf("unknown mode %q", s)
 }
 
+// Origin·State·Status 의 Valid 는 완전 일치를 요구하지만
+// Mode 는 ParseMode 와 같은 기준이라 공백·대소문자를 허용한다.
+// Mode 는 config 입력값이고 나머지는 DB 에서 읽는 값이기 때문이다.
+
+// Valid 는 정의된 Mode 값인지 답한다.
+//
+// 이미 Mode 타입인 값의 유효성만 확인할 때 사용한다.
+// 문자열에서 변환하는 경우에는 ParseMode 를 쓴다.
+//
+// 이 검사가 필요한 이유는 DoesPut 과 DoesDownload 가
+// 알 수 없는 값에 대해 오류가 아니라 false 를 돌려주기 때문이다.
+// Mode 가 빈 값이면 두 판정이 모두 false 가 되어
+// 프로그램이 오류 없이 시작한 뒤 아무 방향도 수행하지 않는다.
+func (m Mode) Valid() bool {
+	switch m {
+	case ModePut, ModeDownload, ModeBoth:
+		return true
+	default:
+		return false
+	}
+}
+
 // String 은 Mode 의 표기를 반환한다.
 func (m Mode) String() string {
 	return string(m)

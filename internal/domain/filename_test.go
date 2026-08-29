@@ -94,13 +94,14 @@ func TestNormalizeNameIsPathIndependent(t *testing.T) {
 // .part 만 있고 본체가 없는 파일은 정규화하면 빈 문자열이 된다.
 // 빈 file_name 은 PK 로 유효하지 않으며 DDL 의
 // CHECK (file_name = lower(file_name)) 도 걸러내지 못한다.
-// Scanner 가 IsPartFile 로 먼저 제외하는 것이 유일한 방어선이다.
+// scan 은 .part 를 거르지 않으므로, verify 가 Ingress 에서
+// IsPartFile 로 제외하는 것이 이 경로의 방어선이다.
 func TestNormalizeNameOnPartOnlyName(t *testing.T) {
 	const in = ".part"
 
 	if !IsPartFile(in) {
 		t.Fatalf(
-			"IsPartFile(%q) = false, 이 경로가 뚫리면 빈 file_name 이 등록된다",
+			"IsPartFile(%q) = false, verify 가 이 경로를 놓치면 빈 file_name 이 등록된다",
 			in,
 		)
 	}

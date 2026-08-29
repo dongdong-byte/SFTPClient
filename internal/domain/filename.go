@@ -48,7 +48,8 @@ var compressExts = []string{".gz", ".z", ".zip"}
 // 이 성질은 BOTH 모드에서 동일 파일을 식별하는 기반이 된다.
 //
 // 주의: 이 함수는 .part 를 제거하므로 작성 중인 파일도 최종 파일명으로 보인다.
-// Scanner 는 IsPartFile 로 먼저 걸러낸 뒤 이 함수를 호출한다.
+// scan 은 .part 를 거르지 않는다. 호출 전 IsPartFile 로 제외하는 것은
+// verify(Ingress) 의 책임이다.
 func NormalizeName(pathOrName string) string {
 	name := trimDir(pathOrName)
 	name = strings.ToLower(name)
@@ -110,13 +111,15 @@ func BaseName(pathOrName string) string {
 
 // IsPartFile 은 파일명이 .part 임시 접미사로 끝나는지 답한다.
 //
-// Scanner 는 .part 파일을 후보 목록에서 제외해야 한다.
-// .part 파일을 먼저 제외하지 않고 NormalizeName 하면 임시 접미사가 제거되어
+// scan 은 관측 사실만 올리고 .part 를 거르지 않는다.
+// 후보에서 제외하는 것은 verify(Ingress) 의 책임이다.
+//
+// .part 를 먼저 제외하지 않고 NormalizeName 하면 임시 접미사가 제거되어
 // 작성 중인 파일이 최종 파일명처럼 보일 수 있다.
 //
-// 대부분의 경우 Ingress Verification 의 Grace Time 이 작성 중 파일을 막지만,
-// .part 자체를 Scanner 단계에서 제외하여 불필요한 후보가 다음 단계로
-// 전달되지 않도록 한다. (설계안 7)
+// 대부분의 경우 Grace Time 이 작성 중 파일을 막지만,
+// .part 자체를 Ingress 단계에서 제외하여 불필요한 후보가
+// Ledger 로 전달되지 않도록 한다. (설계안 7, PROJECT_GUIDELINES)
 func IsPartFile(pathOrName string) bool {
 	name := trimDir(pathOrName)
 

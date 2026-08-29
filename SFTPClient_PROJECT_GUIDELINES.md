@@ -14,6 +14,13 @@
 | 2026-08-25 | 9.3 Hourly Scan 근거 정정. 산술 오류(×4 → ×2) 수정 및 근거를 원격 왕복 비용으로 교체 |
 | 2026-08-25 | Deep Scan 주기 관리 방식 확정. `scan_state` 테이블 대신 `DeepScanHour` (9.8 신설) |
 | 2026-08-25 | 7절 테스트 항목에서 미구현 파서(`rinexname.go`) 요구 제거 |
+| **2026-08-28** | **스키마 v5.** `local_path` 삭제, 후보 선정을 DB 주도 → Scan 주도로 변경 (4절 Ledger 스키마 취급) |
+| 2026-08-28 | **9.3 전면 정정.** Hourly 는 `(HH)` 를 **계산한다.** 나열 방식은 기각 |
+| 2026-08-28 | 9.7 확장자 항목 정정. 실제 유입은 `.gz` / `.Z` / `.zip` 압축본이며 DOY 폴더에 비압축은 오지 않는다 |
+| 2026-08-28 | 9.9 신설 — Scan 범위 3갈래(Hot / Deep / Recovery)와 `--dry-run` / `seed` |
+| 2026-08-28 | 4절 미결 구조 항목 해소 — `internal/scan` 분리, `config` 완료 |
+| 2026-08-28 | 패키지명 표기 `pathpl` → `pathpl` 통일. 코드가 원본이다 |
+| 2026-08-29 | `DirLister.List` 시그니처에 `context.Context` 반영 (구현과 정합) |
 
 ### 관련 문서
 
@@ -23,6 +30,8 @@
 | 본 문서 | 개발 지침 |
 | `internal/ledger/schema.sql` | Ledger 물리 스키마 **원본** |
 | `docs/SFTPClient_LEDGER_CONCEPT.md` | Ledger 개념·논리 모델과 결정 근거 |
+| `docs/SFTPClient_SCAN_DESIGN_DECISIONS.md` | Scan 범위·복구 전략의 결정 경위와 **기각 목록** |
+| `config.example.ini` | 설정 템플릿. 커밋 대상. `config.ini` 는 `.gitignore` |
 
 **용어 대응 — 설계안의 `file_id` ↔ 구현의 `file_name`.**
 설계안 9.1은 식별자를 `SHA-256( Domain │ Category │ NormalizedName )` 해시로 정의하고 `file_id`라 명명했으나,
@@ -87,12 +96,22 @@ SFTPClient/
 │
 ├─ internal/                    외부 모듈에서 import 불가. Go가 언어 차원에서 강제한다.
 │   │
-│   ├─ config/       [진행]    config.ini 파싱 및 시작 시 유효성 검사.
-│   │                           Mode, MaxWorkers, Path Template 원문, 인증 경로를 구조체로 변환.
-│   │                           RepostDownloaded와 경로 겹침 같은 위험 조합을 시작 시 거부. (설계안 10, 10.1)
+│   ├─ config/         [완료]   config.ini 파싱 및 시작 시 유효성 검사.
+│   │                           ini.go      — INI 문법 전담. domain·pathpl 을 import 하지 않는다
+│   │                           config.go   — 타입 정의. 경로는 *pathpl.Template 으로 보유
+│   │                           load.go     — 키 매핑. "이 값을 읽을 수 있는가"
+│   │                           validate.go — 값 검증. "이 조합으로 돌려도 되는가"
+│   │                           Validate 는 파일시스템을 건드리지 않고, 파일 실재는
+│   │                           CheckEnvironment 가 본다. 고치는 방법이 다르기 때문이다.
+│   │                           전자는 config.ini 를, 후자는 서버 상태를 고쳐야 한다.
+│   │                           경로는 문자열이 아니라 파싱된 템플릿으로 들고 있는다.
+│   │                           그래야 문법 오류가 스캔 도중이 아니라 시작 시점에 드러난다.
 │   │                           SFTP 접속 정보는 [PUT.SFTP] 처럼 방향 아래에 둔다.
 │   │                           BOTH 에서 수신 서버와 송신 서버가 다르기 때문이다.
 │   │                           Daily 경로에 (HH) 가 있거나 Hourly 경로에 없으면 실행을 중단한다.
+│   │                           알 수 없는 섹션·키도 거부한다. 오타가 무시되면
+│   │                           그 설정이 기본값으로 도는 것과 구분되지 않는다.
+│   │                           오류는 첫 건에서 멈추지 않고 줄 번호와 함께 모아서 낸다.
 │   │                           관측소 필터는 두지 않는다. 전체 관측소가 대상이다.
 │   │
 │   ├─ domain/         [완료]   프로젝트의 핵심 개념 정의. 내부 패키지를 하나도 import하지 않는다.
@@ -106,15 +125,25 @@ SFTPClient/
 │   │                           상태 문자열은 전부 여기 상수로 선언하고 리터럴을 직접 쓰지 않는다.
 │   │                           File 구조체는 두지 않는다. ledger.CommonInput과 역할이 겹친다.
 │   │
-│   ├─ pathtpl/        [완료]   (YYYY)(YY)(DOY)(MM)(DD)(HH) 토큰을 실제 경로로 확장. (설계안 10)
+│   ├─ pathpl/        [완료]   (YYYY)(YY)(DOY)(MM)(DD)(HH) 토큰을 실제 경로로 확장. (설계안 10)
 │   │                           입출력만 있는 순수 함수. PUT과 DOWNLOAD가 공유한다.
 │   │                           (SITE)는 두지 않는다. 실제 기관 경로가 관측소별 디렉터리를
 │   │                           두지 않으며, 관측소 조회는 file_name 접두어로 SQL에서 한다.
 │   │                           시각은 Expand 내부에서 UTC로 강제한다.
 │   │                           알 수 없는 토큰과 짝 없는 괄호는 Parse 단계에서 거부한다.
 │   │
+│   ├─ scan/           [다음]   디렉터리를 나열하여 어떤 파일이 어디에 있는지 사실만 수집.
+│   │                           판정하지 않는다. 0바이트도 .part 도 거르지 않고 그대로 올린다.
+│   │                           DirLister 인터페이스를 consumer-side 로 선언하여
+│   │                           로컬과 원격 SFTP 를 같은 로직으로 다룬다.
+│   │                           주된 근거는 테스트다. fake 하나로 스캔 전체를 검증한다.
+│   │                           Hot / Deep / Recovery 는 날짜 범위만 다른 같은 코드다.
+│   │                           디렉터리 단위로 콜백에 넘긴다. 수만 건을 슬라이스에 담지 않는다.
+│   │                           순차 실행한다. 병렬화 대상이 아니다.
+│   │                           fs.ErrNotExist 는 오류가 아니라 건너뛰기다.
+│   │
 │   ├─ verify/                  판정 로직 전담. 전송도 기록도 하지 않고 "정상인가"만 답한다.
-│   │                           Ingress  — size>0, mtime grace, 작성 중 파일 제외 (설계안 7)
+│   │                           Ingress  — size>0, IsPartFile(.part 제외), mtime grace (설계안 7)
 │   │                           Transfer — 원본/목적지 Size 대조, 최종 파일 존재 확인 (설계안 8)
 │   │
 │   ├─ transport/               파일을 실제로 옮기는 계층. 설계안 4절의 SFTP Core.
@@ -139,8 +168,12 @@ SFTPClient/
 │   │                           schema.sql — 물리 스키마 원본. go:embed로 실행파일에 포함하고
 │   │                                        시작 시 실행한다. 스키마는 이 파일이 유일한 원본이며
 │   │                                        Go 코드에 CREATE TABLE 문자열을 중복해 두지 않는다.
-│   │                           db.go      — Open/PRAGMA/schema 적용/identity_rule 대조   [완료]
+│   │                           db.go      — Open/PRAGMA/schema 적용                      [완료]
+│   │                                        identity_rule + schema_version 대조
 │   │                           common.go  — CommonInput, UpsertCommon (3분기 UPSERT)     [완료]
+│   │                                        v5 에서 local_path 제거. 경로를 보유하지 않는다
+│   │                           lookup.go  — file_name IN (...) 일괄 조회                  [예정]
+│   │                                        후보를 만들지 않고 현재 상태만 돌려준다
 │   │                           put.go     — put_ledger 접근                              [예정]
 │   │                           판정은 하지 않되 revision·state 갱신은 여기서 한다. (CONCEPT 2.1)
 │   │                           SetMaxOpenConns(1)이 쓰기를 직렬화하므로 MaxWorkers>1 에서도
@@ -179,7 +212,7 @@ SFTPClient/
 - `put`과 `download`는 필요한 인터페이스를 consumer-side에서 선언한다.
 - PUT에만 필요한 로직은 `put`에 둔다.
 - DOWNLOAD에만 필요한 로직은 `download`에 둔다.
-- 양쪽에서 사용하는 기능은 `domain`, `pathtpl`, `verify`, `transport`, `ledger`, `config`, `logging` 등 공통 패키지로 분리한다.
+- 양쪽에서 사용하는 기능은 `domain`, `pathpl`, `verify`, `transport`, `ledger`, `config`, `logging` 등 공통 패키지로 분리한다.
 - 동일 기능을 PUT과 DOWNLOAD 양쪽에 복사하여 중복 구현하지 않는다.
 - `utils`, `helper`, `common`처럼 책임이 불명확한 범용 패키지를 만들지 않는다.
 - `internal/sftp`라는 패키지명은 사용하지 않는다. `github.com/pkg/sftp`와 이름 충돌을 피하기 위해 `transport`를 사용한다.
@@ -202,6 +235,31 @@ PRAGMA synchronous  = NORMAL;
 PRAGMA busy_timeout = 5000;
 ```
 
+- **스키마 세대(`schema_meta.schema_version`)를 시작 시 검증한다.**
+  다르면 방향과 무관하게 즉시 중단한다.
+  DB 가 낮으면 마이그레이션 미수행이고, 높으면 구버전 실행파일이 배포된 것이다.
+  구버전 실행파일이 신버전 DB 에 쓰면 컬럼 불일치로 조용히 잘못된 행이 생긴다.
+  `schema.sql` 의 `INSERT OR IGNORE` 는 기존 값을 덮지 않으므로 이 검사가 유일한 방어선이다.
+- **경로는 Ledger 에 저장하지 않는다 (v5).**
+  `common_ledger.local_path` 를 삭제했다. 장부의 목적은 "잘 보내졌는가" 이고
+  "어디에 있었는가" 는 그 목적에 기여하지 않는다. 경로는 자주 바뀌며,
+  DB 에 적어두면 코드가 그 값에 의존하게 되어 경로 변경이 중복 전송으로 이어질 여지가 생긴다.
+  전송에 필요한 경로는 Scan 이 나열 시점부터 메모리로 들고 다닌다.
+- **후보 선정은 Scan 주도이다 (v5).**
+  DB 가 "무엇을 어디서 보낼지" 를 지시하지 않는다.
+  Scan 이 디렉터리를 나열한 뒤 그 안의 파일명으로 장부에 묻는다.
+
+  ```sql
+  SELECT c.file_name, c.revision, c.size, c.mtime, p.status
+    FROM common_ledger c
+    LEFT JOIN put_ledger p
+      ON p.file_name = c.file_name AND p.revision = c.revision
+   WHERE c.file_name IN (?, ?, ?, ...);
+  ```
+
+  PK 인덱스를 그대로 타므로 별도 인덱스가 필요 없다.
+  부수 효과로 `FAILED` 행이 Scan 범위 밖으로 밀려나면 자연히 만료되며,
+  자동 재시도와 수동 복구(`recovery`)의 경계가 명확해진다.
 - 다음 두 항목은 스키마가 강제하지 못하므로 코드 리뷰에서 확인한다.
   - `remote_path` / `part_path`는 전송 완료 후가 아니라 `IN_PROGRESS` 전환 트랜잭션 안에서 기록한다.
     완료 후에 기록하면 중단된 항목이 NULL로 남아 잔여 `.part` 정리 대상을 찾지 못한다. (설계안 9.3, 13.2)
@@ -214,13 +272,31 @@ PRAGMA busy_timeout = 5000;
 
 | 항목 | 설계안 | 현황 |
 |---|---|---|
-| Hot Scan / Deep Scan 분리 | 11.1 (18.1 확정 항목) | `put/` 내부에 둘지 `scan/`으로 분리할지 미정 |
-| 중복 실행 방지 + Stale Lock | 14 | 담당 패키지 미정 |
+| ~~Hot Scan / Deep Scan 분리~~ | 11.1 | **확정 — `internal/scan` 으로 분리.** PUT 과 DOWNLOAD 가 모두 사용한다 |
+| 중복 실행 방지 + Stale Lock | 14 | 담당 패키지 미정. **`transport` 도입(I단계) 시점에는 있어야 한다** |
 | `db status` / `db failed put` / `db query` 조회 명령 | 9.2 | 담당 패키지 미정 |
 | 대량 유입 검증 기준 | 13 (18.1 확정 항목) | 7절이 단위 테스트만 다루고 있어 보완 필요 |
 
-Scan은 PUT과 DOWNLOAD가 모두 사용하므로, `put/` 안에 두는 경우에도
-Scanner 인터페이스를 consumer-side로 선언하여 나중에 분리할 수 있는 형태를 유지한다.
+`scan` 은 로컬 디렉터리와 원격 SFTP 디렉터리 양쪽에서 같은 로직으로 돌아야 하므로
+`os.ReadDir` 에 직접 붙이지 않고 최소 인터페이스를 consumer-side 로 선언한다.
+
+```go
+type DirLister interface {
+    List(ctx context.Context, dir string) ([]Entry, error)
+}
+```
+
+**주된 근거는 테스트다.** fake 하나로 스캔 전체를 검증할 수 있고
+실제 디렉터리도 SFTP 서버도 필요 없다. DOWNLOAD 재사용은 부수 효과다.
+
+`scan` 은 판정하지 않는다. `ReadDir` 결과를 그대로 올리며
+0바이트도 `.part` 도 거르지 않는다. 거르는 것은 `verify` 의 책임이다.
+
+```
+scan    어떤 파일이 어디에, 크기·시각이 얼마인가   (사실)
+verify  이 파일이 전송 가능한 상태인가             (판정)
+ledger  이미 보냈는가                              (기록)
+```
 
 ## 5. 실제 개발 순서
 
@@ -237,36 +313,55 @@ MVP 5: Linux 대응
 ### 현재 MVP 1 PUT 구현 순서
 
 ```text
-domain                        ✅ 완료  (mode.go 포함)
+domain                             ✅ 완료
     ↓
-ledger/db.go, common.go       ✅ 완료
+pathpl                             ✅ 완료
     ↓
-pathtpl                       ✅ 완료
+ledger  db.go, common.go, schema v5 ✅ 완료
     ↓
-config                        ← 다음
+config  ini / config / load / validate  ✅ 완료
     ↓
-Local Scanner
+scan        internal/scan                ← 다음
     ↓
-Ingress Verification
+verify      Ingress 판정
     ↓
-Common Ledger 적재            ← 1차 목표: 여기까지 동작
+Batch Ledger Lookup   file_name IN (...)
     ↓
-PUT 처리(Worker Pool, 기본 4)
+Scan → Verify → Upsert → 후보 → --dry-run   ★ 1차 목표
     ↓
-SFTP .part Upload
+put_ledger  전송 상태 머신
     ↓
-Remote Size 검증
+transport   .part → size → rename → 최종 확인
+            + 시작 시 IN_PROGRESS 회수
     ↓
-Rename
+Worker Pool  전송 MaxWorkers = 4
+            + lock (중복 실행 방지)
     ↓
-최종 파일 존재 확인
-    ↓
-put_ledger VERIFIED/FAILED 기록
+recovery / seed / Retention Cleanup
 ```
 
-**1차 목표는 "스캔 → Ingress 검증 → common_ledger 적재"까지다.**
+**1차 목표는 "스캔 → Ingress 검증 → common_ledger 적재 → 후보 목록 출력"까지다.**
 전송은 그 뒤에 붙인다. 검증 없이 SUCCESS를 기록하는 것보다
 범위를 명시적으로 자르는 편이 안전하다.
+
+**`--dry-run` 을 이 시점에 함께 만든다.** 현장 접근이 어려운 상태이므로
+프로그램이 스스로 재서 알려주는 것이 유일한 관측 수단이다.
+관측소 실제 개수, 확장자 분포, 경로 정합성, 스캔 소요시간이 한 번에 확정된다.
+
+**흐름의 순서를 바꾸지 않는다.**
+
+```
+List → Batch Lookup → 메모리 대조 → (신규·변경만) Verify → Upsert → 후보
+```
+
+정상 운영에서 압도적으로 흔한 결과는 Unchanged 이다(CONCEPT 4.9).
+먼저 전부 Upsert 하면 매 실행마다 수만 건의 쓰기를 시도하게 되고
+`SetMaxOpenConns(1)` 때문에 전부 직렬화된다.
+size·mtime 이 같으면 Upsert 를 호출하지 않는다.
+
+변경이 감지된 파일은 Upsert 로 revision 이 오른 뒤에 후보가 된다.
+`put_ledger` 의 PK 가 `(file_name, revision)` 이므로
+새 revision 의 행이 존재할 수 없음이 보장되어 재조회가 필요 없다.
 
 - MVP 1 에서는 **정확성, 무결성, 중복 방지, 실패 추적**을 우선한다.
 - **Scan은 순차, 전송은 병렬이다.** 두 가지를 혼동하지 않는다.
@@ -345,6 +440,26 @@ go test -race ./...
 - `put`, `download`, `transport`가 DPAPI를 직접 알지 않도록 한다.
 - 암호화 대상 정보가 로그에서 평문으로 다시 노출되지 않도록 필요 시 마스킹한다.
 - Linux의 자격증명 보호 방식은 MVP 5에서 확정한다.
+- **개인키 파일 권한을 시작 시 확인한다.** Linux 는 그룹·기타 권한이 있으면 거부한다.
+  Windows 는 `os.FileMode` 가 ACL 을 반영하지 않아 판정하지 않는다.
+  그 검사는 `security` 패키지의 플랫폼별 구현에서 다룬다.
+- **`KnownHosts` 가 비어 있으면 시작을 거부한다.** 검증을 생략하고
+  "일단 붙여보는" 경로를 만들지 않는다.
+- **`AuthMethod` 는 `publickey` 만 지원한다.** 설정 파일에 평문 비밀번호를 두지 않으므로
+  다른 값을 받아둘 이유가 없다.
+
+**설정 파일의 위치**
+
+- 기본은 **실행파일과 같은 디렉터리의 `config.ini`** 이다.
+  현재 작업 디렉터리를 기준으로 하지 않는다.
+  `schtasks` 가 작업 디렉터리를 실행파일 위치와 다르게 잡을 수 있어
+  "설정 파일이 없다" 로 끝나는 사고가 흔하다.
+- `--config` 플래그로 다른 경로를 지정할 수 있게 둔다.
+
+**`config.example.ini` 와 코드의 정합성을 테스트로 고정한다.**
+어긋나면 두 가지 사고가 난다. 코드에만 키를 추가하면 새 서버 설치 때
+그 키가 누락되고, 템플릿에만 두면 실행이 unknown key 로 거부된다.
+사람의 기억에 맡기지 않는다.
 
 ## 9. 기존 운영 스크립트에서 확인한 사실
 
@@ -359,12 +474,27 @@ go test -race ./...
 | DOY 표기 | **3자리 0채움**. 정리 스크립트가 `'^\d{3}$'` 로 폴더를 매칭한다 |
 | 시각 기준 | **UTC**. 스케줄은 서버 로컬시간이나 대상 날짜 계산은 UTC이다 |
 | 실행 주기 | 매시각 :10, `schtasks /SC HOURLY /MO 1` |
-| 전송·수신 범위 | 오늘 포함 **7일**. `ScanRecentDays` 를 7로 정한 근거이다 |
+| 전송·수신 범위 | 오늘 포함 **7일**. `ScanDays`(Deep Scan)를 7로 정한 근거이다 |
 | 원격 보관 | 30일 |
-| 대상 확장자 | 스크립트는 `*.gz` 만 전송·수신한다. 그러나 실제 디렉터리에는 비압축이 함께 있다. 아래 9.7 참조 |
+| 대상 확장자 | 스크립트는 `*.gz` 만 전송·수신한다. 실제 유입은 `.gz` / `.Z` / `.zip` 이 관측소마다 혼재한다. 아래 9.7 참조 |
 | 파일명 대소문자 | RINEX2 소문자 / RINEX3 대문자 혼재. `NormalizeName` 의 소문자 통일 근거 |
 | Category 구분 | RNX2_D / RNX2_H / RNX3_D / RNX3_H 4종. `domain.Category` 와 1:1 |
-| 파일 생성 방식 | **append 형**. 0바이트로 생성된 뒤 채워진다 (BNC) |
+| 파일 생성 방식 | 0바이트 파일이 관측된다. 원인은 선행 프로그램의 **중복 복사**이며 1시간 이내에 채워진다. 이후 추가되지 않는다 (2026-08-28 정정) |
+| 원본 스토리지 | **SMB(NAS)**. `X: → \\192.168.103.100\gnss-prod-nas\data` |
+| 로컬 보존 | **10년**. `2016`~`2026` 폴더 확인. `LedgerRetentionDays > ScanDays` 가 절대 조건인 이유 |
+| 관측소 수 | 국토지리정보원 109개. 시간 슬롯의 약 22% 는 비어 있는 것이 정상 |
+
+**`ScanRecentDays` 는 7이 아니라 2이다.** 위 7일은 Hot Scan 이 아니라
+Deep Scan 의 근거이다. 두 값의 역할이 다르므로 혼동하지 않는다.
+
+| | 값 | 주기 | 역할 |
+|---|---|---|---|
+| `ScanRecentDays` | 2 | 매시간 | 정상 유입 |
+| `ScanDays` | 7 | 하루 1회 | 며칠 늦게 유입된 자료 회수 |
+
+`ScanRecentDays` 를 1로 두지 않는 이유는 경로 토큰이 UTC 인데
+실제 도착이 3~4시간 이상 지연되기 때문이다.
+1일이면 UTC 하루의 마지막 몇 시간 분량이 매일 Hot Scan 을 빠져나간다. (9.9)
 
 경로 문자열 자체는 세 스크립트가 서로 다르다(하이픈/언더스코어, 드라이브, 기관 접미사).
 전부 Path Template 의 리터럴 구간이므로 `config.ini` 값만 바꾸면 되며,
@@ -381,35 +511,60 @@ go test -race ./...
 - 드라이브 세그먼트(`E:`)는 건너뛴다
 - 이미 만든 경로는 집합으로 기억하여 중복 호출하지 않는다
 
-### 9.3 Hourly Scan 은 (HH) 를 계산하지 않는다
+### 9.3 Hourly Scan 은 (HH) 를 계산한다 (2026-08-28 전면 정정)
 
-스크립트는 시간 디렉터리를 00~23 으로 순회하지 않고,
-DOY 디렉터리까지만 만든 뒤 **실제 존재하는 하위 디렉터리를 나열한다.**
+**이전 판은 "계산하지 않고 하위 디렉터리를 나열한다" 였다. 기각한다.**
 
-Deep Scan 30일 기준으로 두 방식을 비교하면 다음과 같다.
-Hourly Category 는 4종 중 2종(`RNX2_H`, `RNX3_H`)이며 Daily 에는 `(HH)` 레벨이 없다.
+기각 근거는 현장 확인이다.
 
-| 방식 | Hourly 2종 기준 디렉터리 접근 |
+> 모든 관측소가 시각까지 디렉터리를 둔다.
+> 지리원 화면에 `(HH)` 계층이 없어 보였던 것은 그 화면이 Daily 경로였기 때문이며,
+> 지리원도 시각 폴더에는 `(HH)` 가 있다.
+
+따라서 config 의 Hourly 경로는 `LocalPath` 와 `RemotePath` 양쪽 모두
+시각까지 적고, Scanner 는 날짜당 0~23 을 만들어 각각 `ReadDir` 한다.
+
+```
+Hourly   E:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\
+Daily    E:\RINEX-V3-D\(YYYY)\(DOY)\
+```
+
+**나열 방식을 기각한 이유 세 가지**
+
+- **`RemotePath` 는 어차피 `(HH)` 가 필요하다.** 03시 파일을 원격 03 디렉터리에
+  놓아야 하기 때문이다. `LocalPath` 만 날짜까지 두면 같은 `pathpl` 을 쓰면서
+  한쪽은 "나열할 접두사", 다른 쪽은 "완성된 경로" 가 되어 의미가 갈린다.
+- **나열 방식은 필터 규칙이 하나 더 필요하다.** `^\d{2}$` 및 00~23 검증을
+  적용해야 하고, 현장 화면에 `00_backup` 같은 항목이 섞여 있어 예외 관리가 늘어난다.
+- **`pathpl.HasToken` 은 이미 구현·테스트가 끝난 검증 장치다.** 나열 방식이면 쓸 곳이 없다.
+
+**원래 근거였던 원격 왕복 절감은 이득이 작다.**
+
+| 방식 | Deep Scan 7일 · Hourly 2종 | RTT 30ms |
+|---|---|---|
+| **(HH) 계산 (채택)** | **336회** | **약 10초** |
+| 하위 디렉터리 나열 | 14회 | 약 0.4초 |
+
+1시간 주기 실행에서 10초는 감당된다.
+설계안 11.1 이 지적한 "스캔 자체가 병목" 은 상위 폴더를 재귀 탐색할 때의 이야기이며,
+`pathpl` 로 말단 디렉터리를 직접 계산하는 우리 방식에는 해당하지 않는다.
+
+**config 검증은 양방향으로 한다. `internal/config` 에 구현되어 있다.**
+
+| 조건 | 거부 이유 |
 |---|---|
-| 00~23 계산 순회 | 30 × 24 × 2 = 1,440회 |
-| 하위 디렉터리 나열 | 30 × 2 = 60회 + 실존 HH 만 |
+| Hourly 인데 `(HH)` 없음 | 0~23시가 모두 같은 디렉터리로 확장된다. 경로가 실제로 존재해 오류도 나지 않고 파일도 일부 발견되어 아무도 알아채지 못한다 |
+| Daily 인데 `(HH)` 있음 | 존재하지 않는 경로가 24개 생기고 전부 `ENOENT` 가 된다. Scan 이 이를 정상으로 취급하므로 조용히 아무 일도 하지 않는다 |
 
-**로컬 파일시스템에서는 이 차이가 크지 않다.**
-Hourly 디렉터리는 시간당 데이터가 계속 유입되므로 대부분 실제로 존재하며,
-없는 디렉터리를 여는 시도는 빠르게 실패한다.
+**Scanner 구현 주의 — 없는 디렉터리는 오류가 아니다.**
 
-실질적인 근거는 **DOWNLOAD 의 원격 Scan** 이다.
-SFTP 에서 24회 조회는 왕복 24회지만 목록 조회는 1회이며,
-설계안 12.2 의 데이터셋 A(소파일 다수) 조건에서는 왕복 횟수가 처리시간을 지배한다.
-설계안 11.1 이 "스캔 자체가 병목이 된다"고 지적한 부분의 답이 여기 있다.
+```go
+if errors.Is(err, fs.ErrNotExist) { continue }
+```
 
-`pathtpl` 은 그대로 두고, Scanner 가 Hourly 에서 `(HH)` 앞까지만 확장하여
-디렉터리를 나열하는 방식으로 구현한다.
-
-**대가 한 가지** — 나열 방식은 계산 방식과 달리 예상 밖 디렉터리를 주워온다.
-`00_backup`, `temp` 같은 이름이 그대로 Scan 대상이 된다.
-나열 결과에 `^\d{2}$` 및 00~23 범위 검증을 적용한다.
-정리 스크립트가 `^\d{4}$` / `^\d{3}$` 로 폴더를 매칭하는 것과 같은 이유이다.
+크롤링 매트릭스 기준 시간 슬롯의 약 22% 가 비어 있다.
+이를 오류로 취급하면 정상 운영에서 매시간 수백 건의 오류 로그가 쌓여
+진짜 오류가 묻힌다.
 
 ### 9.4 Transfer Verification 이 필요한 실증 근거
 
@@ -443,42 +598,51 @@ E:\ 로 chroot        → /RINEX2Outgoing/...      ( /E: 를 뺀다 )
 |---|---|
 | 관측소 필터 (`STATIONS`) | 신규 프로그램은 전체 관측소 대상이므로 두지 않는다 |
 | 원격 보관기간 정리 | **미결정.** 원격 삭제는 오작동 시 복구가 불가능하므로 MVP 1 에서는 제외하는 쪽을 검토 중이다. 대표 요구인 "단일 통합 프로그램"과 상충할 수 있어 확정 필요 |
+| 결측 리포트 (관측소가 파일을 아예 만들지 않은 경우) | **MVP 2 이후.** 장부는 "본 것" 의 기록이지 "있어야 할 것" 의 기록이 아니므로 단독으로는 답할 수 없다. 별도 크롤링 매트릭스와 대조하는 조회 명령으로 분리한다 |
+| DOWNLOAD | **현재 알려진 모든 기관에 불필요.** 원본 서버와 중간 서버 양쪽에 설치할 수 있으면 다단 구성도 PUT 두 번으로 성립한다. "타 기관 소유라 설치가 불가한 서버" 가 나타날 때를 위한 빈 칸이다 |
 
 ### 9.7 확장자 필터를 두지 않는다
 
 기존 스크립트는 송·수신 모두 `*.gz` 만 처리한다.
-그러나 실제 디렉터리를 확인한 결과 비압축 파일이 함께 존재한다.
-
-```
-RINEX-V3-D\2026\182\   (Daily)
-  GAGE00KOR_R_20261820000_01D_30S_MO.rnx        16,514KB
-  GAGE00KOR_R_20261820000_01D_30S_MO.crx         5,211KB
-  GAGE00KOR_R_20261820000_01D_30S_MO.crx.gz      1,868KB
-
-RINEX-V3-H\2026\182\00\   (Hourly)
-  EOCH00KOR_R_20261820000_01H_30S_MO.rnx         1,424KB
-  ... 5개 전부 비압축 .rnx
-```
-
-**Hourly 폴더는 비압축만 있다.** 이 경로가 실제 송신 원본이라면
-`*.gz` 필터 때문에 Hourly 가 전혀 전송되지 않고 있을 수 있으며,
-`option batch continue` + `failonnomatch off` 때문에 종료코드는 0 으로 끝난다.
-스크린샷 경로와 배치의 원본 경로가 달라 단정할 수는 없으나 확인이 필요하다.
+`option batch continue` + `failonnomatch off` 조합 때문에
+필터에 걸려 한 건도 보내지 않아도 종료코드는 0 으로 끝난다.
 
 신규 프로그램은 **확장자 필터 개념 자체를 두지 않는다.**
-기관의 파일 규칙은 시간에 따라 바뀌므로, 거르지 않는 편이 누락 위험이 낮다.
-특정 기관이 요구하면 그때 `config.ini` 항목으로 추가한다.
+기관의 파일 규칙은 시간에 따라 바뀌므로 거르지 않는 편이 누락 위험이 낮다.
 
-**운영상 대가** — 같은 관측 데이터가 여러 형태로 존재하므로 전송량이 늘어난다.
-위 GAGE 하루치 기준 `.crx.gz` 만 보낼 때 1.8MB, 전부 보낼 때 약 23MB 이다.
-Target 디스크 용량과 회선이 `.gz` 기준으로 산정되어 있을 수 있으므로
-실서버 반입 전에 용량을 재확인한다.
+**실제 유입 형태 (2026-08-28 현장 확인으로 정정)**
+
+이전 판은 스크린샷을 근거로 "비압축 `.rnx` 가 함께 유입되며 Hourly 는 비압축만 있다" 고
+적었다. **그 화면은 Incoming(입고 지점)이었다.**
+우리가 스캔하는 DOY 디렉터리에는 QC 를 마친 **압축 완제품만** 저장된다.
+
+| | 실제 |
+|---|---|
+| 압축 형식 | `.gz` / `.Z` / `.zip` 세 가지. **관측소마다 다르며 한 디렉터리에 섞여 있다** |
+| 비압축 유입 | DOY 디렉터리에는 오지 않는다 |
+| 취급 | 전부 전송한다. 필터를 두지 않는다 |
+
+한때 "수신 측이 압축본만 요구하므로 비압축을 배제하자" 는 안(`ExcludeUncompressed`)을
+검토했으나, 위 사실이 확인되면서 **철회했다.** 거를 대상이 없다.
+
+**압축 확장자 목록을 관리하지 않는다.**
+정규화 규칙이 "인식" 이 아니라 "보존" 이므로 `.part` 만 제거하고 나머지는
+문자열 그대로 둔다. 새로운 압축 형식이 등장해도 코드를 수정하지 않는다.
+목록이 필요한 곳은 `BaseName` 산출 한 곳뿐이며 그 값은 식별자가 아니다. (CONCEPT 4.2)
 
 **Hatanaka 압축(`.crx`)** — 설계안과 CONCEPT 에 언급이 없다.
-`BaseName` 은 `.gz` / `.Z` 만 제거하므로 `.rnx` 계열과 `.crx` 계열은
+`BaseName` 은 압축 확장자만 제거하므로 `.rnx` 계열과 `.crx` 계열은
 서로 다른 `base_name` 그룹이 된다. `.crx` 는 단순 압축이 아니라 포맷 변환이므로
-현재는 이 동작을 유지한다. `base_name` 은 식별자가 아니라 관측 수단이므로
+현재는 이 동작을 유지한다. `base_name` 은 관측 수단이므로
 나중에 규칙을 넓혀도 되돌리는 비용이 없다. (CONCEPT 4.7, 7)
+
+**운영상 대가** — 같은 관측 데이터가 여러 압축 형태로 존재하면 전송량이 늘어난다.
+실제로 그런 상황이 발생하는지는 `base_name` 중복 조회로 관측한다.
+
+```sql
+SELECT base_name, COUNT(*) FROM common_ledger
+ GROUP BY base_name HAVING COUNT(*) > 1;
+```
 
 ### 9.8 Deep Scan 주기는 상태를 저장하지 않는다
 
@@ -500,10 +664,93 @@ Deep Scan 은 안전망이지 주 경로가 아니며, 30일 구간 안에서 �
 운영 중 Deep Scan 누락이 잦은 것이 확인되면 그때 도입한다.
 
 **`DeepScanHour` 의 시간대에 주의한다.**
-`pathtpl` 의 토큰 확장은 UTC 로 강제하지만, `DeepScanHour` 는 스케줄러와 기준을 맞춘다.
+`pathpl` 의 토큰 확장은 UTC 로 강제하지만, `DeepScanHour` 는 스케줄러와 기준을 맞춘다.
 `schtasks` 는 서버 로컬시간으로 동작하며 "전송량이 적은 시간대"도 로컬 개념이다.
 UTC 로 둘 경우 `4` 는 KST 13시(한낮)가 되므로 값과 주석이 어긋나기 쉽다.
 `config.ini` 주석에 어느 기준인지 반드시 명시한다.
+`internal/config` 의 `ScanConfig.DeepScanHour` 주석에도 같은 내용을 둔다.
+
+### 9.9 Scan 범위는 세 갈래이다
+
+자동으로 도는 두 갈래와 사람이 부르는 한 갈래를 나눈다.
+
+```text
+[자동 · 정상운영]
+  Hot Scan       최근 2일   매시간    정상 유입
+  Deep Scan      최근 7일   하루 1회  며칠 늦게 유입된 자료 회수
+
+[수동 · 장애복구]
+  Recovery Scan  기간 고정 안 함
+                 운영자가 장애 기간을 지정 → 해당 구간 전체 재Scan
+                 → Ledger 가 신규/변경만 판별 → 필요한 것만 자동 PUT
+```
+
+**`ScanRecentDays = 2` 인 이유** — 경로 토큰은 UTC 인데 실제 도착이 3~4시간
+이상 지연된다. 1일로 두면 UTC 하루의 마지막 몇 시간 분량이 매일 Hot Scan 을
+빠져나가고 Deep Scan 이 하루 늦게 회수한다.
+
+**Deep Scan 범위 밖에 상한을 두지 않는 이유** — 캐스터 재시작 등으로
+수동 복구가 이루어지면 자료가 관측 시각 기준 디렉터리에 놓인다.
+그것이 며칠 전인지에는 규칙이 없다. 상한을 정하면 그 밖은 못 잡고,
+숫자를 늘리는 논의가 끝나지 않는다.
+**"그건 사람이 아는 일" 로 인정하고 입력받는다.**
+
+한때 상한을 없애고 디렉터리 mtime 으로 거르는 안을 검토했으나 **기각했다.**
+디렉터리 mtime 은 파일 생성뿐 아니라 **삭제 시에도 갱신되며**,
+로컬 보존이 10년이므로 정리 작업이 돌면 오래된 디렉터리가 통째로
+스캔 대상이 되어 장부에 없는 파일이 전량 재전송된다.
+`UseDirMtimeSkip = false` 를 유지하는 실질 근거가 이것이다.
+
+**`LedgerRetentionDays` 가 Recovery Scan 의 실질 상한이다.**
+장부가 기억하지 못하는 구간을 지정하면 그 구간이 전량 재전송된다.
+`config` 가 `LedgerRetentionDays > ScanDays` 를 시작 시 강제한다.
+
+**운영 로그에 `oldest_new` 를 남긴다.**
+
+```text
+[DEEPSCAN] dirs=336 files=42000 new=340 oldest_new=2026-08-23 (5일 전)
+```
+
+`ScanDays = 7` 은 잠정값이다. 한 달 운영하면 이 값의 분포가 나오고,
+7일에 붙어 잘리는 것이 보이면 늘려야 한다는 증거가 된다.
+지금 앉아서 정할 수 없는 값이므로 **나중에 답을 가져올 장치를 대신 넣는다.**
+
+### 9.10 첫 붙임은 "추가 투입" 이 아니라 "기존 송신자 대체" 이다
+
+빈 장부로 붙이면 Deep Scan 범위 전체가 신규로 판정되어 한 번에 큐에 들어간다.
+기존 송신자가 이미 보낸 것을 통째로 재전송하는 셈이다.
+
+**`seed` 는 원격 나열을 근거로 한다. 로컬 존재를 근거로 삼지 않는다.**
+
+로컬에 있다는 것은 보내졌다는 뜻이 아니다.
+기존 송신자가 실패한 파일까지 `VERIFIED` 로 굳으면 revision 도 오르지 않고
+후보 조회에서도 빠지며 `recovery` 로도 부를 수 없어 **영구 미전송**이 된다.
+
+```text
+seed --days N
+  1) 로컬 Scan → common_ledger 등록
+  2) 원격 목적지 디렉터리 나열
+  3) 원격에 있고 size 일치 → put_ledger VERIFIED
+     그 외                 → 기록하지 않음 (다음 정기 실행이 전송)
+```
+
+"원격 존재 + size 대조" 는 설계안 8.1 의 Transfer Verification 과 동일한 기준이다.
+전송만 생략했을 뿐 검증은 실제로 수행한다.
+RemotePath 가 어긋나면 아무것도 찾지 못해 전부 전송 대상이 된다.
+**헛전송이지 누락이 아니다.**
+
+**전환 순서**
+
+```text
+--dry-run 으로 규모 확인
+  → 기존 송신자 종료를 실측 확인 (통보만 믿지 않는다. 어긋난 전례가 있다)
+  → seed
+  → 정상 가동
+```
+
+`MaxFilesPerRun` 은 어느 쪽이든 최후 방어선으로 둔다.
+`seed` 를 빠뜨렸을 때뿐 아니라, 대량 복사로 mtime 이 일괄 갱신되어
+Scan 범위 전체가 재전송 대상이 될 때도 회선을 보호한다.
 
 ## 10. Git 제외 권장 항목
 
