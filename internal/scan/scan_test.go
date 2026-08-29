@@ -788,7 +788,7 @@ func TestScannerScan_InvalidInput(t *testing.T) {
 			name:     "알 수 없는 Category",
 			ctx:      context.Background(),
 			scanner:  New(&fakeLister{}),
-			category: domain.Category("RINEX4_DAILY"),
+			category: domain.Category("RINEX5_DAILY"),
 			tpl:      dailyTpl,
 			r:        validRange,
 			visit:    visit,

@@ -37,6 +37,8 @@ const (
 	//
 	// schema v5 에서 common_ledger.local_path 를 삭제하면서
 	// 배포 DB 구조 세대를 1 → 2 로 올렸다.
+	// schema v6 에서 category CHECK 에 RINEX4 를 추가하면서
+	// 배포 DB 구조 세대를 2 → 3 으로 올렸다.
 	//
 	// domain 이 아니라 ledger 에 두는 이유는 이 값이
 	// 파일 식별 규칙이 아니라 DB 스키마의 성질이기 때문이다.
@@ -44,14 +46,14 @@ const (
 	//
 	// ★ 이 값은 schema.sql 에도 같은 리터럴로 들어 있다.
 	//
-	//	INSERT OR IGNORE INTO schema_meta ... ('schema_version', '2', ...)
+	//	INSERT OR IGNORE INTO schema_meta ... ('schema_version', '3', ...)
 	//
 	// 한쪽만 올리면 새로 만든 DB 가 곧바로 열리지 않는다.
 	// 스크립트가 넣은 값과 실행파일이 기대하는 값이 달라
 	// verifySchemaVersion 이 첫 Open 에서 실패하기 때문이다.
 	// 반드시 두 곳을 함께 올린다.
 	// db_test.go 의 TestSchemaVersionMatchesSchemaSQL 이 이를 고정한다.
-	schemaVersion = "2"
+	schemaVersion = "3"
 )
 
 var (
@@ -148,7 +150,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// 그 구조 안에서 사용하는 파일 식별 규칙을 다음으로 확인한다.
 	//
 	// 위 실행으로 기존 DB 가 현재 구조로 변환되지는 않는다.
-	// v4 DB 는 모든 문장이 no-op 으로 통과한 뒤
+	// v5 DB 는 모든 문장이 no-op 으로 통과한 뒤
 	// schema_version 이 '1' 로 남아 여기서 잡힌다.
 	//
 	// 실행파일과 DB 의 구조 세대가 다르면 즉시 중단한다.

@@ -61,6 +61,16 @@ Enabled = true
 LocalPath = /local/rinex3/hourly/(YYYY)/(DOY)/(HH)/
 RemotePath = /remote/rinex3/hourly/(YYYY)/(DOY)/(HH)/
 
+[PUT.RINEX4_DAILY]
+Enabled = false
+LocalPath = /local/rinex4/daily/(YYYY)/(DOY)/
+RemotePath = /remote/rinex4/daily/(YYYY)/(DOY)/
+
+[PUT.RINEX4_HOURLY]
+Enabled = false
+LocalPath = /local/rinex4/hourly/(YYYY)/(DOY)/(HH)/
+RemotePath = /remote/rinex4/hourly/(YYYY)/(DOY)/(HH)/
+
 [LOG]
 Level = INFO
 Dir = logs

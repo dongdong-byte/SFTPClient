@@ -595,7 +595,7 @@ func TestCommonInputValidate(t *testing.T) {
 		{
 			name: "알 수 없는 category",
 			modify: func(in *CommonInput) {
-				in.Category = domain.Category("RINEX4_HOURLY")
+				in.Category = domain.Category("RINEX5_HOURLY")
 			},
 		},
 		{

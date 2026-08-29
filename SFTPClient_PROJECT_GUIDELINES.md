@@ -998,7 +998,7 @@ file_id는 세 Ledger를 연결하는 유일한 키이므로 경로에 의존하
 
 Domain — 설치 인스턴스 식별자이며 config.ini의 [GENERAL] Domain에서 지정한다. 서로 다른 기관·노드에서 동일한 파일명이 사용될 때의 충돌을 방지한다.
 
-Category — RINEX2_DAILY / RINEX2_HOURLY / RINEX3_DAILY / RINEX3_HOURLY
+Category — RINEX2_DAILY / RINEX2_HOURLY / RINEX3_DAILY / RINEX3_HOURLY / RINEX4_DAILY / RINEX4_HOURLY
 
 NormalizedName — 파일명만 사용하고 디렉터리 경로는 제외한다. 대소문자는 소문자로 통일하고 .part 등 임시 접미사는 제거하되, 압축 확장자(.gz, .Z)는 유지한다.
 

@@ -66,6 +66,11 @@
 --    v5  local_path 컬럼 삭제
 --        후보 선정을 DB 주도에서 Scan 주도로 변경
 --        (파괴적 변경이다. 아래 마이그레이션 주석 참조)
+--    v6  common_ledger.category CHECK 에
+--        RINEX4_DAILY / RINEX4_HOURLY 추가
+--        schema_meta.schema_version 을 '2' → '3' 으로 올린다
+--        (CREATE TABLE IF NOT EXISTS 는 기존 CHECK 를 바꾸지 않으므로
+--         개발 DB 는 삭제 후 재생성한다)
 --
 --  적용 범위
 --    [현재] common_ledger, put_ledger, schema_meta
@@ -107,8 +112,9 @@ CREATE TABLE IF NOT EXISTS common_ledger (
         -- 식별자가 아니므로 UNIQUE 를 걸지 않는다.
 
     category    TEXT    NOT NULL
-                        CHECK (category IN ('RINEX2_DAILY',  'RINEX2_HOURLY',
-                                            'RINEX3_DAILY',  'RINEX3_HOURLY')),
+            CHECK (category IN ('RINEX2_DAILY',  'RINEX2_HOURLY',
+                                'RINEX3_DAILY',  'RINEX3_HOURLY',
+                                'RINEX4_DAILY',  'RINEX4_HOURLY')),
         -- 식별자에 포함되지 않는 일반 컬럼이다. 값은 Scanner 가 판정하지 않고
         -- config.ini 의 [PUT.<CATEGORY>] 섹션에서 그대로 전달받는다.
         --
@@ -462,9 +468,9 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 -- schema_version 은 파일명의 v 번호와 별개로 증가시켜 온 값이다.
--- v4 파일에서 '1' 이었으므로 v5 에서 '2' 로 올린다.
---   ※ 두 계열이 헷갈릴 소지가 있다. 파일명과 일치시키려면 '5' 로 두어야
---     하나, 그러면 기존 DB 의 '1' 과 건너뛰는 구간이 생긴다.
+--   v4 파일 '1' → v5 '2' (local_path 삭제) → v6 '3' (category CHECK 확장)
+--   ※ 두 계열이 헷갈릴 소지가 있다. 파일명과 일치시키려면 설계 개정 번호와
+--     같게 두어야 하나, 그러면 기존 DB 와 건너뛰는 구간이 생긴다.
 --     현 단계에서는 증분을 택했다. 다르게 가려면 여기만 고치면 된다.
 --
 -- ★ 시작 시 검증 규칙 (v5 에서 명시)
@@ -486,7 +492,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 -- 스크립트가 조용히 버전만 올려놓고 데이터는 v4 구조로 두는 사고를 막는다.
 -- 버전 갱신은 아래 마이그레이션 절차의 UPDATE 로만 수행한다.
 INSERT OR IGNORE INTO schema_meta (key, value, updated_at) VALUES
-    ('schema_version', '2',           strftime('%s', 'now')),
+    ('schema_version', '3',           strftime('%s', 'now')),
     ('identity_rule',  'FILENAME_V1', strftime('%s', 'now')),
     ('mvp_stage',      'MVP1_PUT',    strftime('%s', 'now'));
 

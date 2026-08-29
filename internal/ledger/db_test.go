@@ -212,8 +212,8 @@ func TestSchemaMeta(t *testing.T) {
 
 // schema.sql 과 db.go 는 같은 값을 두 곳에 적어 두고 있다.
 //
-//	schema.sql   INSERT OR IGNORE ... ('schema_version', '2', ...)
-//	db.go        const schemaVersion = "2"
+//	schema.sql   INSERT OR IGNORE ... ('schema_version', '3', ...)
+//	db.go        const schemaVersion = "3"
 //
 // 한쪽만 올리면 새로 만든 DB 조차 열리지 않는다.
 // schema.sql 이 넣은 값과 실행파일이 기대하는 값이 달라

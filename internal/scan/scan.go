@@ -325,7 +325,7 @@ func checkInput(
 ) error {
 	// 알 수 없는 Category 를 Daily 로 오인하는 것을 막는다.
 	//
-	// 정의된 네 Category 는 반드시 Daily 또는 Hourly 중 하나이다.
+	// 정의된 Category 는 반드시 Daily 또는 Hourly 중 하나이다.
 	if !category.IsDaily() && !category.IsHourly() {
 		return fmt.Errorf(
 			"%w: unknown category %q",

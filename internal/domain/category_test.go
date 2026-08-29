@@ -12,7 +12,8 @@ func TestParseCategory(t *testing.T) {
 		{name: "정확한 표기", in: "RINEX3_HOURLY", want: CategoryRINEX3Hourly},
 		{name: "소문자 허용", in: "rinex2_daily", want: CategoryRINEX2Daily},
 		{name: "앞뒤 공백 허용", in: "  RINEX3_DAILY  ", want: CategoryRINEX3Daily},
-		{name: "알 수 없는 값은 오류", in: "RINEX4_HOURLY", wantErr: true},
+		{name: "RINEX4 허용", in: "RINEX4_HOURLY", want: CategoryRINEX4Hourly},
+		{name: "알 수 없는 값은 오류", in: "RINEX5_HOURLY", wantErr: true},
 		{name: "빈 문자열은 오류", in: "", wantErr: true},
 	}
 
@@ -57,8 +58,8 @@ func TestParseCategory(t *testing.T) {
 func TestCategories(t *testing.T) {
 	got := Categories()
 
-	if len(got) != 4 {
-		t.Fatalf("Categories() 길이 = %d, want 4", len(got))
+	if len(got) != 6 {
+		t.Fatalf("Categories() 길이 = %d, want 6", len(got))
 	}
 
 	seen := make(map[Category]bool, len(got))
@@ -81,8 +82,10 @@ func TestCategoryIsHourly(t *testing.T) {
 	}{
 		{CategoryRINEX2Hourly, true},
 		{CategoryRINEX3Hourly, true},
+		{CategoryRINEX4Hourly, true},
 		{CategoryRINEX2Daily, false},
 		{CategoryRINEX3Daily, false},
+		{CategoryRINEX4Daily, false},
 	}
 
 	for _, tt := range tests {
@@ -106,8 +109,10 @@ func TestCategoryIsDaily(t *testing.T) {
 	}{
 		{CategoryRINEX2Daily, true},
 		{CategoryRINEX3Daily, true},
+		{CategoryRINEX4Daily, true},
 		{CategoryRINEX2Hourly, false},
 		{CategoryRINEX3Hourly, false},
+		{CategoryRINEX4Hourly, false},
 	}
 
 	for _, tt := range tests {
@@ -186,10 +191,16 @@ func TestCategoryMatchesName(t *testing.T) {
 			want:     CategoryMatchUnknown,
 		},
 		{
-			name:     "RINEX2 는 현재 판정을 유보한다",
+			name:     "RINEX2 Hourly 인데 세션 문자가 Daily('0') 이면 Mismatch",
 			category: CategoryRINEX2Hourly,
 			fileName: "sonp0010.26o",
-			want:     CategoryMatchUnknown,
+			want:     CategoryMatchMismatch,
+		},
+		{
+			name:     "RINEX4 는 긴 파일명 규칙으로 판정한다",
+			category: CategoryRINEX4Daily,
+			fileName: "sonp00kor_r_20260010000_01d_30s_mo.rnx.gz",
+			want:     CategoryMatchOK,
 		},
 		{
 			name:     "RINEX3 Category 인데 긴 파일명이 아니면 Unknown",

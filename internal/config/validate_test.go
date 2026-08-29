@@ -89,6 +89,18 @@ func validConfigForValidate(t *testing.T) *Config {
 					LocalPath:  mustTemplate(t, "/local/r3h/(YYYY)/(DOY)/(HH)/"),
 					RemotePath: mustTemplate(t, "/remote/r3h/(YYYY)/(DOY)/(HH)/"),
 				},
+				{
+					Category:   domain.CategoryRINEX4Daily,
+					Enabled:    false,
+					LocalPath:  mustTemplate(t, "/local/r4d/(YYYY)/(DOY)/"),
+					RemotePath: mustTemplate(t, "/remote/r4d/(YYYY)/(DOY)/"),
+				},
+				{
+					Category:   domain.CategoryRINEX4Hourly,
+					Enabled:    false,
+					LocalPath:  mustTemplate(t, "/local/r4h/(YYYY)/(DOY)/(HH)/"),
+					RemotePath: mustTemplate(t, "/remote/r4h/(YYYY)/(DOY)/(HH)/"),
+				},
 			},
 		},
 

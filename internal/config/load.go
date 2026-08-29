@@ -126,7 +126,8 @@ type loader struct {
 	//
 	// 섹션 하나가 통째로 없으면 그 안의 키도 전부 없으므로,
 	// 섹션 누락 1건에 키 누락 여러 건이 따라붙는다.
-	// [PUT.<CATEGORY>] 넷이 빠지면 4 + 12 = 16줄이 되어
+	// [PUT.<CATEGORY>] 지원 섹션이 전부 빠지면
+	// (현재 6섹션 × 키 3개) 누락 오류가 대량으로 쌓여
 	// "전부 보여준다" 는 의도가 오히려 원인을 가린다.
 	//
 	// 따라서 섹션 누락은 한 번만 알리고, 그 섹션에서 읽는 키는
@@ -467,9 +468,9 @@ func (l *loader) mode(s *iniSection, key string) domain.Mode {
 	return m
 }
 
-// categories 는 [PUT.<CATEGORY>] 섹션 넷을 읽는다.
+// categories 는 [PUT.<CATEGORY>] 섹션을 domain.Categories() 순서대로 읽는다.
 //
-// 네 섹션이 모두 있어야 한다.
+// 지원 Category 섹션이 모두 있어야 한다.
 // 빠뜨린 것을 "꺼진 것" 으로 해석하지 않는다.
 // 끄려면 Enabled = false 를 명시한다.
 // 그래야 설정 파일만 보고 어떤 Category 를 다루는 인스턴스인지 알 수 있다.
