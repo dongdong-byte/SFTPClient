@@ -21,6 +21,9 @@
 | 2026-08-28 | 4절 미결 구조 항목 해소 — `internal/scan` 분리, `config` 완료 |
 | 2026-08-28 | 패키지명 표기 `pathpl` → `pathpl` 통일. 코드가 원본이다 |
 | 2026-08-29 | `DirLister.List` 시그니처에 `context.Context` 반영 (구현과 정합) |
+| **2026-08-30** | **Ledger 복합키 `(category, file_name)`, `schema_version` 4. lookup 완료** |
+| 2026-08-30 | **`internal/lock` 추가** — 프로세스 단일 실행 (디렉터리 + owner token). main/config 연동은 후속 |
+| 2026-08-30 | `.gitattributes` — `*.go`/`*.sql`/`*.md`/`*.ini` 줄끝 LF 고정 |
 
 ### 관련 문서
 
@@ -33,11 +36,12 @@
 | `docs/SFTPClient_SCAN_DESIGN_DECISIONS.md` | Scan 범위·복구 전략의 결정 경위와 **기각 목록** |
 | `config.example.ini` | 설정 템플릿. 커밋 대상. `config.ini` 는 `.gitignore` |
 
-**용어 대응 — 설계안의 `file_id` ↔ 구현의 `file_name`.**
+**용어 대응 — 설계안의 `file_id` ↔ 구현의 `(category, file_name)`.**
 설계안 9.1은 식별자를 `SHA-256( Domain │ Category │ NormalizedName )` 해시로 정의하고 `file_id`라 명명했으나,
-구현에서는 정규화한 파일명 자체를 식별자로 사용하며 컬럼명도 실체에 맞춰 `file_name`으로 둔다.
-변경 근거는 `docs/SFTPClient_LEDGER_CONCEPT.md` 4.1에 기술한다.
-설계안 원문을 참조할 때는 두 이름을 같은 것으로 읽는다.
+구현에서는 정규화한 파일명 컬럼을 `file_name`으로 두고 **Category 와 함께 복합키**로 쓴다.
+`file_name` 단독이 식별자가 아니다. RINEX3/RINEX4 가 같은 파일명을 가질 수 있기 때문이다
+(`schema_version` 4 / CONCEPT 4.1).
+설계안 원문을 참조할 때는 `file_id` ≈ `(category, file_name)` 으로 읽는다.
 
 **전송 상태 표기는 `VERIFIED`로 통일한다.**
 설계안 8.1·13.2는 `SUCCESS`, 9.3은 `VERIFIED`로 표기가 엇갈린다.
@@ -132,7 +136,7 @@ SFTPClient/
 │   │                           시각은 Expand 내부에서 UTC로 강제한다.
 │   │                           알 수 없는 토큰과 짝 없는 괄호는 Parse 단계에서 거부한다.
 │   │
-│   ├─ scan/           [다음]   디렉터리를 나열하여 어떤 파일이 어디에 있는지 사실만 수집.
+│   ├─ scan/           [완료]   디렉터리를 나열하여 어떤 파일이 어디에 있는지 사실만 수집.
 │   │                           판정하지 않는다. 0바이트도 .part 도 거르지 않고 그대로 올린다.
 │   │                           DirLister 인터페이스를 consumer-side 로 선언하여
 │   │                           로컬과 원격 SFTP 를 같은 로직으로 다룬다.
@@ -142,9 +146,18 @@ SFTPClient/
 │   │                           순차 실행한다. 병렬화 대상이 아니다.
 │   │                           fs.ErrNotExist 는 오류가 아니라 건너뛰기다.
 │   │
-│   ├─ verify/                  판정 로직 전담. 전송도 기록도 하지 않고 "정상인가"만 답한다.
+│   ├─ verify/         [완료]   판정 로직 전담. 전송도 기록도 하지 않고 "정상인가"만 답한다.
 │   │                           Ingress  — size>0, IsPartFile(.part 제외), mtime grace (설계안 7)
 │   │                           Transfer — 원본/목적지 Size 대조, 최종 파일 존재 확인 (설계안 8)
+│   │                           [예정] Transfer 판정 구현. Ingress 는 완료.
+│   │
+│   ├─ lock/           [완료]   프로세스 단위 중복 실행 방지. (설계안 14)
+│   │                           lock 디렉터리 + owner-<token>. RemoveAll 금지.
+│   │                           빈 경로 거부(ErrInvalidPath). stale 은 나이 문턱만(MVP1).
+│   │                           비어 있지 않은 lock dir 은 수동 확인 hard error.
+│   │                           config/ledger 를 import 하지 않는다. 경로·staleAfter 는 인자.
+│   │                           TookOver / ErrHeld / ErrLost 로 운영 신호를 구분한다.
+│   │                           main/config 연동·LockStaleMinutes 노출은 후속.
 │   │
 │   ├─ transport/               파일을 실제로 옮기는 계층. 설계안 4절의 SFTP Core.
 │   │                           sftpfs.go  — SSH 공개키 접속, known_hosts, .part 업로드, Rename
@@ -168,13 +181,16 @@ SFTPClient/
 │   │                           schema.sql — 물리 스키마 원본. go:embed로 실행파일에 포함하고
 │   │                                        시작 시 실행한다. 스키마는 이 파일이 유일한 원본이며
 │   │                                        Go 코드에 CREATE TABLE 문자열을 중복해 두지 않는다.
+│   │                                        PK = (category, file_name). schema_version = 4.
 │   │                           db.go      — Open/PRAGMA/schema 적용                      [완료]
 │   │                                        identity_rule + schema_version 대조
 │   │                           common.go  — CommonInput, UpsertCommon (3분기 UPSERT)     [완료]
 │   │                                        v5 에서 local_path 제거. 경로를 보유하지 않는다
-│   │                           lookup.go  — file_name IN (...) 일괄 조회                  [예정]
+│   │                                        ON CONFLICT (category, file_name)
+│   │                           lookup.go  — category 범위 file_name IN (...) 일괄 조회  [완료]
 │   │                                        후보를 만들지 않고 현재 상태만 돌려준다
 │   │                           put.go     — put_ledger 접근                              [예정]
+│   │                                        쓰기는 반드시 category 를 포함한다
 │   │                           판정은 하지 않되 revision·state 갱신은 여기서 한다. (CONCEPT 2.1)
 │   │                           SetMaxOpenConns(1)이 쓰기를 직렬화하므로 MaxWorkers>1 에서도
 │   │                           정합성은 안전하다. 단일 Writer 고루틴 + 배치 커밋은
@@ -196,6 +212,7 @@ SFTPClient/
 │                               schema.sql과 짝이며 항상 함께 갱신한다.
 │
 ├─ config.example.ini           설정 템플릿. 실제 config.ini는 커밋하지 않는다.
+├─ .gitattributes               *.go / *.sql / *.md / *.ini 줄끝 LF 고정
 ├─ .gitignore                   config.ini, keys/, logs/, data/, *.db, *.db-wal,
 │                               *.db-shm, *.exe 등을 제외한다.
 └─ go.mod                       모듈 경로(SFTPClient), Go 버전 및 의존성 목록.
@@ -212,7 +229,7 @@ SFTPClient/
 - `put`과 `download`는 필요한 인터페이스를 consumer-side에서 선언한다.
 - PUT에만 필요한 로직은 `put`에 둔다.
 - DOWNLOAD에만 필요한 로직은 `download`에 둔다.
-- 양쪽에서 사용하는 기능은 `domain`, `pathpl`, `verify`, `transport`, `ledger`, `config`, `logging` 등 공통 패키지로 분리한다.
+- 양쪽에서 사용하는 기능은 `domain`, `pathpl`, `scan`, `verify`, `transport`, `ledger`, `lock`, `config`, `logging` 등 공통 패키지로 분리한다.
 - 동일 기능을 PUT과 DOWNLOAD 양쪽에 복사하여 중복 구현하지 않는다.
 - `utils`, `helper`, `common`처럼 책임이 불명확한 범용 패키지를 만들지 않는다.
 - `internal/sftp`라는 패키지명은 사용하지 않는다. `github.com/pkg/sftp`와 이름 충돌을 피하기 위해 `transport`를 사용한다.
@@ -247,24 +264,32 @@ PRAGMA busy_timeout = 5000;
   전송에 필요한 경로는 Scan 이 나열 시점부터 메모리로 들고 다닌다.
 - **후보 선정은 Scan 주도이다 (v5).**
   DB 가 "무엇을 어디서 보낼지" 를 지시하지 않는다.
-  Scan 이 디렉터리를 나열한 뒤 그 안의 파일명으로 장부에 묻는다.
+  Scan 이 디렉터리를 나열한 뒤 그 Category + 파일명으로 장부에 묻는다.
 
   ```sql
-  SELECT c.file_name, c.revision, c.size, c.mtime, p.status
+  SELECT c.category, c.file_name, c.revision, c.size, c.mtime, p.status
     FROM common_ledger c
     LEFT JOIN put_ledger p
-      ON p.file_name = c.file_name AND p.revision = c.revision
-   WHERE c.file_name IN (?, ?, ?, ...);
+      ON  p.category = c.category
+      AND p.file_name = c.file_name
+      AND p.revision = c.revision
+   WHERE c.category = ?
+     AND c.file_name IN (?, ?, ?, ...);
   ```
 
-  PK 인덱스를 그대로 타므로 별도 인덱스가 필요 없다.
+  복합 PK `(category, file_name)` 인덱스를 그대로 타므로 `file_name` 단독 인덱스는 두지 않는다.
   부수 효과로 `FAILED` 행이 Scan 범위 밖으로 밀려나면 자연히 만료되며,
   자동 재시도와 수동 복구(`recovery`)의 경계가 명확해진다.
+- **식별자는 `(category, file_name)` 복합키이다 (`schema_version` 4).**
+  RINEX3/RINEX4 가 같은 long filename 을 가질 수 있어 `file_name` 단독 PK 는
+  category 덮어쓰기 + revision 루프를 만든다. `identity_rule` 은 정규화만 담당하고
+  키 구조 변경은 `schema_version` 이 담당한다. (CONCEPT 4.1)
 - 다음 두 항목은 스키마가 강제하지 못하므로 코드 리뷰에서 확인한다.
   - `remote_path` / `part_path`는 전송 완료 후가 아니라 `IN_PROGRESS` 전환 트랜잭션 안에서 기록한다.
     완료 후에 기록하면 중단된 항목이 NULL로 남아 잔여 `.part` 정리 대상을 찾지 못한다. (설계안 9.3, 13.2)
-  - `put_ledger`의 FK는 `file_name`만 참조하므로 `revision` 정합성은 강제되지 않는다.
+  - `put_ledger`의 FK는 `(category, file_name)`을 참조하므로 `revision` 정합성은 강제되지 않는다.
     `revision` 값은 항상 `common_ledger`에서 읽은 값을 그대로 사용하고 직접 구성하지 않는다.
+    put_ledger 쓰기는 반드시 `category` 를 함께 넘긴다.
 
 ### 아직 결정되지 않은 구조 항목
 
@@ -273,7 +298,7 @@ PRAGMA busy_timeout = 5000;
 | 항목 | 설계안 | 현황 |
 |---|---|---|
 | ~~Hot Scan / Deep Scan 분리~~ | 11.1 | **확정 — `internal/scan` 으로 분리.** PUT 과 DOWNLOAD 가 모두 사용한다 |
-| 중복 실행 방지 + Stale Lock | 14 | 담당 패키지 미정. **`transport` 도입(I단계) 시점에는 있어야 한다** |
+| ~~중복 실행 방지 + Stale Lock~~ | 14 | **확정 — `internal/lock`.** 패키지 완료. main/config 연동·`LockStaleMinutes` 는 후속 |
 | `db status` / `db failed put` / `db query` 조회 명령 | 9.2 | 담당 패키지 미정 |
 | 대량 유입 검증 기준 | 13 (18.1 확정 항목) | 7절이 단위 테스트만 다루고 있어 보완 필요 |
 
@@ -317,25 +342,25 @@ domain                             ✅ 완료
     ↓
 pathpl                             ✅ 완료
     ↓
-ledger  db.go, common.go, schema v5 ✅ 완료
+ledger  db/common/lookup, schema_version 4 ✅ 완료
     ↓
 config  ini / config / load / validate  ✅ 완료
     ↓
-scan        internal/scan                ← 다음
+scan        internal/scan                ✅ 완료
     ↓
-verify      Ingress 판정
+verify      Ingress 판정                 ✅ 완료
     ↓
-Batch Ledger Lookup   file_name IN (...)
+Batch Ledger Lookup   category + file_name IN (...)  ✅ 완료
     ↓
-Scan → Verify → Upsert → 후보 → --dry-run   ★ 1차 목표
+Scan → Verify → Upsert → 후보 → --dry-run   ★ 1차 목표 (조립)
     ↓
-put_ledger  전송 상태 머신
+put_ledger  전송 상태 머신               ← 다음 (category 필수)
     ↓
 transport   .part → size → rename → 최종 확인
             + 시작 시 IN_PROGRESS 회수
+            + lock 연동 (Acquire/Release)
     ↓
 Worker Pool  전송 MaxWorkers = 4
-            + lock (중복 실행 방지)
     ↓
 recovery / seed / Retention Cleanup
 ```
@@ -360,8 +385,13 @@ List → Batch Lookup → 메모리 대조 → (신규·변경만) Verify → Up
 size·mtime 이 같으면 Upsert 를 호출하지 않는다.
 
 변경이 감지된 파일은 Upsert 로 revision 이 오른 뒤에 후보가 된다.
-`put_ledger` 의 PK 가 `(file_name, revision)` 이므로
+`put_ledger` 의 PK 가 `(category, file_name, revision)` 이므로
 새 revision 의 행이 존재할 수 없음이 보장되어 재조회가 필요 없다.
+
+**`internal/lock` 은 패키지 단위로 완료**되어 있다. 스케줄러 중첩 실행으로
+같은 후보가 이중 전송되는 것을 막는다. main 배선과 `LockStaleMinutes` config 노출은
+transport 도입과 함께 한다. staleAfter 가 최장 실행보다 짧으면 살아 있는 실행을
+탈취해 이중 전송이 될 수 있으므로 넉넉히 잡는다.
 
 - MVP 1 에서는 **정확성, 무결성, 중복 방지, 실패 추적**을 우선한다.
 - **Scan은 순차, 전송은 병렬이다.** 두 가지를 혼동하지 않는다.

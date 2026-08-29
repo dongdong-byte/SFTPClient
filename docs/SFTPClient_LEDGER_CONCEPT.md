@@ -1,10 +1,13 @@
 # SFTPClient Ledger 개념 · 논리 모델
 
-> 대상 산출물: `internal/ledger/schema.sql` (**v5**)
+> 대상 산출물: `internal/ledger/schema.sql` (**schema_version = 4**, 개정 이력 v7)
 > 기준 문서: `../../../../../Downloads/Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx` 9절
 > 함께 읽을 것: `SFTPClient_SCAN_DESIGN_DECISIONS.md` (Scan 범위·복구 전략 결정 경위)
 > 이 문서는 스키마의 **근거**를 남긴다. 스키마 자체는 SQL 파일이 원본이다.
 > 두 파일은 항상 함께 갱신한다. 한쪽만 바뀌면 근거를 잃은 스키마가 된다.
+>
+> 파일 상단의 v1~v7은 *설계* 개정 이력이고, `schema_meta.schema_version`은 *실재 DB* 구조 세대다.
+> 둘의 숫자가 같다고 가정하지 않는다. (현재: 개정 v7 ↔ `schema_version` `'4'`)
 
 ### 개정 이력
 
@@ -14,8 +17,22 @@
 | 2026-08-25 | 4.8 에 `MaxWorkers` 기본값 4 확정 반영. 단일 Ledger Writer 는 정합성 요건이 아니라 MVP 4 최적화임을 명시 |
 | **2026-08-28** | **스키마 v5 반영. 아래 표 참조** |
 | 2026-08-29 | 6.3 — `.part` 제외 책임을 `scan`이 아니라 `verify`(Ingress) 로 명시. PROJECT_GUIDELINES 와 정합 |
+| **2026-08-30** | **복합키 `(category, file_name)`. `schema_version` 3 → 4. 아래 v7 표 참조** |
 
-**v5 에서 바뀐 것 (본 문서 개정 사유)**
+**v7 에서 바뀐 것 (2026-08-30, 본 문서 최신 개정 사유)**
+
+| # | 변경 | 영향 절 |
+|---|---|---|
+| 1 | `common_ledger` PK 를 `file_name` → **`(category, file_name)`** | 2.2, 4.1, 4.5, 4.7, 5⑤, 8 |
+| 2 | `put_ledger` PK 를 `(file_name, revision)` → **`(category, file_name, revision)`**, FK 도 복합 | 2.2, 5⑤, 6.1 |
+| 3 | Batch Lookup 은 **category 범위**의 `file_name IN (...)` | 4.5 |
+| 4 | `identity_rule`(`FILENAME_V1`)은 정규화 의미만. **키 구조 변경은 `schema_version` 관할** | 4.1 |
+| 5 | `schema_meta.schema_version` `'3'` → **`'4'`** (파괴적. 개발 DB 재생성) | 4.1, 7 |
+
+**근거 한 줄** — RINEX3 과 RINEX4 는 동일 long filename 을 가질 수 있다.
+`file_name` 단독 PK 에서는 서로 revision 을 올리고 category 를 덮어쓰는 **영구 재전송 루프**가 된다.
+
+**v5 에서 바뀐 것 (이전 개정, 유지)**
 
 | # | 변경 | 영향 절 |
 |---|---|---|
@@ -78,8 +95,9 @@ UPSERT 한 문장이면 그 창이 없다.
 파일 1 ────< 수신 이력 0..N
 ```
 
-`common_ledger`는 파일 하나당 **한 행**을 유지하고 재관측 시 UPDATE 한다.
-`put_ledger`는 `(file_name, revision)`으로 **행을 누적**한다.
+`common_ledger`는 **`(category, file_name)` 하나당 한 행**을 유지하고 재관측 시 UPDATE 한다.
+같은 정규화 파일명이라도 Category 가 다르면 별개 파일이다 (RINEX3 / RINEX4).
+`put_ledger`는 `(category, file_name, revision)`으로 **행을 누적**한다.
 따라서 "현재 상태"는 common이, "지나온 기록"은 put이 소유한다.
 
 ### 2.3 시간 순서 — PUT과 DOWNLOAD는 대칭이 아니다
@@ -195,12 +213,32 @@ SONP 00 KOR _R_ 20260010200 _01H _01S _MS .rnx.gz
 여러 인스턴스의 로그를 한곳에 모아 보는 요구가 생기면 그때 추가한다.
 `file_id` 에 들어가지 않으므로 나중에 추가해도 누적 Ledger에 영향이 없다.
 
-**Category 를 키에서 제외한 이유** — 파일명의 `_01D_` / `_01H_` 필드에 이미 인코딩되어 있다.
-키에 넣으면 중복 인코딩이며, 설정 실수로 같은 디렉터리가 두 Category에 걸릴 경우
-물리적으로 동일한 파일이 서로 다른 식별자 두 개로 등록되어 중복 방지 규칙이 깨진다.
+**Category 를 키에 다시 넣은 이유 (v7, 2026-08-30)** — v2~v6 문서는 Category 를 키에서 뺐다.
+파일명의 `_01D_` / `_01H_` 에 이미 인코딩되어 있고, 설정 실수로 같은 디렉터리가
+두 Category 에 걸리면 물리적으로 같은 파일이 두 식별자로 갈라질 위험이 있다는
+판단이었다.
+
+그 전제는 **RINEX3 과 RINEX4 가 서로 다른 파일명 공간을 쓴다**는 가정이 깔려 있다.
+실제로는 동일 long filename 이 두 Category 에 들어올 수 있다.
+`file_name` 단독 PK 에서는 UPSERT 가 한 행만 유지하므로
+한쪽 Category 가 다른 쪽을 덮어쓰고 revision 이 끝없이 오른다.
+전송은 매번 "변경"으로 보여 **영구 재전송 루프**가 된다.
+
+따라서 식별자를 **`(category, file_name)`** 으로 되돌렸다.
+설계안 9.1 이 Category 를 해시 입력에 넣었던 취지와도 다시 맞는다.
+비용은 높다(7절). `schema_version` 을 `4` 로 올리고 개발 DB 는 재생성한다.
+
+`identity_rule = 'FILENAME_V1'` 은 **정규화 규칙**만 가리킨다.
+키 구조(단독 → 복합) 변경은 `identity_rule` 이 아니라 **`schema_version`** 의 관할이다.
+둘을 섞으면 운영자가 정규화와 스키마 세대를 동시에 의게 된다.
+
+설정 실수로 같은 물리 파일이 두 Category 에 등록되는 위험은 남는다.
+그건 Ingress 의 Category 대조(`MatchesName`)와 config 검증이 막는 쪽이고,
+키에서 Category 를 빼 중복 전송 루프를 허용하는 대가보다 작다.
 
 **운영 조회 가독성** — `db failed put` 출력이 `a3f29c1b74e0d582` 대신
 `sonp00kor_r_20260010200_01h_01s_ms.rnx.gz`로 나온다. 장애 대응 시 조인 없이 바로 읽힌다.
+복합키 이후에는 Category 도 함께 보여야 같은 파일명을 구분할 수 있다.
 
 **`schema_version`과 파일 개정 이력은 다른 것을 센다.**
 `../../../../../Downloads/schema_v5.sql`의 v1~v5는 스키마 *설계* 개정 이력이고 사람이 읽는 문서다.
@@ -453,7 +491,7 @@ SELECT c.file_name, c.revision, c.local_path, c.size
 장부에 물어볼 것은 "이 이름들 중 무엇을 아직 안 보냈는가" 하나뿐이다.
 
 ```sql
--- v5
+-- v5 (폐기 직전 형태 — file_name 단독 조인)
 SELECT c.file_name, c.revision, c.size, c.mtime, p.status
   FROM common_ledger c
   LEFT JOIN put_ledger p
@@ -461,11 +499,23 @@ SELECT c.file_name, c.revision, c.size, c.mtime, p.status
  WHERE c.file_name IN (?, ?, ?, ...);
 ```
 
+```sql
+-- v7 (현재) — category 범위 + 복합 조인
+SELECT c.category, c.file_name, c.revision, c.size, c.mtime, p.status
+  FROM common_ledger c
+  LEFT JOIN put_ledger p
+    ON  p.category = c.category
+    AND p.file_name = c.file_name
+    AND p.revision = c.revision
+ WHERE c.category = ?
+   AND c.file_name IN (?, ?, ?, ...);
+```
+
 절차는 이렇다.
 
 ```
-1) Scan 이 디렉터리 하나를 나열한다
-2) 그 안의 파일명들로 장부를 한 번에 조회한다
+1) Scan 이 디렉터리 하나를 나열한다 (해당 Category 는 config 섹션에서 이미 정해져 있다)
+2) 그 Category + 파일명들로 장부를 한 번에 조회한다
 3) 메모리에서 대조한다
 ```
 
@@ -476,8 +526,8 @@ SELECT c.file_name, c.revision, c.size, c.mtime, p.status
 | size·mtime 동일, 행 없음 / `FAILED` | 전송 (또는 재시도) |
 | size 또는 mtime 상이 | `revision` +1 후 전송 |
 
-**`file_name` 이 PK 이므로 이 조회는 PK 인덱스를 그대로 탄다.**
-별도 인덱스가 필요 없다. `local_path` 인덱스를 추가하는 안이 검토되었으나
+**`(category, file_name)` 이 PK 이므로 이 조회는 복합 PK 인덱스를 그대로 탄다.**
+`file_name` 단독 인덱스는 두지 않는다. `local_path` 인덱스를 추가하는 안이 검토되었으나
 컬럼 자체를 삭제하면서 함께 폐기했다.
 
 `IN` 절의 항목 수는 `SQLITE_MAX_VARIABLE_NUMBER`(기본 32766) 이내로 나눈다.
@@ -561,7 +611,6 @@ Stability Check 를 기각하는 근거는 그대로다.
 
 ```
 file_name → base_name    (압축 확장자만 제거하면 유도 가능)
-file_name → category     (RINEX2/3 은 파일명 형식, D/H 는 01D/01H 필드)
 ```
 
 **`base_name`** — 같은 관측 데이터가 `.rnx`와 `.rnx.gz` 두 형태로 유입되는지
@@ -596,9 +645,14 @@ GAGE00KOR_R_20261820000_01D_30S_MO.crx.gz    1,868KB
 **네 형태는 `file_name`이 서로 다르므로 각각 별개의 행이 되고 각각 전송된다.**
 확장자 필터를 두지 않기로 했기 때문이다. 전송량 영향은 지침 9.7에 기록한다.
 
-**`category`** — Scanner가 파싱하지 않고 config의 `[PUT.<CATEGORY>]` 섹션에서 전달받는다.
+**`category`** — v7 부터 **식별자 구성요소**이다 (`PRIMARY KEY (category, file_name)`).
+Scanner가 파싱하지 않고 config의 `[PUT.<CATEGORY>]` 섹션에서 전달받는다.
 `verify` 단계에서 config가 지정한 값과 파일명이 함의하는 주기를 대조하여
-불일치 시 Ingress를 거부한다. **Config 오기입 탐지 장치**이므로 중복 저장의 값이 있다.
+불일치 시 Ingress를 거부한다. **Config 오기입 탐지 장치**이기도 하다.
+
+RINEX2/3 의 주기 필드로 Category 를 *유도*할 수는 있으나,
+RINEX4 와 파일명 공간이 겹치므로 **유도값만으로 키를 대체하지 않는다.**
+키의 Category 는 config 가 준 값이며, 파일명에서 읽은 주기와 다르면 Ingress 가 막는다.
 
 ### 4.8 접속 시 필수 PRAGMA
 
@@ -777,17 +831,20 @@ CHECK가 위반을 잡아주지만 잡히는 시점이 INSERT라 이미 스캔�
 `LOCAL`로 덮어쓰고, PUT 후보 제외가 풀려 Ping-Pong이 발생한다.
 
 반대로 `size`, `mtime`, `state`, `ingress_verified_at`은 **갱신한다.** 최신 관측값이 유용하다.
-`category`도 갱신 대상이지만, config 오기입 시 조용히 덮어쓰는 경로가 열려 있다(6절 미결 5).
+`category`는 **PK 일부**이므로 UPDATE 대상이 아니다. 행의 정체성이 바뀌면 다른 파일이 된다.
+config 오기입은 Ingress 거부 또는 별도 행으로 드러나야 하며, 조용히 덮어쓰지 않는다.
+(미결 5는 "덮어쓰기 경로를 막을 것인가"에서 **"PK 이므로 덮어쓸 수 없다"** 로 성격이 바뀌었다.)
 
 > **v5 변경** — v4 는 여기에 `local_path` 도 갱신 대상으로 적었으나,
 > 컬럼 자체가 삭제되었으므로 해당 규약이 사라졌다.
 > 경로는 이제 Scan 이 메모리로 들고 다니며 DB 를 거치지 않는다.
 
 **⑤ `put_ledger.revision`은 `common_ledger`에서 읽은 값을 그대로 쓴다.**
-FK는 `file_name`만 참조하므로 revision 정합성은 DB가 강제하지 못한다.
+FK는 `(category, file_name)`을 참조하므로 revision 정합성은 DB가 강제하지 못한다.
 부모가 `revision=1`인데 자식에 `revision=99`를 넣어도 삽입된다(검증 완료).
 4.5의 후보 선정 쿼리가 common에서 읽은 값을 전달하는 한 발생하지 않으나,
 revision 값을 직접 구성하거나 증가시키는 코드 경로를 만들지 않는다.
+put_ledger 쓰기 API 는 반드시 `category` 를 함께 받는다.
 
 **⑥ 트랜잭션 안에서는 `tx`만 쓰고 `db.conn`을 건드리지 않는다.**
 `ledger.Open`은 `SetMaxOpenConns(1)`로 커넥션을 하나로 제한한다.
@@ -819,7 +876,7 @@ Scan은 병렬화 대상이 아니다. 디렉터리를 순차로 훑으며,
 | 2 | 과거 revision 의 size/mtime 소실을 허용하는가 | MVP 1 종료 |
 | 3 | `download_ledger` 의 최종 구조 및 `common_ledger` 등록 시점 | MVP 2 착수 전 |
 | 4 | `origin` 에 `RECEIVER` 재도입 여부 | 현장 요구 발생 시 |
-| 5 | config 오기입으로 `category` 가 덮어써지는 경로를 막을 것인가 | MVP 1 종료 |
+| ~~5~~ | ~~config 오기입으로 `category` 가 덮어써지는 경로~~ | **v7: PK 일부라 덮어쓸 수 없음. Ingress 대조로 방어** |
 | ~~6~~ | ~~RINEX2 파일명의 주기 판정 규칙~~ | **v5 에서 해소. 아래 참조** |
 | 7 | `.part` 외 임시 접미사(`.tmp` 등)가 유입되는가 | MVP 1 운영 로그 확인 후 |
 | 8 | Grace Time 실측값 | `state='CHANGED'` 누적량 관측 후. 판정 기준은 4.4 의 표 |
@@ -849,7 +906,7 @@ Mismatch 시 거부가 아니라 **경고 후 통과**로 두는 것을 검토�
 
 ### 6.1 항목 1 상세
 
-현재 `put_ledger` PK는 `(file_name, revision)`이므로 **revision당 한 행**이다.
+현재 `put_ledger` PK는 `(category, file_name, revision)`이므로 **revision당 한 행**이다.
 3회 실패하면 `attempts=3`, `error='timeout'` 한 줄로 뭉개진다.
 1차 실패가 언제 무슨 이유였는지는 답할 수 없다.
 
@@ -898,8 +955,9 @@ Ingress 또는 운영 로그에 예상 밖 확장자를 남겨 하루치 운영�
 | 낮음 | `base_name` 산출 규칙 변경 (D등급) | 관측 수단이므로 되돌림 비용 없음 |
 | 중간 | CHECK 값 추가/변경 | 테이블 재작성, 데이터는 유지 |
 | **중간** | **컬럼 삭제 (v5 `local_path`)** | **테이블 재작성 + `schema_version` 세대 상승** |
+| **중간** | **키 구조 변경 (v7 복합키)** | **테이블 재작성 + `schema_version` 상승. 식별자 의미 변경** |
 | 중간 | `RetentionDays` **단축** | 지운 행은 복구 불가. Recovery 상한도 함께 줄어듦 |
-| **높음** | **식별자 규칙 변경** | **누적 Ledger 전체 무효, 전량 재전송** |
+| **높음** | **식별자 규칙(`NormalizeName`) 변경** | **누적 Ledger 전체 무효, 전량 재전송** |
 
 되돌릴 수 없는 것은 마지막 하나뿐이며,
 이 항목에 검토 시간의 대부분을 사용했고 실제 운영 파일명으로 검증했다.
@@ -924,7 +982,7 @@ Ingress 또는 운영 로그에 예상 밖 확장자를 남겨 하루치 운영�
 | 식별자 | SHA-256 해시 앞 16바이트 | 정규화 파일명 | 4.1 |
 | 컬럼명 | `file_id` | `file_name` | 4.1 |
 | Domain | 식별자 구성요소 | 사용하지 않음. config 에서도 제거 | 4.1 |
-| Category | 식별자 구성요소 | 일반 컬럼 + 오기입 대조 | 4.1, 4.7 |
+| Category | 식별자 구성요소 | **`(category, file_name)` 복합키** (v7). Ingress 오기입 대조 | 4.1, 4.7 |
 | `origin` | RECEIVER / LOCAL / DOWNLOAD | LOCAL / DOWNLOAD | 4.3 |
 | 전송 상태 | SUCCESS 와 VERIFIED 혼용 | VERIFIED 로 통일 | 4.3 |
 | DOWNLOAD FK | 명시 없음 | 걸지 않음 | 3 |
@@ -939,7 +997,8 @@ Ingress 또는 운영 로그에 예상 밖 확장자를 남겨 하루치 운영�
 | 0바이트 파일 | 명시 없음 | `size > 0` 이 막는다. `revision` 의 역할이 아니다 | 4.4 |
 | 압축 확장자 | 명시 없음 | `.gz` / `.Z` / `.zip` 보존. 목록 관리 불필요 | 4.2 |
 | **`local_path`** | **경로 기록** | **컬럼 없음. Scan 이 메모리로 보유** | **4.1, 4.5** |
-| **후보 선정** | **DB 조회 주도** | **Scan 주도 + `file_name IN (...)`** | **4.5** |
+| **후보 선정** | **DB 조회 주도** | **Scan 주도 + category 범위 `file_name IN (...)`** | **4.5** |
+| **식별자 키** | **해시(Domain│Category│Name)** | **`(category, file_name)`** (v7) | **4.1** |
 | **`revision` 판정** | **명시 없음** | **size OR mtime. 대가를 기록** | **4.9** |
 | **Retention Cleanup** | **명시 없음** | **애플리케이션 책임. `ingress_verified_at` 기준** | **4.10** |
 | **전환 시딩** | **없음** | **`seed` — 원격 나열 기준** | **4.11** |
@@ -956,5 +1015,6 @@ Ingress 또는 운영 로그에 예상 밖 확장자를 남겨 하루치 운영�
 > 경로 토큰은 UTC 인데 지연이 3~4시간 이상 발생하므로,
 > 1일로 두면 UTC 하루의 마지막 몇 시간 분량이 매일 Hot Scan 을 빠져나간다.
 
-용어 대응: 설계안 9절의 `file_id` ↔ 본 스키마의 `file_name`.
+용어 대응: 설계안 9절의 `file_id` ↔ 본 스키마의 **`(category, file_name)`** (컬럼명은 `file_name`).
+`file_name` 단독이 식별자인 것처럼 읽히면 안 된다. 복합키다.
 설계 문서를 참조할 때는 두 이름을 같은 것으로 읽는다.
