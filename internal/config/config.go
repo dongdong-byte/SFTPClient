@@ -56,8 +56,8 @@ type GeneralConfig struct {
 	// Log.Dir)이 같은 규칙을 쓰므로, 해석 시점을 한 곳으로 모아 둔다.
 	LedgerPath string
 
-	// LockStale 는 lock 파일이 이 나이를 넘으면 직전 실행의 비정상
-	// 종료 잔재로 판정하여 탈취를 허용하는 문턱이다.
+	// LockStale 는 기존 lock 의 owner marker 가 이 나이를 넘으면
+	// 직전 실행의 비정상 종료 잔재로 판정할 수 있게 하는 문턱이다.
 	//
 	// config.ini 에서는 LockStaleSeconds 라는 초 단위 정수로 입력하지만,
 	// 로드 시점에 time.Duration 으로 변환하여 보관한다. Grace 와 같은
@@ -171,20 +171,24 @@ type PutConfig struct {
 	// 전송만 bounded Worker Pool 로 병렬 처리하며 MVP 1 기본값은 4이다.
 	MaxWorkers int
 
-	// MaxAttempts 는 한 번의 프로그램 실행 안에서
-	// 파일 한 건에 허용하는 최대 전송 시도 횟수이다.
+	// MaxRetries 는 동일 (category, file_name, revision) 에 허용하는
+	// 누적 자동 전송 시도 상한이다. 첫 시도를 포함한다.
+	// MaxRetries = 5 면 총 5회까지 자동 시도한다.
 	//
-	//	MaxAttempts = 3 → 최대 3번 시도 (첫 시도 + 재시도 2회)
-	//	MaxAttempts = 1 → 재시도 없이 한 번만 시도
+	// 의미 재정의 (2026-08-30 확정) — 이전 의미는 "같은 실행 안에서
+	// N번 재시도"였다. 폐기 이유: 프로그램은 매시 실행되므로 스케줄러가
+	// 이미 1시간 간격 retry 를 제공한다. 실행 안 재시도는 backoff 장치를
+	// 요구하고, 일시 장애(회선)에는 1시간 뒤가 지금 3초 뒤보다 낫다.
+	// 권한 오류·잘못된 RemotePath 같은 영구 실패는 몇 번을 시도해도
+	// 해결되지 않으므로, 누적 5회면 자동 복구가 아니라 운영 장애다.
+	// 상한 도달 항목은 FAILED 로 남고 자동 후보에서 빠진다.
+	// (db failed put 으로 관측 — 설계안 9.2)
 	//
-	// 1 미만은 validate.go 에서 거부한다.
-	//
-	// config.ini 의 키 이름은 MaxRetries 이다.
-	// 이름과 의미가 어긋나므로 Go 필드에서는 실제 의미대로 적는다.
-	// "Retries" 라는 이름을 그대로 두면 호출부가 시도 횟수를 하나 더 주기
-	// 쉽고, 그 실수는 전송이 한 번 더 도는 형태라 로그만 보고는 잡히지 않는다.
-	// schema.sql 의 put_ledger.attempts 와도 이 이름이 맞는다.
-	MaxAttempts int
+	// 이름을 MaxAttempts 로 바꾸지 않는 이유: 의미상 더 정확하지만
+	// 키 개명은 변경 범위만 키운다. 주석과 example.ini 로 못박는다.
+	// (2026-08-30 필드명을 ini 키와 일치시키기 위해 MaxAttempts 에서 통일함)
+
+	MaxRetries int
 
 	// MaxFilesPerRun 은 한 번의 실행에서 실제 전송할 최대 파일 수이다.
 	// 0 이면 제한하지 않는다.

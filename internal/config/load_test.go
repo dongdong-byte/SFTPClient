@@ -31,7 +31,7 @@ RetentionDays = 60
 
 [PUT]
 MaxWorkers = 4
-MaxRetries = 3
+MaxRetries = 5
 MaxFilesPerRun = 2000
 
 [PUT.SFTP]
@@ -106,9 +106,8 @@ func TestMapConfig_Normal(t *testing.T) {
 		t.Errorf("Mode = %q, want %q", cfg.General.Mode, domain.ModePut)
 	}
 
-	// 외부 키 MaxRetries → 내부 필드 MaxAttempts.
-	if cfg.Put.MaxAttempts != 3 {
-		t.Errorf("MaxAttempts = %d, want 3", cfg.Put.MaxAttempts)
+	if cfg.Put.MaxRetries != 5 {
+		t.Errorf("MaxRetries = %d, want 5", cfg.Put.MaxRetries)
 	}
 
 	if cfg.Put.SFTP.AuthMethod != "publickey" {

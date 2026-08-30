@@ -53,7 +53,7 @@ func validConfigForValidate(t *testing.T) *Config {
 
 		Put: PutConfig{
 			MaxWorkers:     4,
-			MaxAttempts:    3,
+			MaxRetries:     5,
 			MaxFilesPerRun: 2000,
 
 			SFTP: SFTPConfig{

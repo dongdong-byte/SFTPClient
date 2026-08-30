@@ -400,10 +400,7 @@ func mapConfig(f *iniFile, path string) (*Config, error) {
 	put := l.section("PUT")
 	cfg.Put.MaxWorkers = l.intVal(put, "MaxWorkers")
 
-	// config.ini 의 외부 키 이름은 MaxRetries 를 유지한다.
-	// 내부에서는 "첫 시도를 포함한 최대 시도 횟수"라는 실제 의미에 맞춰
-	// MaxAttempts 로 보유한다.
-	cfg.Put.MaxAttempts = l.intVal(put, "MaxRetries")
+	cfg.Put.MaxRetries = l.intVal(put, "MaxRetries")
 
 	cfg.Put.MaxFilesPerRun = l.intVal(put, "MaxFilesPerRun")
 
@@ -504,9 +501,6 @@ func (l *loader) categories() []CategoryConfig {
 // 여기에 있는 키를 example 에서 빠뜨리면 새 서버 설치 때 누락된다.
 //
 // config_test.go 가 example 파일로 이 표를 대조한다.
-//
-// 내부 필드명이 MaxAttempts 로 바뀌어도 외부 config.ini 키는
-// MaxRetries 이므로 이 표에는 MaxRetries 를 유지한다.
 func knownKeys() map[string][]string {
 	m := map[string][]string{
 		"GENERAL": {

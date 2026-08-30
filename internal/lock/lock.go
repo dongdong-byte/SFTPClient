@@ -95,7 +95,7 @@ var ErrHeld = errors.New("lock: held by another process")
 // 원인은 하나다. 이 프로세스가 오래 실행되는 동안 다른 인스턴스가
 // stale 로 판정하여 lock 을 탈취했다.
 //
-// 이 신호가 실제 운영에서 발생한다면 LockStaleMinutes 가 정상적인
+// 이 신호가 실제 운영에서 발생한다면 LockStaleSeconds 가 정상적인
 // 최장 실행 시간보다 짧은지 우선 확인해야 한다.
 //
 // 이 오류는 오직 owner marker 부재에서만 나온다.
@@ -122,7 +122,7 @@ type Lock struct {
 	// 관측한 뒤 새 lock 을 획득했음을 뜻한다.
 	//
 	// 이전 실행의 크래시·강제 종료·정전 때문일 수도 있지만,
-	// LockStaleMinutes 가 실제 정상 실행 시간보다 짧아서 살아 있는
+	// LockStaleSeconds 가 실제 정상 실행 시간보다 짧아서 살아 있는
 	// 실행을 stale 로 오판한 경우일 수도 있다.
 	//
 	// 따라서 호출자는 장애 확정이 아니라 운영 경고 신호로 다룬다.
@@ -375,7 +375,7 @@ func (l *Lock) Release() error {
 	// 디렉터리가 이미 없는 것은 오류가 아니다. 다른 인스턴스가
 	// 빈 디렉터리를 먼저 정리했다는 뜻이고, 소유권은 위에서 정상적으로
 	// 반납되었다. 이것을 ErrLost 로 올리면 호출자가 "탈취당했다" 로
-	// 읽어 LockStaleMinutes 를 엉뚱하게 조정한다.
+	// 읽어 LockStaleSeconds 를 엉뚱하게 조정한다.
 	if err := os.Remove(l.path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil

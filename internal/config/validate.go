@@ -204,14 +204,12 @@ func (c *Config) checkPut(add addFunc) {
 		)
 	}
 
-	// config.ini 의 외부 키 이름은 MaxRetries 이지만,
-	// 내부에서는 첫 시도를 포함한 실제 의미에 맞춰 MaxAttempts 로 보유한다.
-	//
-	// 최소 한 번은 전송을 시도해야 하므로 0도 허용하지 않는다.
-	if c.Put.MaxAttempts < 1 {
+	// MaxRetries 는 동일 revision 의 누적 자동 시도 상한이다.
+	// 첫 시도를 포함한다. 최소 한 번은 시도해야 하므로 0 도 거부한다.
+	if c.Put.MaxRetries < 1 {
 		add(
 			"[PUT] MaxRetries = %d must be at least 1",
-			c.Put.MaxAttempts,
+			c.Put.MaxRetries,
 		)
 	}
 
