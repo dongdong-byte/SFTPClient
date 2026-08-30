@@ -15,6 +15,7 @@ func validINIForLoadTest() string {
 Mode = put
 RepostDownloaded = false
 LedgerPath = data/rinex_ledger.db
+LockStaleSeconds = 10800
 
 [SCAN]
 ScanRecentDays = 2
@@ -127,6 +128,14 @@ func TestMapConfig_Normal(t *testing.T) {
 			"Ingress.Grace = %v, want %v",
 			cfg.Ingress.Grace,
 			60*time.Second,
+		)
+	}
+
+	if cfg.General.LockStale != 3*time.Hour {
+		t.Errorf(
+			"LockStale = %v, want %v",
+			cfg.General.LockStale,
+			3*time.Hour,
 		)
 	}
 

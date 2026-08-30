@@ -33,6 +33,7 @@ func validConfigForValidate(t *testing.T) *Config {
 			Mode:             domain.ModePut,
 			RepostDownloaded: false,
 			LedgerPath:       "data/rinex_ledger.db",
+			LockStale:        3 * time.Hour,
 		},
 
 		Scan: ScanConfig{
@@ -436,6 +437,71 @@ func TestValidate_LedgerPathEmpty(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "LedgerPath is empty") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_LockStale(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(c *Config)
+		wantErr string
+	}{
+		{
+			name: "LockStaleSeconds 가 600 미만이면 거부 (GraceSeconds 감각 오입력)",
+			mutate: func(c *Config) {
+				c.General.LockStale = 60 * time.Second
+			},
+			wantErr: "[GENERAL] LockStaleSeconds",
+		},
+		{
+			name: "LockStaleSeconds 가 24시간 초과면 거부",
+			mutate: func(c *Config) {
+				c.General.LockStale = 25 * time.Hour
+			},
+			wantErr: "[GENERAL] LockStaleSeconds",
+		},
+		{
+			name: "경계값 600초는 허용",
+			mutate: func(c *Config) {
+				c.General.LockStale = 600 * time.Second
+			},
+			wantErr: "",
+		},
+		{
+			name: "경계값 86400초는 허용",
+			mutate: func(c *Config) {
+				c.General.LockStale = 24 * time.Hour
+			},
+			wantErr: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfigForValidate(t)
+			tt.mutate(cfg)
+
+			err := cfg.Validate()
+
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf(
+					"error = %v, want substring %q",
+					err,
+					tt.wantErr,
+				)
+			}
+		})
 	}
 }
 

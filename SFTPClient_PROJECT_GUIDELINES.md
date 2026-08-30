@@ -24,6 +24,7 @@
 | **2026-08-30** | **Ledger 복합키 `(category, file_name)`, `schema_version` 4. lookup 완료** |
 | 2026-08-30 | **`internal/lock` 추가** — 프로세스 단일 실행 (디렉터리 + owner token). main/config 연동은 후속 |
 | 2026-08-30 | `.gitattributes` — `*.go`/`*.sql`/`*.md`/`*.ini` 줄끝 LF 고정 |
+| **2026-08-30** | **`LockStaleSeconds` config 확정** — `General.LockStale`(Duration). Minutes 기각. main `Acquire` 배선은 후속 |
 
 ### 관련 문서
 
@@ -117,6 +118,8 @@ SFTPClient/
 │   │                           그 설정이 기본값으로 도는 것과 구분되지 않는다.
 │   │                           오류는 첫 건에서 멈추지 않고 줄 번호와 함께 모아서 낸다.
 │   │                           관측소 필터는 두지 않는다. 전체 관측소가 대상이다.
+│   │                           `LockStaleSeconds`(초) → `General.LockStale`(Duration).
+│   │                           600~86400 범위. Minutes 키 없음 (단위 규약=초).
 │   │
 │   ├─ domain/         [완료]   프로젝트의 핵심 개념 정의. 내부 패키지를 하나도 import하지 않는다.
 │   │                           category.go — Category 4값, IsHourly/IsDaily, MatchesName(3-값 대조)
@@ -157,7 +160,8 @@ SFTPClient/
 │   │                           비어 있지 않은 lock dir 은 수동 확인 hard error.
 │   │                           config/ledger 를 import 하지 않는다. 경로·staleAfter 는 인자.
 │   │                           TookOver / ErrHeld / ErrLost 로 운영 신호를 구분한다.
-│   │                           main/config 연동·LockStaleMinutes 노출은 후속.
+│   │                           config 는 `LockStaleSeconds` → `General.LockStale`(Duration).
+│   │                           Minutes 키는 기각(경과시간 단위 규약=초). main Acquire 배선은 후속.
 │   │
 │   ├─ transport/               파일을 실제로 옮기는 계층. 설계안 4절의 SFTP Core.
 │   │                           sftpfs.go  — SSH 공개키 접속, known_hosts, .part 업로드, Rename
@@ -298,7 +302,7 @@ PRAGMA busy_timeout = 5000;
 | 항목 | 설계안 | 현황 |
 |---|---|---|
 | ~~Hot Scan / Deep Scan 분리~~ | 11.1 | **확정 — `internal/scan` 으로 분리.** PUT 과 DOWNLOAD 가 모두 사용한다 |
-| ~~중복 실행 방지 + Stale Lock~~ | 14 | **확정 — `internal/lock`.** 패키지 완료. main/config 연동·`LockStaleMinutes` 는 후속 |
+| ~~중복 실행 방지 + Stale Lock~~ | 14 | **확정 — `internal/lock` + config `LockStaleSeconds`.** main `Acquire` 배선만 후속 |
 | `db status` / `db failed put` / `db query` 조회 명령 | 9.2 | 담당 패키지 미정 |
 | 대량 유입 검증 기준 | 13 (18.1 확정 항목) | 7절이 단위 테스트만 다루고 있어 보완 필요 |
 
@@ -388,10 +392,17 @@ size·mtime 이 같으면 Upsert 를 호출하지 않는다.
 `put_ledger` 의 PK 가 `(category, file_name, revision)` 이므로
 새 revision 의 행이 존재할 수 없음이 보장되어 재조회가 필요 없다.
 
-**`internal/lock` 은 패키지 단위로 완료**되어 있다. 스케줄러 중첩 실행으로
-같은 후보가 이중 전송되는 것을 막는다. main 배선과 `LockStaleMinutes` config 노출은
-transport 도입과 함께 한다. staleAfter 가 최장 실행보다 짧으면 살아 있는 실행을
-탈취해 이중 전송이 될 수 있으므로 넉넉히 잡는다.
+**`internal/lock` 은 패키지 단위로 완료**되어 있고, config 노출도 완료되었다.
+스케줄러 중첩 실행으로 같은 후보가 이중 전송되는 것을 막는다.
+`[GENERAL] LockStaleSeconds` 는 로드 시 `General.LockStale`(time.Duration)으로 보관한다
+(GraceSeconds 와 같은 방침). 단위는 **초(Seconds)** 로 확정했고 Minutes 키는 기각했다
+— 경과시간 키의 단위 규약을 GraceSeconds 와 초 하나로 유지하기 위함이며,
+Minutes 안의 이득(가독성·오입력 방향)은 example.ini 주석과 validate 하한 600초로 대체한다.
+기본값 10800(3시간)은 크롤링 데이터가 최대 3시간 지연 도착하는 실측에 맞춘다
+(SCAN DESIGN 10.9). validate 범위는 600초~86400초.
+main 의 `lock.Acquire(LedgerPath+".lock", LockStale)` 배선은 put 조립 단계에서 한다.
+staleAfter 가 실제 최장 실행보다 짧으면 살아 있는 실행을 탈취해 이중 전송이 되므로
+넉넉히 잡는다.
 
 - MVP 1 에서는 **정확성, 무결성, 중복 방지, 실패 추적**을 우선한다.
 - **Scan은 순차, 전송은 병렬이다.** 두 가지를 혼동하지 않는다.

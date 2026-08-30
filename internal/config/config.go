@@ -55,6 +55,32 @@ type GeneralConfig struct {
 	// 호출부가 다시 해석하지 않는다. 네 곳(LedgerPath, PrivateKey, KnownHosts,
 	// Log.Dir)이 같은 규칙을 쓰므로, 해석 시점을 한 곳으로 모아 둔다.
 	LedgerPath string
+
+	// LockStale 는 lock 파일이 이 나이를 넘으면 직전 실행의 비정상
+	// 종료 잔재로 판정하여 탈취를 허용하는 문턱이다.
+	//
+	// config.ini 에서는 LockStaleSeconds 라는 초 단위 정수로 입력하지만,
+	// 로드 시점에 time.Duration 으로 변환하여 보관한다. Grace 와 같은
+	// 방침이다 — 초 단위 정수 int 를 그대로 두면 사용처마다
+	// time.Second 곱셈이 반복되고 한 곳은 빠뜨린다.
+	//
+	// 너무 짧으면: 아직 살아 있는 정당한 장기 실행(느린 회선 위
+	// 대량 전송 회차)의 lock 을 탈취하여 이중 실행이 된다.
+	// 너무 길면: 크래시 후 그 시간 동안 매시 실행이 거부되어
+	// 전송이 조용히 멈춘다. validate 가 600초~24시간 범위를 강제한다.
+	//
+	// 단위 결정 (2026-08-30 확정) — Seconds 채택, Minutes 기각.
+	// Minutes 안의 이득은 두 가지였다: ① ini 에서 180 이 3시간임이 바로
+	// 읽힌다, ② GraceSeconds 감각으로 작은 값을 넣는 오입력이 안전한
+	// 방향(분)으로 틀린다. 그러나 ①은 example.ini 의 환산 주석 한 줄로,
+	// ②는 validate 하한 600초로 완전히 대체된다. 반면 Seconds 의 이득
+	// (경과시간 키의 단위 규약을 GraceSeconds 와 함께 초 하나로 유지)은
+	// Minutes 로는 대체할 수 없다. 대체 가능한 이득과 불가능한 이득이
+	// 붙으면 후자가 이긴다. 참고 — ScanRecentDays·DeepScanHour 는
+	// 달력 좌표이고 이 키와 GraceSeconds 는 경과시간이다. 계열이 다르므로
+	// "키마다 단위가 제각각" 반례가 아니다. 이 단락은 같은 논쟁의
+	// 세 번째 재론을 막기 위해 남긴다.
+	LockStale time.Duration
 }
 
 // ScanConfig 는 [SCAN] 섹션이다.

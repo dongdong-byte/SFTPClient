@@ -383,6 +383,7 @@ func mapConfig(f *iniFile, path string) (*Config, error) {
 		path,
 		l.str(general, "LedgerPath"),
 	)
+	cfg.General.LockStale = l.durationSeconds(general, "LockStaleSeconds")
 
 	scan := l.section("SCAN")
 	cfg.Scan.RecentDays = l.intVal(scan, "ScanRecentDays")
@@ -512,6 +513,7 @@ func knownKeys() map[string][]string {
 			"Mode",
 			"RepostDownloaded",
 			"LedgerPath",
+			"LockStaleSeconds",
 		},
 		"SCAN": {
 			"ScanRecentDays",

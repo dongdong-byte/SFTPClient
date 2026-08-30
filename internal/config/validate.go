@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"SFTPClient/internal/pathpl"
 )
@@ -93,6 +94,23 @@ func (c *Config) checkMode(add addFunc) {
 
 	if c.General.LedgerPath == "" {
 		add("[GENERAL] LedgerPath is empty")
+	}
+
+	// LockStaleSeconds 의 양끝은 각각 다른 사고를 막는다.
+	//
+	// 하한 600초(10분): GraceSeconds 감각으로 60 같은 초급 값을 넣는
+	// 오입력을 막는다. 그 값이 통과되면 1분 넘는 모든 정상 실행이
+	// 탈취 대상이 되어 lock 이 없는 것보다 나쁘다(이중 전송).
+	// Minutes 단위 안을 기각한 대가로 이 하한이 그 방어를 대신한다.
+	// 상한 24시간: 180 을 18000 으로 잘못 적는 부류의 오타를 잡는다.
+	// 크래시 후 며칠씩 오류 없이 전송이 멈추는 것은
+	// "오류 없이 잘못 도는" 부류이므로 시작 시 거부한다.
+	// (DeepScanHour 0~23 검사와 같은 성격)
+	if c.General.LockStale < 600*time.Second || c.General.LockStale > 24*time.Hour {
+		add(
+			"[GENERAL] LockStaleSeconds must be between 600 and 86400, got %d",
+			int64(c.General.LockStale/time.Second),
+		)
 	}
 
 	// RepostDownloaded 는 DOWNLOAD 로 받은 파일을 다시 PUT 대상으로 삼을지의 설정이다.
