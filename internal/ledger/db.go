@@ -112,8 +112,12 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// 이 상황에는 관여하지 않으며, context 취소 외에는 풀리지 않는다.
 	//
 	// 트랜잭션 안에서는 반드시 tx.QueryContext / tx.ExecContext 를 쓴다.
-	// put_ledger 의 PENDING → IN_PROGRESS 전이처럼 두 테이블을 한
-	// 트랜잭션에서 갱신하는 지점(MVP 1 후반)이 이 규칙의 첫 적용 대상이다.
+	//
+	// (2026-08-30 정정) common_ledger 와 put_ledger 를 묶는 cross-table
+	// 트랜잭션은 존재하지 않는다 — common 갱신은 PUT 상태 머신 진입 전에
+	// 끝나 있고, put_ledger 의 상태 전이는 전부 단일 statement 다.
+	// 이 규칙의 실제 적용 대상은 put.go 의 PENDING 일괄 INSERT 트랜잭션
+	// 하나뿐이다. 두 테이블을 묶는 트랜잭션을 새로 만들지 마라.
 	sqlDB.SetMaxOpenConns(1)
 	sqlDB.SetMaxIdleConns(1)
 

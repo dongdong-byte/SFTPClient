@@ -122,7 +122,7 @@ SFTPClient/
 │   │                           600~86400 범위. Minutes 키 없음 (단위 규약=초).
 │   │
 │   ├─ domain/         [완료]   프로젝트의 핵심 개념 정의. 내부 패키지를 하나도 import하지 않는다.
-│   │                           category.go — Category 4값, IsHourly/IsDaily, MatchesName(3-값 대조)
+│   │                           category.go — Category 6값, IsHourly/IsDaily, MatchesName(3-값 대조)
 │   │                           status.go   — PUT status 4값, CanTransitionTo, IsTerminal
 │   │                           state.go    — common state 2값 (READY/CHANGED)
 │   │                           origin.go   — LOCAL/DOWNLOAD
@@ -441,11 +441,11 @@ staleAfter 가 실제 최장 실행보다 짧으면 살아 있는 실행을 탈�
 - 테스트가 불필요하게 `time.Sleep`에 의존하지 않도록 한다.
 - 다음 영역은 반드시 테스트한다.
   - `file_name` 정규화 규칙 (소문자 통일, `.part` 제거, 압축 확장자 유지, 경로 비의존)
-  - `Category.MatchesName` — RINEX3 주기 필드(`_` 분리 인덱스 3) 대조.
-    항법 파일은 샘플링 필드가 없어 전체 필드 수가 줄지만 주기 위치는 같다.
-    RINEX2는 `CategoryMatchUnknown`을 돌려주는지 확인한다. (CONCEPT 6.3)
-    별도의 RINEX 파일명 파서(`rinexname.go`)는 두지 않는다.
-    현재 필요한 것은 주기 필드 하나이며, 쓰이지 않는 파서를 미리 만들지 않는다.
+  - `Category.MatchesName` — RINEX2 short filename과 RINEX3/RINEX4 long filename의
+    Daily/Hourly 주기를 대조한다.
+    RINEX3/RINEX4는 `_` 분리 주기 필드(`01D` / `01H`)를 사용하며,
+    RINEX2는 `SSSSDDDh.YYt` 형태의 `h` 값(`0`=Daily, `a`~`x`=Hourly)을 대조한다.
+    명확히 판정할 수 없는 파일명은 `CategoryMatchUnknown`으로 유보한다.
   - Path Template 토큰 확장
   - Ingress Verification
   - Transfer Verification
