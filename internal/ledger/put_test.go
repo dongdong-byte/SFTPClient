@@ -9,6 +9,15 @@ package ledger
 // putTestCommon 은 파일 하나당 LookupCommon 을 한 번씩 부르므로
 // 대량 케이스에서는 왕복이 지나치게 많다. 여기서는 Upsert 를 모두 마친 뒤
 // LookupCommon 한 번으로 revision 을 읽는다.
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+
+	"SFTPClient/internal/domain"
+)
+
 func seedPutCommons(
 	t *testing.T,
 	db *DB,
@@ -54,6 +63,73 @@ func seedPutCommons(
 	}
 
 	return keys
+}
+
+// putTestCommon 은 common_ledger 에 파일 하나를 등록하고
+// 그 현재 revision 으로 PutKey 를 돌려준다.
+func putTestCommon(
+	t *testing.T,
+	db *DB,
+	category domain.Category,
+	name string,
+) PutKey {
+	t.Helper()
+
+	keys := seedPutCommons(t, db, category, []string{name})
+
+	return keys[0]
+}
+
+// countPut 은 put_ledger 의 전체 행 수다.
+func countPut(t *testing.T, db *DB) int {
+	t.Helper()
+
+	var n int
+
+	if err := db.conn.QueryRowContext(
+		context.Background(),
+		`SELECT COUNT(*) FROM put_ledger;`,
+	).Scan(&n); err != nil {
+		t.Fatalf("count put_ledger 실패: %v", err)
+	}
+
+	return n
+}
+
+// putRow 는 테스트가 검증하는 put_ledger 행의 최소 사실이다.
+type putRow struct {
+	status   string
+	attempts int64
+}
+
+// readPut 은 한 행의 status/attempts 를 직접 읽는다.
+// LookupPut 을 쓰지 않는 이유는, 검증 대상 API 로 검증하면
+// 그 API 의 결함이 테스트와 함께 통과해 버리기 때문이다.
+func readPut(t *testing.T, db *DB, key PutKey) putRow {
+	t.Helper()
+
+	var row putRow
+
+	if err := db.conn.QueryRowContext(
+		context.Background(),
+		`SELECT status, attempts
+		   FROM put_ledger
+		  WHERE category  = ?
+		    AND file_name = ?
+		    AND revision  = ?;`,
+		key.Category.String(),
+		key.FileName,
+		key.Revision,
+	).Scan(&row.status, &row.attempts); err != nil {
+		t.Fatalf(
+			"read put_ledger(%q rev=%d) 실패: %v",
+			key.FileName,
+			key.Revision,
+			err,
+		)
+	}
+
+	return row
 }
 
 // LookupPut 은 입력이 청크 상한을 넘으면 여러 번의 조회로 나눈다.
