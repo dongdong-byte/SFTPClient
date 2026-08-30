@@ -384,7 +384,7 @@ func (r *Runner) visitBatch(
 				*cands = append(*cands, proto)
 
 			case domain.StatusInProgress:
-				// 시작 시 회수 절차 몫이다 (3탄).
+				// 시작 시 회수 절차 몫이다 (transport).
 				rep.ExcludedInProgress++
 
 			case domain.StatusVerified:

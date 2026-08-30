@@ -4,7 +4,8 @@
 --  설계 원칙 (설계안 9)
 --    "하나의 사실에는 하나의 주인만 둔다."
 --    파일의 정체성은 common_ledger 가, 송신 이력은 put_ledger 가 소유한다.
---    두 테이블은 같은 사실을 중복 저장하지 않고 file_name 으로 상호 검증한다.
+--    두 테이블은 같은 사실을 중복 저장하지 않고
+--    (category, file_name) 으로 상호 검증한다.
 --
 --  식별자 정책 (설계안 9.1 에서 개정)
 --    원안은 SHA-256( Domain │ Category │ NormalizedName ) 해시였으나,

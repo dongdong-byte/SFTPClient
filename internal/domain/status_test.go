@@ -93,7 +93,6 @@ func TestStatusCanTransitionTo(t *testing.T) {
 		StatusInProgress: {
 			StatusVerified: true,
 			StatusFailed:   true,
-			StatusPending:  true,
 		},
 		StatusFailed: {
 			StatusInProgress: true,

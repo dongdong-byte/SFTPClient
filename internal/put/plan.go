@@ -65,7 +65,7 @@ func (r *Runner) finalize(
 	for _, c := range kept {
 		// RevisionPending 은 dry-run 신규/변경 Candidate 에만 허용된다.
 		//
-		// main 이 현재 live 모드를 막더라도, 3탄에서 전송이 열렸을 때
+		// main 이 현재 live 모드를 막더라도, transport 도입 후 전송이 열렸을 때
 		// 미확정 revision 이 put_ledger 로 흘러가는 것을 여기서 막는다.
 		if c.RevisionPending {
 			return nil, 0, fmt.Errorf(

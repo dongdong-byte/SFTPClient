@@ -60,14 +60,16 @@ func ParseStatus(s string) (Status, error) {
 // .part 가 없는 실패를 그 상태로 올리면 재시작 시 잔여 .part 정리 절차가
 // 존재하지 않는 파일을 찾으려 한다.
 //
-// 여기에 운영 복구를 위해 다음 전이를 허용한다.
+// 여기에 운영 복구·재시도를 위해 다음 전이를 허용한다.
 //
-//	IN_PROGRESS → PENDING
-//	  프로그램 비정상 종료 후 잔여 .part 파일을 정리하고
-//	  다시 처리할 수 있도록 되돌리는 복구 경로이다. (설계안 9.3)
+//	IN_PROGRESS → FAILED
+//	  비정상 종료 후 잔여 .part 를 지운 뒤 FailPut 으로 되돌리는 회수 경로다.
+//	  설계안 9.3 의 "PENDING 으로 되돌린다" 는 폐기했다.
+//	  attempts 집계와 BeginPut(FAILED→IN_PROGRESS) 재시도와 맞추기 위함이다.
+//	  (GUIDELINES 5절 「2026-08-30 확정」 ②, schema.sql put_ledger.status 주석)
 //
 //	FAILED → IN_PROGRESS
-//	  실패한 동일 revision 을 재시도하는 경로이다.
+//	  실패한 동일 revision 을 재시도하는 경로이다 (BeginPut).
 //
 // VERIFIED 는 해당 revision 의 종료 상태이다.
 // 같은 파일이 갱신되어 다시 전송되는 경우 기존 상태를 되돌리지 않고,
@@ -77,9 +79,7 @@ func (s Status) CanTransitionTo(next Status) bool {
 	case StatusPending:
 		return next == StatusInProgress || next == StatusFailed
 	case StatusInProgress:
-		return next == StatusVerified ||
-			next == StatusFailed ||
-			next == StatusPending
+		return next == StatusVerified || next == StatusFailed
 	case StatusFailed:
 		return next == StatusInProgress
 	case StatusVerified:

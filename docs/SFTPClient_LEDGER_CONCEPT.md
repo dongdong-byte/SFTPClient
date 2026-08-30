@@ -18,6 +18,7 @@
 | **2026-08-28** | **스키마 v5 반영. 아래 표 참조** |
 | 2026-08-29 | 6.3 — `.part` 제외 책임을 `scan`이 아니라 `verify`(Ingress) 로 명시. PROJECT_GUIDELINES 와 정합 |
 | **2026-08-30** | **복합키 `(category, file_name)`. `schema_version` 3 → 4. 아래 v7 표 참조** |
+| **2026-08-30** | **PUT 조립·Retry·회수·Unchanged 확정.** GUIDELINES 5절과 동기. 아래 「운영 확정」 |
 
 **v7 에서 바뀐 것 (2026-08-30, 본 문서 최신 개정 사유)**
 
@@ -748,8 +749,11 @@ DELETE FROM common_ledger
 **실행 순서**
 
 ```
-시작 시 IN_PROGRESS 복구 → Scan / 전송 → Deep Scan 실행일이면 Retention Cleanup
+시작 시 IN_PROGRESS 복구 (→ FAILED) → Scan / 전송 → Deep Scan 실행일이면 Retention Cleanup
 ```
+
+회수 목적지는 **FAILED** 이다. 설계안 원문의 PENDING 되돌리기는 폐기했다
+(GUIDELINES 5절 「2026-08-30 확정」 ②).
 
 **★ 불변식 — `LedgerRetentionDays > ScanDays`**
 
@@ -907,7 +911,7 @@ Mismatch 시 거부가 아니라 **경고 후 통과**로 두는 것을 검토�
 ### 6.1 항목 1 상세
 
 현재 `put_ledger` PK는 `(category, file_name, revision)`이므로 **revision당 한 행**이다.
-3회 실패하면 `attempts=3`, `error='timeout'` 한 줄로 뭉개진다.
+`MaxRetries` 회(기본 5) 실패하면 `attempts=5`, `error='…'` 한 줄로 뭉개진다.
 1차 실패가 언제 무슨 이유였는지는 답할 수 없다.
 
 설계안 9절은 PUT_LEDGER를 "송신 시도·성공·실패·검증 **이력**"이라 했으나
@@ -1018,3 +1022,22 @@ Ingress 또는 운영 로그에 예상 밖 확장자를 남겨 하루치 운영�
 용어 대응: 설계안 9절의 `file_id` ↔ 본 스키마의 **`(category, file_name)`** (컬럼명은 `file_name`).
 `file_name` 단독이 식별자인 것처럼 읽히면 안 된다. 복합키다.
 설계 문서를 참조할 때는 두 이름을 같은 것으로 읽는다.
+
+---
+
+## 9. 운영 확정 (2026-08-30) — PUT 조립과 맞춘 결정
+
+본 절은 스키마 DDL 변경이 아니라 **애플리케이션 운영 규칙**이다.
+물리 스키마(`schema.sql`)와 충돌하지 않으며, GUIDELINES 5절·`internal/put`·`ledger/put.go` 와 동기화한다.
+
+| # | 결정 | 한 줄 근거 |
+|---|---|---|
+| 1 | `MaxRetries` = 동일 revision **누적** 시도 상한 (기본 5). 실행 안 재시도 없음 | 매시 스케줄러가 retry 간격. `EXHAUSTED` 상태 불필요 |
+| 2 | IN_PROGRESS 회수 → **FAILED** (`FailPut`). PENDING 되돌리기 폐기 | attempts·BeginPut 재시도와 일치 |
+| 3 | Unchanged 를 후보에서 제외하지 않음 | "장부와 같다" ≠ "이미 보냈다". PENDING 고아 재개 |
+| 4 | 절단 후 PENDING 일괄 INSERT → 커밋 후에만 Worker | 등록 실패 시 Worker 출발 금지 |
+| 5 | dry-run 은 ledger 업무 데이터 미기록. live 는 transport 전까지 거부 | 현장 관측 수단 / 고아 PENDING 방지 |
+| 6 | 절단 정렬 `When` → `file_name` → `category` | 오래된 것부터 배수 |
+| 7 | LookupCommon 의 PutStatus 로 후보 판정. FAILED 만 LookupPut(attempts) | 조회 비용 최소화 |
+
+상세·표·기각 이유는 `SFTPClient_PROJECT_GUIDELINES.md` 5절 「2026-08-30 확정」이 원본이다.

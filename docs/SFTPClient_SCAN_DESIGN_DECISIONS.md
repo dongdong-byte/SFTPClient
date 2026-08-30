@@ -2,6 +2,7 @@
 
 > 작성일 2026-08-28 · 대상 `internal/scan`, `internal/config`, `internal/verify`
 > 개정 2026-08-30 — `[GENERAL] LockStaleSeconds` 확정 (Seconds 채택, Minutes 기각). 14절.
+> 개정 2026-08-30 — main lock 배선 완료. PUT 조립·Retry·회수 요약은 15절 (원본 GUIDELINES).
 >
 > 이 문서는 `SFTPClient_PROJECT_GUIDELINES.md` 및 `SFTPClient_LEDGER_CONCEPT.md` 의
 > 보조 문서다. 스캔 범위·주기·복구 전략을 정하는 과정에서 제기된 문제와
@@ -1319,3 +1320,25 @@ Minutes 로는 대체할 수 없다.
 **하지 않는 것** — lock 패키지가 config 를 import 하지 않는다.
 `LockStaleMinutes` 키를 만들지 않는다. scan / verify / ledger / pathpl 은 건드리지 않는다.
 
+### main 배선 (2026-08-30 완료)
+
+`cmd/rinexclient` 은 `lock.Acquire(LedgerPath+".lock", LockStale)` /
+`Release` 를 호출한다. `ErrHeld` 는 exit 0.
+이 절의 “후속” 표기는 폐기한다.
+
+---
+
+## 15. PUT 조립·Retry·회수 (2026-08-30) — GUIDELINES 로 이관
+
+Scan 설계와 직접 관련은 없으나, 같은 날 확정된 운영 규칙의
+문서 간 표기 어긋남을 막기 위해 위치를 남긴다.
+
+원본: `SFTPClient_PROJECT_GUIDELINES.md` 5절 「2026-08-30 확정」
+요약: `docs/SFTPClient_LEDGER_CONCEPT.md` 9절
+
+| 결정 | 요지 |
+|---|---|
+| MaxRetries | 누적 시도 상한(기본 5). 실행 안 재시도 없음 |
+| IN_PROGRESS 회수 | → FAILED (PENDING 아님) |
+| Unchanged | 후보에서 제외하지 않음 |
+| 다음 절단면 | transport + Worker + 회수 조립 |

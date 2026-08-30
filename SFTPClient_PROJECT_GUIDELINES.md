@@ -22,9 +22,13 @@
 | 2026-08-28 | 패키지명 표기 `pathpl` → `pathpl` 통일. 코드가 원본이다 |
 | 2026-08-29 | `DirLister.List` 시그니처에 `context.Context` 반영 (구현과 정합) |
 | **2026-08-30** | **Ledger 복합키 `(category, file_name)`, `schema_version` 4. lookup 완료** |
-| 2026-08-30 | **`internal/lock` 추가** — 프로세스 단일 실행 (디렉터리 + owner token). main/config 연동은 후속 |
+| 2026-08-30 | **`internal/lock` 추가** — 프로세스 단일 실행 (디렉터리 + owner token) |
 | 2026-08-30 | `.gitattributes` — `*.go`/`*.sql`/`*.md`/`*.ini` 줄끝 LF 고정 |
-| **2026-08-30** | **`LockStaleSeconds` config 확정** — `General.LockStale`(Duration). Minutes 기각. main `Acquire` 배선은 후속 |
+| 2026-08-30 | **`LockStaleSeconds` config 확정** — `General.LockStale`(Duration). Minutes 기각 |
+| **2026-08-30** | **PUT 조립·`put_ledger`·main 배선 완료.** `--dry-run` 관측, live 는 transport 전까지 거부. 아래 「2026-08-30 확정」 |
+| 2026-08-30 | **`MaxRetries` 재정의** — 실행 안 재시도 폐기, 동일 revision 누적 시도 상한(기본 5) |
+| 2026-08-30 | **IN_PROGRESS 회수 = FAILED** — 설계안 PENDING 되돌리기 폐기. `FailPut` → 재시도는 `BeginPut` |
+| 2026-08-30 | **Unchanged ≠ 전송 완료** — 후보 경로에서 떨어뜨리지 않음. PENDING 고아 재개 경로 |
 
 ### 관련 문서
 
@@ -161,9 +165,10 @@ SFTPClient/
 │   │                           config/ledger 를 import 하지 않는다. 경로·staleAfter 는 인자.
 │   │                           TookOver / ErrHeld / ErrLost 로 운영 신호를 구분한다.
 │   │                           config 는 `LockStaleSeconds` → `General.LockStale`(Duration).
-│   │                           Minutes 키는 기각(경과시간 단위 규약=초). main Acquire 배선은 후속.
+│   │                           Minutes 키는 기각(경과시간 단위 규약=초).
+│   │                           main 은 Acquire/Release 배선 완료. ErrHeld → exit 0.
 │   │
-│   ├─ transport/               파일을 실제로 옮기는 계층. 설계안 4절의 SFTP Core.
+│   ├─ transport/      [예정]   파일을 실제로 옮기는 계층. 설계안 4절의 SFTP Core.
 │   │                           sftpfs.go  — SSH 공개키 접속, known_hosts, .part 업로드, Rename
 │   │                           localfs.go — 로컬 디렉터리 구현. SFTP 없이 개발·테스트할 때 교체 투입
 │   │                           put/download를 모른다. 방향을 알지 못하고 파일만 옮긴다.
@@ -171,15 +176,19 @@ SFTPClient/
 │   ├─ logging/                 log/slog 설정. 출력 대상, 레벨, 보존 정책. (설계안 14)
 │   │                           성공은 집계, 실패·재시도는 상세 원인 기록.
 │   │
-│   ├─ put/                     송신 흐름 조립. Scan → Ingress 검증 → 대상 선정 → 전송 → Transfer 검증.
-│   │                           필요한 원격 동작을 인터페이스로 직접 선언한다(consumer-side).
-│   │                           transport를 import하지 않으므로 fake 주입으로 전체 테스트 가능.
+│   ├─ put/            [조립 완료] 송신 흐름 조립 (GUIDELINES 5절).
+│   │                           Scan → Lookup → 대조 → (신규·변경) Verify → Upsert
+│   │                           → 후보 필터 → 정렬·절단 → PENDING 일괄 등록 → (--dry-run 리포트).
+│   │                           전송(Worker)·Transfer 검증은 transport 도입 후.
+│   │                           Unchanged 도 후보 경로에 남긴다. "장부와 같다" ≠ "이미 보냈다".
+│   │                           transport를 import하지 않으므로 fake 주입으로 조립 테스트 가능.
 │   │
-│   ├─ pipeline/       [MVP 1] Worker Pool과 Global Limiter. (설계안 12.1)
+│   ├─ pipeline/       [예정]   Worker Pool과 Global Limiter. (설계안 12.1)
 │   │                           버퍼드 채널 세마포어로 전체 동시 SFTP 작업 수를 제한.
 │   │                           PUT/DOWNLOAD가 같은 Limiter 인스턴스를 공유한다.
 │   │                           전송은 MVP 1부터 병렬로 수행한다. 기본 MaxWorkers=4.
 │   │                           Scan은 병렬화 대상이 아니다. 항상 순차로 수행한다.
+│   │                           (조립 단계에서는 아직 미배선. transport 와 함께 붙인다.)
 │   │
 │   ├─ ledger/                  common/put/download Ledger. (설계안 9)
 │   │                           schema.sql — 물리 스키마 원본. go:embed로 실행파일에 포함하고
@@ -193,8 +202,12 @@ SFTPClient/
 │   │                                        ON CONFLICT (category, file_name)
 │   │                           lookup.go  — category 범위 file_name IN (...) 일괄 조회  [완료]
 │   │                                        후보를 만들지 않고 현재 상태만 돌려준다
-│   │                           put.go     — put_ledger 접근                              [예정]
-│   │                                        쓰기는 반드시 category 를 포함한다
+│   │                           put.go     — put_ledger 상태 머신                         [완료]
+│   │                                        BeginPut / FinishPut / FailPut / RegisterPending
+│   │                                        LookupPut / ListInProgress. category 필수.
+│   │                                        MaxRetries = 동일 revision 누적 시도 상한.
+│   │                                        IN_PROGRESS 회수 재료는 ListInProgress;
+│   │                                        원격 .part 삭제+FailPut 조립은 transport 단계.
 │   │                           판정은 하지 않되 revision·state 갱신은 여기서 한다. (CONCEPT 2.1)
 │   │                           SetMaxOpenConns(1)이 쓰기를 직렬화하므로 MaxWorkers>1 에서도
 │   │                           정합성은 안전하다. 단일 Writer 고루틴 + 배치 커밋은
@@ -210,10 +223,12 @@ SFTPClient/
 │                               dpapi_other.go     — 비Windows 스텁. Linux 빌드 보호
 │
 ├─ docs/
-│   └─ SFTPClient_LEDGER_CONCEPT.md   (schema.sql과 짝. 항상 함께 갱신)
-│                               Ledger 개념·논리 모델. 엔티티 정의, 관계, 식별자 근거,
-│                               의도적 비정규화 사유, 미결 항목, 설계안 대비 변경 요약.
-│                               schema.sql과 짝이며 항상 함께 갱신한다.
+│   ├─ SFTPClient_LEDGER_CONCEPT.md   (schema.sql과 짝. 항상 함께 갱신)
+│   │                           Ledger 개념·논리 모델. 엔티티 정의, 관계, 식별자 근거,
+│   │                           의도적 비정규화 사유, 미결 항목, 설계안 대비 변경 요약.
+│   │                           원본은 여기만. internal/ledger/ 아래 사본을 두지 않는다.
+│   └─ SFTPClient_SCAN_DESIGN_DECISIONS.md
+│                               Scan 범위·복구·LockStale 등 결정 경위와 기각 목록.
 │
 ├─ config.example.ini           설정 템플릿. 실제 config.ini는 커밋하지 않는다.
 ├─ .gitattributes               *.go / *.sql / *.md / *.ini 줄끝 LF 고정
@@ -302,7 +317,7 @@ PRAGMA busy_timeout = 5000;
 | 항목 | 설계안 | 현황 |
 |---|---|---|
 | ~~Hot Scan / Deep Scan 분리~~ | 11.1 | **확정 — `internal/scan` 으로 분리.** PUT 과 DOWNLOAD 가 모두 사용한다 |
-| ~~중복 실행 방지 + Stale Lock~~ | 14 | **확정 — `internal/lock` + config `LockStaleSeconds`.** main `Acquire` 배선만 후속 |
+| ~~중복 실행 방지 + Stale Lock~~ | 14 | **완료 — `internal/lock` + config `LockStaleSeconds` + main Acquire/Release.** ErrHeld=exit 0 |
 | `db status` / `db failed put` / `db query` 조회 명령 | 9.2 | 담당 패키지 미정 |
 | 대량 유입 검증 기준 | 13 (18.1 확정 항목) | 7절이 단위 테스트만 다루고 있어 보완 필요 |
 
@@ -346,53 +361,55 @@ domain                             ✅ 완료
     ↓
 pathpl                             ✅ 완료
     ↓
-ledger  db/common/lookup, schema_version 4 ✅ 완료
+ledger  db/common/lookup/put, schema_version 4 ✅ 완료
     ↓
 config  ini / config / load / validate  ✅ 완료
+         (+ LockStaleSeconds, MaxRetries 누적 상한)
     ↓
 scan        internal/scan                ✅ 완료
     ↓
 verify      Ingress 판정                 ✅ 완료
     ↓
-Batch Ledger Lookup   category + file_name IN (...)  ✅ 완료
+lock        패키지 + main Acquire        ✅ 완료
     ↓
-Scan → Verify → Upsert → 후보 → --dry-run   ★ 1차 목표 (조립)
+PUT 조립    Scan→Lookup→Verify→Upsert→후보→절단→PENDING
+            + --dry-run 관측             ✅ 완료 (2026-08-30)
     ↓
-put_ledger  전송 상태 머신               ← 다음 (category 필수)
-    ↓
-transport   .part → size → rename → 최종 확인
-            + 시작 시 IN_PROGRESS 회수
-            + lock 연동 (Acquire/Release)
-    ↓
-Worker Pool  전송 MaxWorkers = 4
+transport   .part → size → rename → 최종 확인   ← 다음
+            + 시작 시 IN_PROGRESS 회수 (→ FAILED)
+            + Worker Pool (MaxWorkers = 4)
+            + Transfer Verification
     ↓
 recovery / seed / Retention Cleanup
 ```
 
-**1차 목표는 "스캔 → Ingress 검증 → common_ledger 적재 → 후보 목록 출력"까지다.**
-전송은 그 뒤에 붙인다. 검증 없이 SUCCESS를 기록하는 것보다
-범위를 명시적으로 자르는 편이 안전하다.
+**현재 절단면은 "후보 선정 + PENDING 등록 + dry-run 리포트"까지다.**
+live 전송은 transport 도입 전까지 `main` 이 명시적으로 거부한다.
+검증 없이 VERIFIED 를 기록하는 것보다 범위를 자르는 편이 안전하다.
 
-**`--dry-run` 을 이 시점에 함께 만든다.** 현장 접근이 어려운 상태이므로
-프로그램이 스스로 재서 알려주는 것이 유일한 관측 수단이다.
-관측소 실제 개수, 확장자 분포, 경로 정합성, 스캔 소요시간이 한 번에 확정된다.
+**`--dry-run` 은 ledger 업무 데이터를 쓰지 않는 관측 수단이다.**
+현장 접근이 어려운 상태에서 관측소 개수·확장자 분포·경로 정합성·스캔 소요시간을
+한 번에 확정한다. live 와 dry-run 이 같은 Runner 를 탄다.
 
 **흐름의 순서를 바꾸지 않는다.**
 
 ```
 List → Batch Lookup → 메모리 대조 → (신규·변경만) Verify → Upsert → 후보
+     → 정렬(When, file_name, category) → MaxFilesPerRun 절단 → PENDING 일괄 등록
 ```
 
 정상 운영에서 압도적으로 흔한 결과는 Unchanged 이다(CONCEPT 4.9).
 먼저 전부 Upsert 하면 매 실행마다 수만 건의 쓰기를 시도하게 되고
 `SetMaxOpenConns(1)` 때문에 전부 직렬화된다.
 size·mtime 이 같으면 Upsert 를 호출하지 않는다.
+**그러나 Unchanged 를 후보에서 제외하지 않는다** — 아래 「2026-08-30 확정」 참조.
 
 변경이 감지된 파일은 Upsert 로 revision 이 오른 뒤에 후보가 된다.
 `put_ledger` 의 PK 가 `(category, file_name, revision)` 이므로
-새 revision 의 행이 존재할 수 없음이 보장되어 재조회가 필요 없다.
+새 revision 의 행이 존재할 수 없음이 보장된다.
+live 는 Upsert 후 revision 을 재조회하고, dry-run 신규/변경은 `RevisionPending` 이다.
 
-**`internal/lock` 은 패키지 단위로 완료**되어 있고, config 노출도 완료되었다.
+**`internal/lock` 은 패키지·config·main 배선까지 완료**되었다.
 스케줄러 중첩 실행으로 같은 후보가 이중 전송되는 것을 막는다.
 `[GENERAL] LockStaleSeconds` 는 로드 시 `General.LockStale`(time.Duration)으로 보관한다
 (GraceSeconds 와 같은 방침). 단위는 **초(Seconds)** 로 확정했고 Minutes 키는 기각했다
@@ -400,15 +417,74 @@ size·mtime 이 같으면 Upsert 를 호출하지 않는다.
 Minutes 안의 이득(가독성·오입력 방향)은 example.ini 주석과 validate 하한 600초로 대체한다.
 기본값 10800(3시간)은 크롤링 데이터가 최대 3시간 지연 도착하는 실측에 맞춘다
 (SCAN DESIGN 10.9). validate 범위는 600초~86400초.
-main 의 `lock.Acquire(LedgerPath+".lock", LockStale)` 배선은 put 조립 단계에서 한다.
+`main` 은 `lock.Acquire(LedgerPath+".lock", LockStale)` 후 `Release` 한다.
+`ErrHeld` 는 exit 0 (회차 겹침은 장애가 아니다).
 staleAfter 가 실제 최장 실행보다 짧으면 살아 있는 실행을 탈취해 이중 전송이 되므로
 넉넉히 잡는다.
+
+### 2026-08-30 확정 — PUT 조립·Retry·회수·Unchanged
+
+코드(`internal/put`, `internal/ledger/put.go`, `cmd/rinexclient`)와 맞춘 결정이다.
+설계안 원문과 다르면 **이쪽이 우선**이다.
+
+#### ① `MaxRetries` — 동일 revision 누적 시도 상한
+
+| | 폐기(구) | 확정(현) |
+|---|---|---|
+| 의미 | 한 프로세스 실행 안의 재시도 횟수 | **첫 시도를 포함한** 누적 자동 시도 상한 |
+| 기본값 | (낮음) | **5** |
+| 회차 내 재시도 | — | **없음.** 매시 스케줄러가 곧 retry 간격 |
+| 상한 도달 | — | `FAILED` + `attempts >= MaxRetries` 유지. `EXHAUSTED` 상태 신설 없음 |
+| 소진 알림 | — | 후보에서 제외하고 `[PUT][WARN]` 으로 알림 |
+
+`MaxRetries < 1` 은 config Validate 와 put Runner 입구에서 거부한다.
+시도 0회는 허용하지 않는다.
+
+#### ② IN_PROGRESS 회수 → **FAILED** (PENDING 아님)
+
+설계안 9.3의 "PENDING으로 되돌린다"는 **폐기**한다.
+
+```
+시작 시 ListInProgress → 원격 .part 삭제 → FailPut (IN_PROGRESS → FAILED)
+이후 후보 선정 → BeginPut (FAILED → IN_PROGRESS) 로 재시도
+```
+
+이유: 회수를 PENDING 으로 하면 `attempts` 가 실패로 집계되지 않아
+상한·장애 분석이 어긋난다. 이미 `FailPut` / `BeginPut` 경로가 있으므로
+복구 전용 PENDING 되돌리기를 두지 않는다.
+`domain.Status.CanTransitionTo` 도 `IN_PROGRESS → PENDING` 을 허용하지 않는다.
+
+(조립은 transport 도입 시. 지금은 `ListInProgress` / `FailPut` API 만 준비.)
+
+#### ③ Unchanged ≠ 이미 보냈다
+
+메모리 대조가 Unchanged 여도 **후보 경로에서 떨어뜨리지 않는다.**
+
+- "장부와 size·mtime 이 같다" 는 "이미 보냈다" 가 아니다.
+- 직전 실행이 PENDING 등록 직후 죽었다면, 다음 회차에서 파일은 Unchanged 로
+  보이지만 put 행은 아직 미전송(또는 PENDING 고아)이다.
+- LookupCommon 의 `PutStatus` 조인으로 후보를 판정한다.
+  `attempts` 가 필요한 FAILED 부분집합만 LookupPut 을 추가 호출한다.
+
+#### ④ PENDING 일괄 등록 · dry-run · live 거부
+
+- MaxFilesPerRun 절단 **후** 대상만 한 트랜잭션으로 PENDING INSERT
+  (`ON CONFLICT DO NOTHING`). 커밋 전에 Worker 를 시작하지 않는다.
+- PENDING 등록 실패 시 후보 목록을 반환하지 않는다 (Worker 출발 금지).
+- dry-run 은 common/put 업무 데이터를 쓰지 않는다. revision 표시는
+  LookupCommon 의 현재 값 또는 `RevisionPending`.
+- live 는 transport 미구현 동안 `main` 이 시작을 거부한다.
+
+#### ⑤ 절단 정렬
+
+`When` → `file_name` → `category` (오래된 것부터 배수).
 
 - MVP 1 에서는 **정확성, 무결성, 중복 방지, 실패 추적**을 우선한다.
 - **Scan은 순차, 전송은 병렬이다.** 두 가지를 혼동하지 않는다.
   Scan은 디렉터리를 하나씩 훑으며 병렬화 대상이 아니다.
   전송은 MVP 1부터 Worker Pool로 병렬 처리한다. 기본 `MaxWorkers = 4`.
   Go를 선택한 이유가 이 병렬 전송이며, 적정값은 MVP 4 Benchmark로 확정한다. (설계안 12.2)
+  **다만 지금 절단면에서는 Worker 를 아직 붙이지 않았다.** transport 와 함께 도입한다.
 - `SetMaxOpenConns(1)`이 Ledger 쓰기를 직렬화하므로 `MaxWorkers > 1`에서도
   Ledger 정합성은 안전하다. 단일 Ledger Writer 고루틴 + 배치 커밋은
   정합성 요건이 아니라 **처리량 최적화**이며 MVP 4 범위이다.
@@ -1082,7 +1158,7 @@ Journal 모드 — 접속 시 journal_mode를 WAL로, synchronous를 NORMAL로, 
 
 중단 복구를 위한 상태 전이
 
-Ledger의 전송 상태는 PENDING → IN_PROGRESS → VERIFIED 또는 FAILED로 정의하고, 상태 갱신은 트랜잭션 안에서 수행한다. 프로그램이 비정상 종료되면 IN_PROGRESS 상태로 남은 항목과 정리되지 않은 .part 파일이 함께 존재하게 되므로, 시작 시 해당 항목을 조회하여 잔여 .part 파일을 삭제하고 상태를 PENDING으로 되돌린다. 이 절차가 없으면 .part 파일이 계속 누적되어 저장공간을 잠식한다.
+Ledger의 전송 상태는 PENDING → IN_PROGRESS → VERIFIED 또는 FAILED로 정의하고, 상태 갱신은 트랜잭션 안에서 수행한다. 프로그램이 비정상 종료되면 IN_PROGRESS 상태로 남은 항목과 정리되지 않은 .part 파일이 함께 존재하게 되므로, 시작 시 해당 항목을 조회하여 잔여 .part 파일을 삭제하고 상태를 **FAILED**로 되돌린다(설계안 원문의 PENDING 되돌리기는 폐기 — 5절 「2026-08-30 확정」 ②). 이후 동일 revision 재시도는 `BeginPut`(FAILED → IN_PROGRESS)이 담당한다. 이 절차가 없으면 .part 파일이 계속 누적되어 저장공간을 잠식한다.
 
 드라이버 선정
 

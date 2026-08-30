@@ -75,7 +75,7 @@ func run() error {
 	// "오류 없이 잘못 도는" 부류이므로 시작 자체를 막는다.
 	if !*dryRun {
 		return fmt.Errorf(
-			"live 전송은 미구현이다 (transport, 3탄). " +
+			"live 전송은 미구현이다 (transport 도입 전). " +
 				"--dry-run 으로 실행하라",
 		)
 	}
@@ -122,9 +122,10 @@ func run() error {
 		}
 	}()
 
-	// TODO(3탄): 시작 시 IN_PROGRESS 회수.
-	//   ledger.ListInProgress → 원격 .part 삭제 → ledger.FailPut.
-	//   정리 순서(회수 → Scan/전송 → Cleanup)는 schema.sql 방침이다.
+	// TODO(transport): 시작 시 IN_PROGRESS 회수.
+	//   ledger.ListInProgress → 원격 .part 삭제 → ledger.FailPut (→ FAILED).
+	//   PENDING 으로 되돌리지 않는다. 정리 순서(회수 → Scan/전송 → Cleanup)는
+	//   schema.sql · GUIDELINES 5절 확정 방침이다.
 
 	days := cfg.Scan.RecentDays
 	if *deep {
@@ -172,8 +173,8 @@ func run() error {
 
 	report.Print(nil)
 
-	// TODO(3탄): Worker Pool 전송 (MaxWorkers).
-	// TODO(3탄): Deep 실행일이면 Retention Cleanup.
+	// TODO(transport): Worker Pool 전송 (MaxWorkers).
+	// TODO(transport): Deep 실행일이면 Retention Cleanup.
 
 	return nil
 }

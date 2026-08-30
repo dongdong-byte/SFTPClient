@@ -17,7 +17,7 @@ package ledger
 //     EXHAUSTED 상태를 신설하지 않는다.
 //   - 회차 내 재시도 없음 ≠ 크래시 복구 없음.
 //     시작 시 IN_PROGRESS 회수(잔여 .part 정리 후 FAILED 되돌리기)는
-//     기존 정책 그대로이며 transport 도입 시 조립한다.
+//     확정 정책이며 transport 도입 시 조립한다 (PENDING 되돌리기 아님).
 //
 // Transaction 정책
 //   - common_ledger 와 put_ledger 를 묶는 cross-table 트랜잭션은 없다.
@@ -106,7 +106,7 @@ type PutState struct {
 
 // InProgressItem 은 시작 시 IN_PROGRESS 회수 절차의 재료다.
 //
-// 원격 .part 삭제 후 FailPut 으로 되돌리는 조립은 2탄이다.
+// 원격 .part 삭제 후 FailPut 으로 되돌리는 조립은 transport 도입 시이다.
 type InProgressItem struct {
 	PutKey
 
@@ -181,11 +181,11 @@ ON CONFLICT(category, file_name, revision) DO NOTHING;`
 // 없는 것이 당연하며, 수정하지 않는다. 후보 필터가 필요로 하는
 // status/attempts 는 이 함수가 put_ledger 에서 읽는다.
 //
-// 후보 판정 규칙 (조회 결과를 쓰는 쪽 — put 조립, 2탄):
+// 후보 판정 규칙 (조회 결과를 쓰는 쪽 — put 조립):
 //
 //	행 없음                          → 후보 (신규. InsertPendingBatch 대상)
 //	PENDING                          → 후보 (직전 실행이 등록 후 죽은 고아. 재개)
-//	IN_PROGRESS                      → 제외 (시작 시 회수 절차 몫 — 2탄)
+//	IN_PROGRESS                      → 제외 (시작 시 회수 절차 몫 — transport)
 //	FAILED && attempts <  MaxRetries → 후보 (INSERT 불필요. BeginPut 이 직접 올림)
 //	FAILED && attempts >= MaxRetries → 제외 (자동 재시도 소진)
 //	VERIFIED                         → 제외 (해당 revision 종료 상태)
