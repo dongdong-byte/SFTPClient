@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"SFTPClient/internal/config"
@@ -35,17 +36,32 @@ func main() {
 // 장애가 아니며, 스케줄러가 이를 실패로 집계하면 안 된다.
 func run() error {
 	var (
-		configPath = flag.String("config", "config.ini", "config.ini 경로")
-		dryRun     = flag.Bool("dry-run", false,
-			"ledger 에 쓰지 않고 무엇을 할 것인지만 보고한다")
-		deep = flag.Bool("deep", false,
+		configPath = flag.String(
+			"config",
+			"",
+			"config.ini 경로 (미지정 시 실행 파일과 같은 디렉터리의 config.ini)",
+		)
+		dryRun = flag.Bool(
+			"dry-run",
+			false,
+			"ledger 업무 데이터를 변경하지 않고 무엇을 할 것인지만 보고한다",
+		)
+		deep = flag.Bool(
+			"deep",
+			false,
 			"Deep Scan 범위(ScanDays)로 실행한다. "+
-				"DeepScanHour 자동 판정은 스케줄러 연동과 함께 붙는다")
+				"DeepScanHour 자동 판정은 스케줄러 연동과 함께 붙는다",
+		)
 	)
 
 	flag.Parse()
 
-	cfg, err := config.Load(*configPath)
+	resolvedConfigPath, err := resolveConfigPath(*configPath)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(resolvedConfigPath)
 	if err != nil {
 		return err
 	}
@@ -59,7 +75,8 @@ func run() error {
 	// "오류 없이 잘못 도는" 부류이므로 시작 자체를 막는다.
 	if !*dryRun {
 		return fmt.Errorf(
-			"live 전송은 미구현이다 (transport). --dry-run 으로 실행하라",
+			"live 전송은 미구현이다 (transport, 3탄). " +
+				"--dry-run 으로 실행하라",
 		)
 	}
 
@@ -105,7 +122,7 @@ func run() error {
 		}
 	}()
 
-	// TODO(transport 도입 시): 시작 시 IN_PROGRESS 회수.
+	// TODO(3탄): 시작 시 IN_PROGRESS 회수.
 	//   ledger.ListInProgress → 원격 .part 삭제 → ledger.FailPut.
 	//   정리 순서(회수 → Scan/전송 → Cleanup)는 schema.sql 방침이다.
 
@@ -155,8 +172,32 @@ func run() error {
 
 	report.Print(nil)
 
-	// TODO(transport 도입 시): Worker Pool 전송 (MaxWorkers).
-	// TODO(transport 도입 시): Deep 실행일이면 Retention Cleanup.
+	// TODO(3탄): Worker Pool 전송 (MaxWorkers).
+	// TODO(3탄): Deep 실행일이면 Retention Cleanup.
 
 	return nil
+}
+
+// resolveConfigPath 는 --config 가 생략되었을 때 실행 파일과 같은
+// 디렉터리의 config.ini 를 기본값으로 사용한다.
+//
+// Windows 작업 스케줄러는 작업 디렉터리를 실행 파일 위치와 다르게
+// 잡을 수 있으므로 cwd/config.ini 에 의존하지 않는다.
+// 사용자가 --config 를 명시했다면 그 값을 그대로 사용한다.
+func resolveConfigPath(explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("실행 파일 경로 확인 실패: %w", err)
+	}
+
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return "", fmt.Errorf("실행 파일 절대 경로 확인 실패: %w", err)
+	}
+
+	return filepath.Join(filepath.Dir(exe), "config.ini"), nil
 }
