@@ -264,9 +264,7 @@ func (rr RunReport) Print(l *log.Logger) {
 
 	if rr.DryRun {
 		l.Printf(
-			"%s 신규/변경 파일의 live revision 은 아직 미확정이다. "+
-				"신규는 revision=0, 변경은 현재 장부 revision 을 표시하며, "+
-				"live 에서는 Upsert 후 ledger 가 확정한 새 revision 을 사용한다",
+			"%s revision 은 preview 값이다. live 에서는 Upsert 결과의 확정 revision 을 사용한다.",
 			tag,
 		)
 	}

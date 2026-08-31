@@ -119,8 +119,9 @@ type Uploader interface {
 	//   - SFTP 표준 Rename(SSH_FXP_RENAME) 은 대상이 존재하면 실패한다.
 	//     github.com/pkg/sftp 기준으로 Client.Rename 이 그 동작이며,
 	//     덮어쓰기는 Client.PosixRename(posix-rename@openssh.com 확장)이다.
-	//     sftpfs 는 PosixRename 을 쓴다. 서버가 그 확장을 지원하지 않는
-	//     경우의 대비는 transport 도입 시 판단한다.
+	//     sftpfs 는 PosixRename 을 쓴다. 서버가 확장을 지원하지 않으면
+	//     DialSFTP 가 명확한 오류로 실패한다. 표준 Rename 대체와
+	//     Remove→Rename fallback 은 두지 않는다 (2026-08-31 확정).
 	Rename(ctx context.Context, oldPath, newPath string) error
 
 	// Remove 는 path 의 파일을 삭제한다. 재귀가 아니며 디렉터리는 오류다.
