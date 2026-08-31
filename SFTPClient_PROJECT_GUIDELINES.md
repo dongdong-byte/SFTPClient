@@ -19,7 +19,7 @@
 | 2026-08-28 | 9.7 확장자 항목 정정. 실제 유입은 `.gz` / `.Z` / `.zip` 압축본이며 DOY 폴더에 비압축은 오지 않는다 |
 | 2026-08-28 | 9.9 신설 — Scan 범위 3갈래(Hot / Deep / Recovery)와 `--dry-run` / `seed` |
 | 2026-08-28 | 4절 미결 구조 항목 해소 — `internal/scan` 분리, `config` 완료 |
-| 2026-08-28 | 패키지명 표기 `pathpl` → `pathpl` 통일. 코드가 원본이다 |
+| 2026-08-28 | 패키지명 표기 `pathtpl` → `pathpl` 통일. 코드가 원본이다 |
 | 2026-08-29 | `DirLister.List` 시그니처에 `context.Context` 반영 (구현과 정합) |
 | **2026-08-30** | **Ledger 복합키 `(category, file_name)`, `schema_version` 4. lookup 완료** |
 | 2026-08-30 | **`internal/lock` 추가** — 프로세스 단일 실행 (디렉터리 + owner token) |
@@ -29,6 +29,12 @@
 | 2026-08-30 | **`MaxRetries` 재정의** — 실행 안 재시도 폐기, 동일 revision 누적 시도 상한(기본 5) |
 | 2026-08-30 | **IN_PROGRESS 회수 = FAILED** — 설계안 PENDING 되돌리기 폐기. `FailPut` → 재시도는 `BeginPut` |
 | 2026-08-30 | **Unchanged ≠ 전송 완료** — 후보 경로에서 떨어뜨리지 않음. PENDING 고아 재개 경로 |
+| **2026-08-31** | **transport 완료 — localfs·sftpfs.** put 소비자측 `Uploader` 계약, `.part`→Size→PosixRename→최종 Stat. localfs 관통: 2,153건 VERIFIED, 재실행 candidates=0 |
+| **2026-08-31** | **posix-rename 판별 = 광고 → 기능 탐침 2단계.** SFTPGo 2.7.5 실측: 지원하되 광고 안 함(HasExtension 거짓 음성). 기각: 첫 Rename 시점 판정(attempts 는 파일 예산). 아래 「2026-08-31 확정」 |
+| 2026-08-31 | SFTP 접속 상한 = `dialTimeout` 상수 10초 (TCP+handshake 단일 예산). config 키 승격은 운영 근거 관측 후 |
+| 2026-08-31 | `main` — `signal.NotifyContext` 배선(Ctrl+C→ctx 취소), `--transport sftp` live 배선. "live 거부" 절단면 해제 |
+| 2026-08-31 | sftpfs 계약 테스트 — 오프라인 6종 + 실서버 10종(`SFTPTEST_*` 게이트). 로컬 SFTPGo 2.7.5 전부 PASS. ★RenameOverwritesExisting = posix-rename 실증 |
+| 2026-08-31 | 실서버 실측 — 관련정보 문서(260527)는 낡음. 지리원·서울시 OS 세대교체 확인, 측위원 SFTPGo 가동. 설치처는 기관 서버가 아닌 중간 전달자 호스트(대표 확인) |
 
 ### 관련 문서
 
@@ -168,10 +174,14 @@ SFTPClient/
 │   │                           Minutes 키는 기각(경과시간 단위 규약=초).
 │   │                           main 은 Acquire/Release 배선 완료. ErrHeld → exit 0.
 │   │
-│   ├─ transport/      [예정]   파일을 실제로 옮기는 계층. 설계안 4절의 SFTP Core.
-│   │                           sftpfs.go  — SSH 공개키 접속, known_hosts, .part 업로드, Rename
-│   │                           localfs.go — 로컬 디렉터리 구현. SFTP 없이 개발·테스트할 때 교체 투입
+│   ├─ transport/      [완료]   파일을 실제로 옮기는 계층. 설계안 4절의 SFTP Core.
+│   │                           localfs.go — 기준 구현. SFTP 없이 상태 머신 전체를 검증. [완료]
+│   │                           sftpfs.go  — SSH 공개키 접속(known_hosts 강제), .part 업로드,
+│   │                                        PosixRename, dialTimeout 10s(TCP+handshake 단일 예산),
+│   │                                        posix-rename 판별 = 광고→탐침 2단계.        [완료]
+│   │                           put.Uploader 를 구조적으로 만족(단언은 *_test.go).
 │   │                           put/download를 모른다. 방향을 알지 못하고 파일만 옮긴다.
+│   │                           계약 테스트: localfs 10종 + sftpfs 오프라인 6종·실서버 10종.
 │   │
 │   ├─ logging/                 log/slog 설정. 출력 대상, 레벨, 보존 정책. (설계안 14)
 │   │                           성공은 집계, 실패·재시도는 상세 원인 기록.
@@ -375,17 +385,20 @@ lock        패키지 + main Acquire        ✅ 완료
 PUT 조립    Scan→Lookup→Verify→Upsert→후보→절단→PENDING
             + --dry-run 관측             ✅ 완료 (2026-08-30)
     ↓
-transport   .part → size → rename → 최종 확인   ← 다음
-            + 시작 시 IN_PROGRESS 회수 (→ FAILED)
-            + Worker Pool (MaxWorkers = 4)
-            + Transfer Verification
+transport   .part → size → rename → 최종 확인   ✅ 완료 (2026-08-31)
+            + Transfer Verification (localfs·sftpfs 관통)
     ↓
-recovery / seed / Retention Cleanup
+recovery    시작 시 IN_PROGRESS 회수 (→ FAILED,   ← 다음
+            Rename 후 사망분은 salvage 분기 검토)
+    ↓
+Worker Pool (MaxWorkers = 4) + go test -race
+    ↓
+seed / Retention Cleanup
 ```
 
-**현재 절단면은 "후보 선정 + PENDING 등록 + dry-run 리포트"까지다.**
-live 전송은 transport 도입 전까지 `main` 이 명시적으로 거부한다.
-검증 없이 VERIFIED 를 기록하는 것보다 범위를 자르는 편이 안전하다.
+**현재 절단면은 "단일 경로 live 전송(localfs·sftpfs) + Transfer Verification"까지다.**
+live 는 `--transport localfs | sftp` 명시가 필수다(기본값으로 전송을 시작하는
+실행 경로는 두지 않는다). IN_PROGRESS 회수 조립과 Worker Pool 이 다음 절단면이다.
 
 **`--dry-run` 은 ledger 업무 데이터를 쓰지 않는 관측 수단이다.**
 현장 접근이 어려운 상태에서 관측소 개수·확장자 분포·경로 정합성·스캔 소요시간을
@@ -494,6 +507,67 @@ staleAfter 가 실제 최장 실행보다 짧으면 살아 있는 실행을 탈�
   트랜잭션 안에서는 반드시 `*sql.Tx` 핸들만 사용한다. (CONCEPT 4.8)
 - 동시성 코드를 추가한 시점부터 `go test -race ./...`를 기본 절차에 포함한다.
 - 성능 튜닝은 MVP 4 이전에 과도하게 진행하지 않는다.
+
+### 2026-08-31 확정 — transport(sftpfs) · posix-rename 탐침 · 접속 상한
+
+#### ① posix-rename 판별 — 광고 → 기능 탐침 2단계
+
+Uploader.Rename 계약("대상이 존재하면 덮어쓴다")을 만족하는 SFTP 명령은
+`posix-rename@openssh.com` 확장뿐이다(표준 SSH_FXP_RENAME 은 대상 존재 시
+동작이 서버 재량). 지원 판별은 접속(Dial) 시점에 2단계로 한다.
+
+1. **광고**: 서버가 SSH_FXP_VERSION 에서 확장을 광고하면 신뢰한다.
+2. **탐침**: 광고가 없으면 실존할 수 없는 경로(나노초 타임스탬프)로
+   PosixRename 을 1회 보내 서버의 **행동**으로 판별한다.
+   "no such file" 계열 → 지원(대상이 없었을 뿐). 그 외 → 미지원으로
+   서버 응답을 담아 시끄럽게 실패.
+
+근거: 확장 광고는 명세상 **선택 사항**이다. SFTPGo 2.7.5 가 posix-rename 을
+처리하면서도 광고하지 않음이 로컬 실측(2026-08-31)에서 확인됐다. 광고 단독
+판정(HasExtension)은 거짓 음성 — 측위원처럼 SFTPGo 를 운영하는 기관으로의
+전송을 통째로 오탐 차단한다. 광고는 서버의 말이고 탐침은 행동이며,
+계약이 요구하는 것은 행동이다. 최종 심판은 계약 테스트
+`RenameOverwritesExisting`(실파일 덮어쓰기 실증)이다.
+
+**기각 목록**
+- **첫 Rename 시점 판정** — 진짜 미지원 서버에서 매시 MaxFilesPerRun 개
+  파일이 업로드까지 마친 뒤 실패하며 attempts 를 소모한다. attempts 는
+  파일의 문제에 쓰는 예산이지 환경의 문제에 쓰는 예산이 아니다
+  (preflight attempts 결정과 동일 원칙).
+- **표준 Rename 강등**(미지원 시 표준 Rename 으로 계속) — 기각에 가까운
+  보류. revision 재전송(어제 실측: 하루 절단 회수 153건)이 이 도메인의
+  일상 경로라, 덮어쓰기 불가 서버에서 강등은 "일상 경로의 상시 고장"이
+  된다. 실측상 대부분 기관이 SFTPGo 가동 중이라 밟을 확률도 낮다.
+  posix-rename 미지원 서버가 실재로 확인되는 날 재론한다.
+- **Remove → Rename fallback** — 재론 금지 유지. Remove 성공 후 Rename
+  실패 시 원격의 멀쩡한 옛 파일까지 잃는다.
+
+#### ② SFTP 접속 상한 — `dialTimeout` 상수 10초
+
+TCP 연결과 SSH handshake 가 **하나의 10초 예산을 공유**한다(절대 deadline
+선계산). `ssh.ClientConfig.Timeout` 만으로는 handshake 매달림을 못 막고,
+매달린 프로세스는 lock 을 쥔 채 살아 LockStale takeover → 이중 실행의
+전제 붕괴로 이어진다. handshake 후 **deadline 해제는 필수**다(남기면 접속
+10초 뒤부터 모든 I/O 가 timeout — 소량 테스트에선 안 드러나고 다건에서
+터지는 시한폭탄). config 키로 두지 않는다 — 운영 중 조정할 근거가 관측되면
+그때 [PUT.SFTP] 로 승격한다(승격 시 구조체·knownKeys·validate·example·문서
+다섯 곳 동반).
+
+#### ③ 실서버 환경 실측 (관련정보 문서 260527 대비 갱신)
+
+- 지리원·서울시: OS 세대교체 확인(직접 타건). 문서의 Server 2003 기록은 낡음.
+- 측위원: **SFTPGo 가동 중** — 대표가 명세에 SFTPGo 를 지정한 근거.
+- 설치처: 기관 서버가 아니라 **중간 전달자 호스트**(대표 확인). Go 1.27
+  산출물 제약(Win10/Server2016+)은 전달자 호스트 설치 시 체크 항목.
+- 확인 잔여: 전달자 호스트 OS 확정, 기관별 SFTPGo 버전 목록화(제안:
+  신규 구축분은 SFTPGo 최신 안정판 표준화), mismatch 혼입 파일 정책.
+- ※ 실측 "10/12 버전" 표기가 정확히 무엇의 버전인지 명기 필요.
+
+#### ④ Close 오류 취급 (Uploader 양쪽 공통 원칙)
+
+전송 계층의 Close 오류는 버리지 않는다. 단 io.EOF·net.ErrClosed 는 정상
+종료의 다른 모습이므로 **구성원 단위로** 흡수한다(errors.Join 결과에
+일괄 필터를 걸면 한쪽의 EOF 가 다른 쪽의 실오류를 삼킨다 — sftpfs.Close).
 
 ## 6. 오류 처리
 
