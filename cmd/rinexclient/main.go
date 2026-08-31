@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"time"
 
 	"SFTPClient/internal/config"
@@ -43,13 +44,13 @@ func run() error {
 			"Deep Scan 범위(ScanDays)로 실행한다. "+
 				"DeepScanHour 자동 판정은 스케줄러 연동과 함께 붙는다")
 
-		// TODO(sftpfs 도입 시): live 가 기본이 되면 이 플래그를 제거한다.
+		// TODO(seed 구현 시): live 가 기본이 되면 이 플래그를 제거한다.
 		seedCommon = flag.Bool("seed-common", false,
 			"전송하지 않고 common_ledger 만 실제로 기록한다. "+
 				"Unchanged 경로 검증용이며 seed 자체는 아니다")
 
 		transportName = flag.String("transport", "",
-			"live 전송 계층. 현재 localfs 만 구현되어 있다. "+
+			"live 전송 계층 (localfs | sftp). "+
 				"live(--dry-run/--seed-common 없이)는 이 값이 필수다")
 	)
 
@@ -74,6 +75,18 @@ func run() error {
 	// 세 모드는 상호 배타다: dry-run(관측) / seed-common(장부만) / live(전송).
 	live := !*dryRun && !*seedCommon
 
+	// Ctrl+C(Interrupt) 를 ctx 취소로 전파한다.
+	//
+	// 이 연결이 없으면 프로세스가 즉사하여, 전송 경로의 취소 설계
+	// (UploadPart 의 청크 단위 검사, FinishPut/FailPut 의 WithoutCancel
+	// 격리)가 실전에서 발동할 수 없다. IN_PROGRESS recovery 검증의
+	// "실행 중 Ctrl+C" 시나리오도 이 전파를 전제한다.
+	//
+	// 두 번째 Ctrl+C 는 stop 해제 후의 기본 동작(즉시 종료)이다 —
+	// 취소 처리가 걸려 있을 때의 탈출구다.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	// live 는 전송 계층을 명시해야 한다. 기본값으로 무언가를 보내기
 	// 시작하는 실행 경로는 두지 않는다 — "오류 없이 잘못 도는" 부류다.
 	var uploader put.Uploader
@@ -85,15 +98,36 @@ func run() error {
 
 	case live && *transportName == "":
 		return fmt.Errorf(
-			"live 전송은 --transport 지정이 필수다. " +
-				"현재 localfs 만 구현되어 있다 (sftp 는 후속)",
+			"live 전송은 --transport 지정이 필수다 (localfs | sftp)",
 		)
 
 	case live && *transportName == "localfs":
 		uploader = transport.LocalFS{}
 
 	case live && *transportName == "sftp":
-		return fmt.Errorf("transport sftp 는 미구현이다 (후속 단계)")
+		// 접속 시점에 posix-rename 확장 지원을 확인하고 미지원이면
+		// 전송 시작 전에 거부한다 (DialSFTP 주석 — 2026-08-31 확정).
+		//
+		// lock 획득 전에 접속하므로, 회차가 겹친 실행도 접속 한 번은
+		// 수행한 뒤 ErrHeld 로 물러난다. 접속 한 번의 비용은 작고,
+		// transport 준비를 다른 준비 단계(config/validate)와 같은
+		// 자리에 두는 쪽을 택한다.
+		sf, err := transport.DialSFTP(transport.SFTPDialOptions{
+			Host:           cfg.Put.SFTP.Host,
+			Port:           cfg.Put.SFTP.Port,
+			User:           cfg.Put.SFTP.User,
+			PrivateKeyPath: cfg.Put.SFTP.PrivateKey,
+			KnownHostsPath: cfg.Put.SFTP.KnownHosts,
+		})
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := sf.Close(); err != nil {
+				log.Printf("[SFTP][WARN] close: %v", err)
+			}
+		}()
+		uploader = sf
 
 	case live:
 		return fmt.Errorf("알 수 없는 transport: %q", *transportName)
@@ -136,8 +170,6 @@ func run() error {
 		)
 	}
 
-	ctx := context.Background()
-
 	db, err := ledger.Open(ctx, cfg.General.LedgerPath)
 	if err != nil {
 		return err
@@ -149,11 +181,11 @@ func run() error {
 		}
 	}()
 
-	// TODO(sftpfs 도입 시): 시작 시 IN_PROGRESS 회수.
+	// TODO(recovery 단계): 시작 시 IN_PROGRESS 회수.
 	//   ledger.ListInProgress → 원격 .part 삭제(Uploader.Remove) →
-	//   ledger.FailPut. 정리 순서(회수 → Scan/전송 → Cleanup)는
-	//   schema.sql 방침이다. localfs 단일 경로에서는 크래시 잔여가
-	//   다음 실행의 BeginPut 재시도로 자연 회수되므로 뒤로 미룬다.
+	//   ledger.FailPut (단, Rename 후 사망분은 원격 Size == local_size
+	//   면 재전송 없이 VERIFIED 승격 — salvage 분기, 설계서에서 확정).
+	//   정리 순서(회수 → Scan/전송 → Cleanup)는 schema.sql 방침이다.
 
 	days := cfg.Scan.RecentDays
 	if *deep {
@@ -209,8 +241,8 @@ func run() error {
 		}
 	}
 
-	// TODO(sftpfs 도입 시): Worker Pool 전송 (MaxWorkers).
-	// TODO(sftpfs 도입 시): Deep 실행일이면 Retention Cleanup.
+	// TODO(Worker Pool 단계): Worker Pool 전송 (MaxWorkers).
+	// TODO(Retention 단계): Deep 실행일이면 Retention Cleanup.
 
 	return nil
 }

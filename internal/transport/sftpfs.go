@@ -18,13 +18,14 @@ import (
 )
 
 const (
-	// dialTimeout 은 SFTP 접속(TCP 연결 + SSH handshake)의 상한이다.
+	// dialTimeout 은 SSH 접속의 TCP 연결 + SSH handshake 전체 상한이다.
 	//
 	// 같은 국내망의 SFTPGo 는 정상 접속이 1초 미만이므로,
-	// 10초를 넘기면 "느린 것" 이 아니라 "죽은 것" 으로 본다.
+	// 전체 접속 과정이 10초를 넘기면 "느린 것"이 아니라
+	// 접속 불가 상태로 본다.
 	//
-	// ssh.ClientConfig.Timeout 만으로는 TCP 연결까지밖에 못 막는다.
-	// handshake 구간은 net.Conn 의 deadline 으로 따로 씌운다 (dialSSH).
+	// TCP 연결과 SSH handshake 는 각각 10초를 갖는 것이 아니라
+	// 하나의 10초 예산을 공유한다 (dialSSH).
 	//
 	// config 키로 두지 않는다 (2026-08-31 확정). 운영 중 조정할
 	// 근거가 관측되면 그때 [PUT.SFTP] 로 승격한다 — 승격 시
@@ -86,11 +87,15 @@ type SFTPFS struct {
 
 // DialSFTP 는 SFTP 서버에 접속해 SFTPFS 를 만든다.
 //
-// 접속 시점에 posix-rename 확장 지원을 확인하고, 미지원이면 즉시
-// 실패한다 (2026-08-31 확정: 명확한 오류로 실패, fallback 없음).
-// Rename 호출 시점이 아니라 접속 시점에 확인하는 이유는 attempts
-// 예산 보호다 — 서버 설정 문제로 파일마다 FailPut 이 쌓이며 attempts 를
-// 소모하는 대신, 전송이 시작되기 전에 실행 전체가 시끄럽게 죽는다.
+// 접속 시점에 posix-rename 확장 지원을 확인하고, 미지원으로 판정되면
+// 즉시 실패한다 (2026-08-31 확정: 명확한 오류로 실패, fallback 없음).
+// 확인은 광고 → 기능 탐침의 2단계다 (본문 주석 참조).
+//
+// 판정을 Rename 호출 시점이 아니라 접속 시점에 두는 이유는 attempts
+// 예산 보호다 — 진짜 미지원 서버에서 Rename 시점 판정은 매시
+// MaxFilesPerRun 개 파일이 업로드까지 마친 뒤 실패하며 attempts 를
+// 소모한다. attempts 는 파일의 문제에 쓰는 예산이지 환경의 문제에
+// 쓰는 예산이 아니다 (preflight attempts 결정과 동일 원칙).
 //
 // 표준 Rename 대체와 Remove→Rename fallback 은 두지 않는다.
 // 전자는 revision 재전송("대상 존재")만 조용히 누락시키고, 후자는
@@ -139,7 +144,6 @@ func DialSFTP(opts SFTPDialOptions) (*SFTPFS, error) {
 		User:            opts.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: hostKeyCallback,
-		Timeout:         dialTimeout,
 	}
 
 	addr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
@@ -155,38 +159,70 @@ func DialSFTP(opts SFTPDialOptions) (*SFTPFS, error) {
 		return nil, fmt.Errorf("sftp: open subsystem: %w", err)
 	}
 
-	if _, ok := client.HasExtension(posixRenameExt); !ok {
-		_ = client.Close()
-		_ = conn.Close()
+	// posix-rename 지원 확인은 2단계다: 광고 → 기능 탐침.
+	//
+	// 1) 광고: 서버가 SSH_FXP_VERSION 에서 확장을 광고하면 신뢰한다.
+	// 2) 탐침: 광고는 의무가 아니다. SFTPGo 2.7.5 가 posix-rename 을
+	//    처리할 수 있으면서도 광고하지 않는 것이 2026-08-31 로컬
+	//    검증에서 확인됐다 (HasExtension 만 믿으면 거짓 음성 —
+	//    멀쩡한 서버로의 전송이 통째로 막힌다). 광고가 없으면
+	//    존재할 수 없는 경로로 PosixRename 을 한 번 보내 서버의
+	//    행동으로 판별한다.
+	//      - "no such file" 계열 → 확장은 동작한다 (대상이 없었을 뿐)
+	//      - 그 외 응답          → 미지원으로 보고 시끄럽게 실패
+	//
+	// 광고는 서버의 말이고 탐침은 행동이다. 계약이 요구하는 것은
+	// 행동이므로 행동을 검사한다. 탐침 경로는 나노초 타임스탬프라
+	// 실존할 수 없고, rename 시도일 뿐이라 서버에 아무것도 만들지
+	// 않으며, 비용은 왕복 1회다.
+	//
+	// 최종 심판은 계약 테스트의 RenameOverwritesExisting 이다 —
+	// 탐침이 잘못 통과시킨 서버는 거기서 실파일 덮어쓰기로 드러난다.
+	if _, advertised := client.HasExtension(posixRenameExt); !advertised {
+		probe := ".sftpclient-posix-rename-probe-" +
+			strconv.FormatInt(time.Now().UnixNano(), 10)
 
-		return nil, fmt.Errorf(
-			"sftp: 서버 %s 가 %s 확장을 지원하지 않는다. "+
-				"Uploader.Rename 계약(대상 존재 시 덮어쓰기)을 만족할 수 "+
-				"없으므로 전송을 시작하지 않는다. 서버(SFTPGo) 설정을 확인하라",
-			addr, posixRenameExt,
-		)
+		probeErr := client.PosixRename(probe, probe+"-dst")
+		if probeErr != nil && !isNotExist(probeErr) {
+			_ = client.Close()
+			_ = conn.Close()
+
+			return nil, fmt.Errorf(
+				"sftp: 서버 %s 가 %s 확장을 지원하지 않는 것으로 "+
+					"판정됐다 (탐침 응답: %v). Uploader.Rename 계약(대상 "+
+					"존재 시 덮어쓰기)을 만족할 수 없으므로 전송을 시작하지 "+
+					"않는다. 서버(SFTPGo) 설정/버전을 확인하라",
+				addr, posixRenameExt, probeErr,
+			)
+		}
 	}
 
 	return &SFTPFS{client: client, conn: conn}, nil
 }
 
-// dialSSH 는 TCP 연결과 SSH handshake 양쪽에 dialTimeout 을 씌운다.
+// dialSSH 는 TCP 연결과 SSH handshake 가 하나의 dialTimeout 예산을
+// 공유하도록 접속한다.
 //
-// ssh.Dial 을 쓰지 않는 이유는 ssh.ClientConfig.Timeout 이 TCP 연결
-// 수립까지만 적용되기 때문이다. 서버가 TCP 는 받고 SSH 응답을 주지
-// 않으면 handshake 에서 무기한 매달린다.
+// ssh.Dial 을 사용하지 않고 TCP 연결을 직접 만든 뒤
+// ssh.NewClientConn 을 호출한다. 이렇게 해야 TCP 연결을 포함한
+// 전체 handshake 과정에 하나의 deadline 을 적용할 수 있다.
 //
-// 배치 프로그램에서 이것이 나쁜 이유는 단순히 느려서가 아니다.
-// 매달린 프로세스가 lock 을 쥔 채 살아 있으면 이후 회차는 ErrHeld 로
-// 종료하다가 LockStale 시간이 지나 takeover 가 일어난다. 그 시점에
-// 두 프로세스가 공존하게 되어 lock 의 전제가 깨진다.
+// 배치 프로그램에서 handshake 가 무기한 매달리는 것은 단순히
+// 느린 문제가 아니다. 프로세스가 lock 을 쥔 채 살아 있으면 이후
+// 회차가 ErrHeld 로 종료될 수 있으므로 접속 단계에 명확한 상한을 둔다.
 func dialSSH(addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	// TCP 연결과 SSH handshake 가 공유할 절대 deadline 을
+	// TCP 연결을 시작하기 전에 계산한다.
+	deadline := time.Now().Add(dialTimeout)
+
 	tcpConn, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("sftp: dial %s: %w", addr, err)
 	}
 
-	if err := tcpConn.SetDeadline(time.Now().Add(dialTimeout)); err != nil {
+	// TCP 연결에 이미 사용한 시간을 포함하여 남은 시간만
+	// SSH handshake 에 사용할 수 있다.
+	if err := tcpConn.SetDeadline(deadline); err != nil {
 		_ = tcpConn.Close()
 		return nil, fmt.Errorf("sftp: set handshake deadline: %w", err)
 	}
@@ -199,9 +235,8 @@ func dialSSH(addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
 
 	// ★ deadline 해제는 필수다.
 	//
-	// 남겨두면 접속 10초 뒤부터 모든 읽기·쓰기가 i/o timeout 으로
-	// 죽는다. 작은 파일 한두 건(체크포인트 5번)에서는 드러나지 않고
-	// 대용량 Daily 파일이나 다건 전송에서 터진다.
+	// 접속용 deadline 을 남겨두면 접속 시작 10초 뒤부터
+	// 정상적인 파일 읽기·쓰기도 i/o timeout 으로 실패한다.
 	if err := tcpConn.SetDeadline(time.Time{}); err != nil {
 		_ = sshConn.Close()
 		return nil, fmt.Errorf("sftp: clear handshake deadline: %w", err)
@@ -215,13 +250,24 @@ func dialSSH(addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
 // 서버가 먼저 끊은 뒤 닫으면 io.EOF 가 나오는데, 그것은 정상 종료의
 // 다른 모습일 뿐 운영자가 볼 사건이 아니다. 매 실행마다 WARN 이
 // 찍히면 진짜 신호가 묻힌다.
+//
+// 필터는 Join 결과가 아니라 구성원 각각에 건다. errors.Is 는 Join 된
+// 오류의 구성원 중 하나만 맞아도 true 이므로, 합친 뒤에 거르면
+// client 쪽 EOF 가 conn 쪽의 실제 오류까지 함께 삼킨다.
 func (s *SFTPFS) Close() error {
-	err := errors.Join(
-		s.client.Close(),
-		s.conn.Close(),
+	return errors.Join(
+		ignoreBenignClose(s.client.Close()),
+		ignoreBenignClose(s.conn.Close()),
 	)
+}
 
-	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+// ignoreBenignClose 는 정상 종료의 다른 모습(io.EOF, 이미 닫힌 연결)을
+// nil 로 바꾼다. 그 외의 Close 오류는 버리지 않는다 — LocalFS 가
+// dst.Close 오류를 보존하는 것과 같은 원칙이다.
+func ignoreBenignClose(err error) error {
+	if err == nil ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, net.ErrClosed) {
 		return nil
 	}
 
@@ -349,8 +395,9 @@ func (s *SFTPFS) Size(ctx context.Context, p string) (int64, error) {
 
 // Rename 은 oldPath 를 newPath 로 전환한다. 대상이 존재하면 덮어쓴다.
 //
-// PosixRename 만 쓴다. 확장 지원 여부는 DialSFTP 에서 이미 확인했으므로
-// 여기서 다시 판별하거나 대체 경로로 빠지지 않는다.
+// PosixRename 만 쓴다. 확장 지원 여부는 DialSFTP 가 접속 시점에
+// (광고 → 탐침으로) 이미 판정했으므로 여기서 다시 판별하거나
+// 대체 경로로 빠지지 않는다.
 func (s *SFTPFS) Rename(
 	ctx context.Context,
 	oldPath string,
