@@ -181,6 +181,17 @@ type CategoryReport struct {
 	// Rejected 는 Ingress 거부의 사유별 건수다 (verify.Reason.String 키).
 	Rejected map[string]int
 
+	// RejectedExamples 는 거부된 파일명 예시다 (사유별 최대 5개).
+	//
+	// 개수만으로는 정상 파일이 규칙 오류로 걸린 것인지, 혼입 파일이
+	// 옳게 걸린 것인지 구분할 수 없다. 거부된 파일은 어느 Category 도
+	// 보내지 않으므로 그 사실이 사람에게 도달해야 한다.
+	// ExhaustedExamples 와 같은 성격의 관측 수단이다.
+	//
+	// 원본 파일명을 담는다. NormalizeName 을 거치면 대소문자가 바뀌어
+	// 실제 디스크에서 찾을 때 어긋난다.
+	RejectedExamples map[string][]string
+
 	// Unchanged/current revision 후보의 실제 제외 사유별 건수다.
 	ExcludedVerified       int
 	ExcludedInProgress     int

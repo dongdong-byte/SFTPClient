@@ -18,6 +18,24 @@ import (
 // 전부 나열하면 대량 소진 시 로그 한 줄이 수백 KB 가 된다.
 const exhaustedExampleCap = 5
 
+// rejectedExampleCap 은 Ingress 거부 사유별로 남기는 파일명 예시 상한이다.
+const rejectedExampleCap = 5
+
+// addRejected 는 거부 사유별 건수와 파일명 예시를 함께 기록한다.
+//
+// 호출 지점이 둘(디렉터리·.part 사전 제외, 신규·변경 Ingress 판정)이므로
+// 카운터와 예시가 어긋나지 않도록 한 곳으로 묶는다.
+func (rep *CategoryReport) addRejected(reason, name string) {
+	rep.Rejected[reason]++
+
+	if len(rep.RejectedExamples[reason]) < rejectedExampleCap {
+		rep.RejectedExamples[reason] = append(
+			rep.RejectedExamples[reason],
+			name,
+		)
+	}
+}
+
 // Runner 는 PUT 파이프라인을 실행한다.
 //
 // 모든 의존이 필드로 드러나 있어 테스트가 fake DirLister 와
@@ -153,9 +171,10 @@ func (r *Runner) runCategory(
 	started := r.now()
 
 	rep := CategoryReport{
-		Category: job.Category,
-		Rejected: map[string]int{},
-		ExtCount: map[string]int{},
+		Category:         job.Category,
+		Rejected:         map[string]int{},
+		RejectedExamples: map[string][]string{},
+		ExtCount:         map[string]int{},
 	}
 
 	var (
@@ -284,7 +303,7 @@ func (r *Runner) visitBatch(
 				)
 			}
 
-			rep.Rejected[reason.String()]++
+			rep.addRejected(reason.String(), e.Name)
 
 			if e.IsDir {
 				rep.SkippedDirs++
@@ -421,7 +440,7 @@ func (r *Runner) visitBatch(
 		})
 
 		if !reason.OK() {
-			rep.Rejected[reason.String()]++
+			rep.addRejected(reason.String(), e.Name)
 			continue
 		}
 

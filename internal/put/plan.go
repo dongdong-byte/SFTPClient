@@ -175,6 +175,28 @@ func (rr RunReport) Print(l *log.Logger) {
 				tag,
 				formatSortedCounts(c.Rejected),
 			)
+
+			// 사유별 파일명 예시.
+			// 개수만 보면 사람이 디스크를 직접 뒤져야 한다.
+			for _, reason := range sortedKeys(c.RejectedExamples) {
+				names := c.RejectedExamples[reason]
+
+				extra := ""
+				if c.Rejected[reason] > len(names) {
+					extra = fmt.Sprintf(
+						" 외 %d건",
+						c.Rejected[reason]-len(names),
+					)
+				}
+
+				l.Printf(
+					"%s     %s: %s%s",
+					tag,
+					reason,
+					strings.Join(names, ", "),
+					extra,
+				)
+			}
 		}
 
 		l.Printf(
@@ -276,4 +298,19 @@ func formatSortedCounts(m map[string]int) string {
 	b.WriteByte('}')
 
 	return b.String()
+}
+
+// sortedKeys 는 map 순회 순서를 고정한다.
+//
+// formatSortedCounts 와 같은 이유다. Go 의 map 순회는 실행마다 순서가
+// 바뀌므로, 사람이 회차 간 비교하는 리포트에서는 정렬해야 한다.
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	return keys
 }
