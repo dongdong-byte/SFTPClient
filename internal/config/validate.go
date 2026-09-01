@@ -48,11 +48,17 @@ func (c *Config) Validate() error {
 	}
 
 	c.checkMode(add)
+	c.checkTransport(add)
 	c.checkScan(add)
 	c.checkIngress(add)
 	c.checkLedger(add)
 	c.checkPut(add)
-	c.checkSFTP(add)
+
+	// SFTP 전송을 실제로 선택한 경우에만 SFTP 설정을 검증한다.
+	if c.General.Transport == "sftp" {
+		c.checkSFTP(add)
+	}
+
 	c.checkCategories(add)
 	c.checkLog(add)
 
@@ -101,11 +107,9 @@ func (c *Config) checkMode(add addFunc) {
 	// 하한 600초(10분): GraceSeconds 감각으로 60 같은 초급 값을 넣는
 	// 오입력을 막는다. 그 값이 통과되면 1분 넘는 모든 정상 실행이
 	// 탈취 대상이 되어 lock 이 없는 것보다 나쁘다(이중 전송).
-	// Minutes 단위 안을 기각한 대가로 이 하한이 그 방어를 대신한다.
-	// 상한 24시간: 180 을 18000 으로 잘못 적는 부류의 오타를 잡는다.
-	// 크래시 후 며칠씩 오류 없이 전송이 멈추는 것은
-	// "오류 없이 잘못 도는" 부류이므로 시작 시 거부한다.
-	// (DeepScanHour 0~23 검사와 같은 성격)
+	//
+	// 상한 24시간: 지나치게 큰 오입력으로 크래시 후 장시간 전송이
+	// 멈추는 상황을 방지한다.
 	if c.General.LockStale < 600*time.Second || c.General.LockStale > 24*time.Hour {
 		add(
 			"[GENERAL] LockStaleSeconds must be between 600 and 86400, got %d",
@@ -117,13 +121,26 @@ func (c *Config) checkMode(add addFunc) {
 	//
 	// PUT 전용 인스턴스에는 DOWNLOAD 로 등록된 파일이 존재할 수 없으므로
 	// true 로 두어도 아무 동작을 하지 않는다.
-	//
-	// 아무 효과가 없는 설정을 허용하면 운영자가 값을 바꾼 뒤
-	// 동작이 달라졌다고 오해할 수 있으므로 시작 시 거부한다.
 	if c.General.RepostDownloaded && !c.General.Mode.DoesDownload() {
 		add(
 			"[GENERAL] RepostDownloaded = true has no effect when Mode = %s",
 			c.General.Mode,
+		)
+	}
+}
+
+// checkTransport 는 실행에 사용할 전송 계층을 검사한다.
+//
+// 기본값으로 조용히 전송을 시작하지 않는다.
+// config.ini 에서 sftp 또는 localfs 를 명시해야 한다.
+//
+// --transport 가 지정된 경우에는 main 에서 이 값을 해당 실행에 한해
+// 덮어쓰는 용도로 사용한다.
+func (c *Config) checkTransport(add addFunc) {
+	if c.General.Transport != "sftp" && c.General.Transport != "localfs" {
+		add(
+			"[GENERAL] Transport = %q must be \"sftp\" or \"localfs\"",
+			c.General.Transport,
 		)
 	}
 }
@@ -145,7 +162,7 @@ func (c *Config) checkScan(add addFunc) {
 	}
 
 	// Deep Scan 은 Hot Scan 범위를 포함해야 한다.
-	// 그렇지 않으면 하루 1회 수행하는 넓은 복구 Scan 이라는 의미가 깨진다.
+	// 그렇지 않으면 하루 1회 수행하는 넓은 Scan 이라는 의미가 깨진다.
 	if c.Scan.Days < c.Scan.RecentDays {
 		add(
 			"[SCAN] ScanDays = %d must be at least ScanRecentDays = %d",
@@ -200,15 +217,14 @@ func (c *Config) checkPut(add addFunc) {
 	// MaxWorkers 의 양끝은 각각 다른 사고를 막는다.
 	//
 	// 하한 1: 0/음수면 워커가 뜨지 않아 전송이 조용히 0건이 된다.
-	// 상한 16: 40 같은 오타를 잡는다. *sftp.Client 세션 하나를 공유하는
-	// 구조라 처리량은 회선에서 병목이고, 16 초과는 이득 없이 수신측
-	// 동시 연결 제한 위반과 메모리 압박만 키운다. (LockStale 상한과 같은 논리)
+	// 상한 16: 과도한 병렬도를 설정하는 오입력을 막는다.
 	if c.Put.MaxWorkers < 1 || c.Put.MaxWorkers > 16 {
 		add(
 			"[PUT] MaxWorkers = %d must be between 1 and 16",
 			c.Put.MaxWorkers,
 		)
 	}
+
 	// MaxRetries 는 동일 revision 의 누적 자동 시도 상한이다.
 	// 첫 시도를 포함한다. 최소 한 번은 시도해야 하므로 0 도 거부한다.
 	if c.Put.MaxRetries < 1 {
@@ -228,6 +244,7 @@ func (c *Config) checkPut(add addFunc) {
 
 // checkSFTP 는 [PUT.SFTP] 값 자체를 검사한다.
 //
+// Transport=sftp 인 경우에만 Validate 에서 호출된다.
 // 파일이 실제로 존재하는지는 CheckEnvironment 에서 검사한다.
 func (c *Config) checkSFTP(add addFunc) {
 	s := c.Put.SFTP
@@ -235,7 +252,7 @@ func (c *Config) checkSFTP(add addFunc) {
 	// 설정 파일에 평문 비밀번호를 두지 않으므로
 	// MVP 1 에서는 publickey 인증만 지원한다.
 	//
-	// 대소문자를 구분하여 비교한다. load.go 가 이 값을 소문자로 정규화하므로
+	// load.go 가 이 값을 소문자로 정규화하므로
 	// 여기 도달하는 값은 이미 소문자이다.
 	if s.AuthMethod != "publickey" {
 		add(
@@ -279,13 +296,6 @@ func (c *Config) checkCategories(add addFunc) {
 	// 동일한 물리 파일을 서로 다른 Category 로 처리할 가능성이 있다.
 	//
 	// 한계: 템플릿 원문을 비교하므로 표기만 다르고 결과가 같은 경우는 잡지 못한다.
-	//
-	//	D:\A\(YYYY)\(DOY)     ← 잡히지 않음
-	//	D:\A\(YYYY)\(DOY)\
-	//
-	// Expand 결과를 비교하려면 기준 시각이 필요한데 Validate 는
-	// 파일시스템도 시계도 보지 않는 것을 규칙으로 두었으므로 여기까지만 한다.
-	// 이 경우에도 verify 의 Category 대조가 뒤에서 한 번 더 막는다.
 	seenLocal := make(map[string]string)
 
 	for _, cc := range c.Put.Categories {
@@ -334,13 +344,11 @@ func (c *Config) checkCategories(add addFunc) {
 //	(HH)가 반드시 있어야 한다.
 //	Scanner 는 00~23을 각각 계산하여 해당 디렉터리를 나열한다.
 //	빠지면 24개 시각이 모두 같은 디렉터리로 확장되어 같은 곳을 24번 읽는다.
-//	경로가 실제로 존재하므로 오류도 나지 않고 파일도 일부 발견된다.
 //
 // Daily:
 //
 //	(HH)가 없어야 한다.
 //	있으면 존재하지 않는 경로가 24개 생기고 전부 fs.ErrNotExist 가 된다.
-//	Scan 은 그것을 정상적인 빈 슬롯으로 취급하므로 조용히 아무 일도 하지 않는다.
 //
 // 두 경우 모두 오류 없이 잘못 도는 형태이므로 시작 시 거부한다.
 func checkHourToken(
@@ -422,23 +430,22 @@ func (c *Config) CheckEnvironment() error {
 	//
 	// Ledger DB 파일 자체는 첫 실행 때 아직 없을 수 있으므로
 	// 부모 디렉터리만 검사한다.
-	//
-	// 빈 값 판정은 LedgerPath 자체로 한다.
-	// filepath.Dir("") 은 "." 을 돌려주므로 Dir 결과로 판정하면
-	// 빈 경로가 현재 디렉터리 검사로 바뀌어 항상 통과한다.
-	// 빈 값은 Validate 가 이미 보고했으므로 여기서 다시 쌓지 않는다.
 	if c.General.LedgerPath != "" {
 		if err := requireDir(filepath.Dir(c.General.LedgerPath)); err != nil {
 			add("[GENERAL] LedgerPath: %v", err)
 		}
 	}
 
-	if err := requireFile(c.Put.SFTP.PrivateKey); err != nil {
-		add("[PUT.SFTP] PrivateKey: %v", err)
-	}
+	// SFTP 를 실제 전송 계층으로 선택한 경우에만
+	// 개인키와 known_hosts 파일의 존재를 요구한다.
+	if c.General.Transport == "sftp" {
+		if err := requireFile(c.Put.SFTP.PrivateKey); err != nil {
+			add("[PUT.SFTP] PrivateKey: %v", err)
+		}
 
-	if err := requireFile(c.Put.SFTP.KnownHosts); err != nil {
-		add("[PUT.SFTP] KnownHosts: %v", err)
+		if err := requireFile(c.Put.SFTP.KnownHosts); err != nil {
+			add("[PUT.SFTP] KnownHosts: %v", err)
+		}
 	}
 
 	if len(errs) == 0 {

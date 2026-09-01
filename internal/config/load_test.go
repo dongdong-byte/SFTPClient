@@ -13,6 +13,7 @@ import (
 func validINIForLoadTest() string {
 	return `[GENERAL]
 Mode = put
+Transport = sftp
 RepostDownloaded = false
 LedgerPath = data/rinex_ledger.db
 LockStaleSeconds = 10800

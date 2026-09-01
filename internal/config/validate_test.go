@@ -88,6 +88,7 @@ func validConfigForValidate(t *testing.T) *Config {
 
 		General: GeneralConfig{
 			Mode:             domain.ModePut,
+			Transport:        "sftp",
 			RepostDownloaded: false,
 			LedgerPath:       "data/rinex_ledger.db",
 			LockStale:        3 * time.Hour,
@@ -717,4 +718,57 @@ func TestCheckEnvironment(t *testing.T) {
 			t.Errorf("error = %v, want ErrEnvironment", err)
 		}
 	})
+}
+
+func TestValidate_Transport(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name:    "빈 값은 거부 — 기본 전송 계층은 없다",
+			mutate:  func(c *Config) { c.General.Transport = "" },
+			wantErr: "[GENERAL] Transport",
+		},
+		{
+			name:    "오타는 거부",
+			mutate:  func(c *Config) { c.General.Transport = "sfpt" },
+			wantErr: "[GENERAL] Transport",
+		},
+		{
+			name:    "sftp 허용",
+			mutate:  func(c *Config) { c.General.Transport = "sftp" },
+			wantErr: "",
+		},
+		{
+			name:    "localfs 허용",
+			mutate:  func(c *Config) { c.General.Transport = "localfs" },
+			wantErr: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfigForValidate(t)
+			tt.mutate(cfg)
+
+			err := cfg.Validate()
+
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
 }

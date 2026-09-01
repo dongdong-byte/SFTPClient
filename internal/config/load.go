@@ -378,6 +378,9 @@ func mapConfig(f *iniFile, path string) (*Config, error) {
 
 	general := l.section("GENERAL")
 	cfg.General.Mode = l.mode(general, "Mode")
+	cfg.General.Transport = strings.ToLower(
+		strings.TrimSpace(l.str(general, "Transport")),
+	)
 	cfg.General.RepostDownloaded = l.boolVal(general, "RepostDownloaded")
 	cfg.General.LedgerPath = resolvePath(
 		path,
@@ -399,9 +402,7 @@ func mapConfig(f *iniFile, path string) (*Config, error) {
 
 	put := l.section("PUT")
 	cfg.Put.MaxWorkers = l.intVal(put, "MaxWorkers")
-
 	cfg.Put.MaxRetries = l.intVal(put, "MaxRetries")
-
 	cfg.Put.MaxFilesPerRun = l.intVal(put, "MaxFilesPerRun")
 
 	sftp := l.section("PUT.SFTP")
@@ -505,6 +506,7 @@ func knownKeys() map[string][]string {
 	m := map[string][]string{
 		"GENERAL": {
 			"Mode",
+			"Transport",
 			"RepostDownloaded",
 			"LedgerPath",
 			"LockStaleSeconds",

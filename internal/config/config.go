@@ -37,6 +37,13 @@ type GeneralConfig struct {
 	// MVP 1 에서는 PUT 만 허용한다.
 	Mode domain.Mode
 
+	// Transport 는 실행에 사용할 전송 계층이다.
+	// 지원 값은 "sftp"(운영)와 "localfs"(검증)이다.
+	//
+	// config.ini 에 반드시 명시하며 기본값은 두지 않는다.
+	// --transport 가 지정되면 해당 실행에 한해 이 값을 덮어쓴다.
+	Transport string
+
 	// RepostDownloaded 는 DOWNLOAD 로 수신한 파일을 다시 PUT 대상으로 삼을지이다.
 	//
 	// 기본값은 false 이다.
@@ -100,8 +107,8 @@ type ScanConfig struct {
 	// config.ini 의 키 이름은 ScanDays 이다.
 	//
 	// 기본값은 7일이다.
-	// 이 범위를 넘어선 장애 복구는 recovery 명령에서
-	// 운영자가 명시적으로 기간을 지정한다.
+	// 정기 자동 탐색은 이 범위를 기준으로 하며,
+	// 이 범위를 넘어선 과거 데이터 처리는 운영자가 별도로 판단한다.
 	Days int
 
 	// DeepScanHour 는 Deep Scan 을 수행할 시각(0~23)이다.
@@ -157,9 +164,8 @@ type LedgerConfig struct {
 	// 그렇지 않으면 디스크에는 파일이 남아 있는데 Ledger 에서만 행이 삭제되어
 	// 이후 Deep Scan 에서 신규 파일로 판정되고 재전송될 수 있다.
 	//
-	// 이 값은 recovery 명령의 실질적인 안전 상한이기도 하다.
-	// Ledger 가 기억하지 못하는 과거 구간을 Recovery Scan 하면
-	// 이미 전송된 파일도 신규로 보일 수 있다.
+	// 따라서 이 값은 프로그램이 과거 파일의 전송 이력을 신뢰할 수 있는
+	// 최소 보존 범위를 결정한다.
 	RetentionDays int
 }
 
@@ -187,7 +193,6 @@ type PutConfig struct {
 	// 이름을 MaxAttempts 로 바꾸지 않는 이유: 의미상 더 정확하지만
 	// 키 개명은 변경 범위만 키운다. 주석과 example.ini 로 못박는다.
 	// (2026-08-30 필드명을 ini 키와 일치시키기 위해 MaxAttempts 에서 통일함)
-
 	MaxRetries int
 
 	// MaxFilesPerRun 은 한 번의 실행에서 실제 전송할 최대 파일 수이다.
