@@ -37,8 +37,9 @@ func main() {
 // 장애가 아니며, 스케줄러가 이를 실패로 집계하면 안 된다.
 func run() error {
 	var (
-		configPath = flag.String("config", "config.ini", "config.ini 경로")
-		dryRun     = flag.Bool("dry-run", false,
+		configPath = flag.String("config", "",
+			"config.ini 경로. 미지정 시 실행파일 옆의 config.ini")
+		dryRun = flag.Bool("dry-run", false,
 			"ledger 에 쓰지 않고 무엇을 할 것인지만 보고한다")
 		deep = flag.Bool("deep", false,
 			"Deep Scan 범위(ScanDays)로 실행한다. "+
@@ -55,6 +56,21 @@ func run() error {
 	)
 
 	flag.Parse()
+
+	// --config 미지정 시 실행파일 옆의 config.ini 를 쓴다.
+	//
+	// 기본값을 "config.ini" 문자열로 두면 CWD 상대경로가 되어,
+	// 작업 스케줄러(schtasks)가 CWD 를 exe 위치와 다르게 잡을 때
+	// "설정 파일 없음" 으로 끝난다. DefaultPath 는 os.Executable 기준이라
+	// CWD 와 무관하게 exe 옆 config.ini 를 찾는다.
+	// --config 를 명시하면 그 값이 우선이다.
+	if *configPath == "" {
+		p, err := config.DefaultPath()
+		if err != nil {
+			return err
+		}
+		*configPath = p
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -81,11 +97,22 @@ func run() error {
 	// (UploadPart 의 청크 단위 검사, FinishPut/FailPut 의 WithoutCancel
 	// 격리)가 실전에서 발동할 수 없다. IN_PROGRESS recovery 검증의
 	// "실행 중 Ctrl+C" 시나리오도 이 전파를 전제한다.
-	//
-	// 두 번째 Ctrl+C 는 stop 해제 후의 기본 동작(즉시 종료)이다 —
-	// 취소 처리가 걸려 있을 때의 탈출구다.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	// 첫 Ctrl+C 로 ctx 가 취소되면 시그널 가로채기를 해제한다.
+	//
+	// signal.NotifyContext 는 stop() 이 불릴 때까지 SIGINT 를 계속
+	// 가로챈다. defer stop() 뿐이면 실행 중 두 번째 Ctrl+C 가 삼켜져,
+	// 취소 처리가 걸려 있을 때 빠져나갈 탈출구가 없다. 첫 취소 직후
+	// stop() 을 호출해 Go 기본 동작(즉시 종료)을 복원한다.
+	//
+	// 정상 종료 시에는 defer stop() 이 ctx 를 취소하여 이 goroutine 을
+	// 깨우므로 누수되지 않는다. stop() 이 두 번 불려도 멱등이라 무해하다.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 
 	// live 는 전송 계층을 명시해야 한다. 기본값으로 무언가를 보내기
 	// 시작하는 실행 경로는 두지 않는다 — "오류 없이 잘못 도는" 부류다.

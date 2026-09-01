@@ -113,7 +113,8 @@ type uploadResult struct {
 	// 두 시각 사이에는 최종 Size 검증을 위한 원격 왕복이 들어 있어
 	// 실제로 수십~수백 ms 차이가 난다. 같은 값을 넣으면 "보냈지만 아직
 	// 검증되지 않은 구간" 이라는 CONCEPT 4.6 의 구분이 데이터에 남지 않는다.
-	SentAt time.Time
+	SentAt    time.Time
+	FinalSize int64 // 원격에서 관측한 최종 크기
 }
 
 // Transfer 는 후보를 순차로 전송한다.
@@ -406,7 +407,7 @@ func (r *Runner) Transfer(
 		finishErr := r.DB.FinishPut(
 			finishCtx,
 			c.Key,
-			c.Size,
+			res.FinalSize,
 			res.SentAt,
 			r.now().UTC(),
 		)
@@ -686,5 +687,6 @@ func (r *Runner) uploadOne(
 		)
 	}
 
+	res.FinalSize = finalSize
 	return res, nil
 }
