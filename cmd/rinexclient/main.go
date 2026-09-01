@@ -208,12 +208,6 @@ func run() error {
 		}
 	}()
 
-	// TODO(recovery 단계): 시작 시 IN_PROGRESS 회수.
-	//   ledger.ListInProgress → 원격 .part 삭제(Uploader.Remove) →
-	//   ledger.FailPut (단, Rename 후 사망분은 원격 Size == local_size
-	//   면 재전송 없이 VERIFIED 승격 — salvage 분기, 설계서에서 확정).
-	//   정리 순서(회수 → Scan/전송 → Cleanup)는 schema.sql 방침이다.
-
 	days := cfg.Scan.RecentDays
 	if *deep {
 		days = cfg.Scan.Days
@@ -251,6 +245,22 @@ func run() error {
 			MaxFilesPerRun:   cfg.Put.MaxFilesPerRun,
 			RepostDownloaded: cfg.General.RepostDownloaded,
 		},
+	}
+
+	// 시작 시 IN_PROGRESS 회수 — 확정 흐름의 첫 단계
+	// (Lock → Recover → Scan → 후보 → Transfer).
+	//
+	// live 전용이다. 회수는 원격 .part 삭제(uploader)와 put_ledger 쓰기를
+	// 하므로 dry-run/seed-common 에는 uploader 도 없고 쓰기도 하지 않는다.
+	//
+	// 회수된 IN_PROGRESS 는 FAILED 가 되어 바로 아래 Run 의 후보 판정에서
+	// 재시도(IsRetry)로 다시 잡혀 같은 실행에서 재전송된다 —
+	// 다음 회차를 기다리지 않는다. salvage 는 하지 않는다 (A안,
+	// recovery.go 주석).
+	if live {
+		if _, err := runner.Recover(ctx, uploader); err != nil {
+			return err
+		}
 	}
 
 	kept, report, err := runner.Run(ctx, jobs, rng)
