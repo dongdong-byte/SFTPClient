@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"SFTPClient/internal/domain"
@@ -117,57 +118,61 @@ type uploadResult struct {
 	FinalSize int64 // 원격에서 관측한 최종 크기
 }
 
-// Transfer 는 후보를 순차로 전송한다.
+// directoryBatch 는 워커 하나가 통째로 담당하는 작업 단위다.
 //
-// Worker Pool 이전의 단일 전송 경로이며, 이후 이 함수의 파일별 실행
-// 단위를 Worker 가 소비하더라도 상태 전이 순서는 유지해야 한다.
+// 낱개 Candidate 를 워커 채널에 흘리지 않고 디렉터리로 묶는 이유는
+// "디렉터리 전담" 전제 때문이다. 같은 원격 디렉터리의 파일이 워커 둘로
+// 갈라지면 EnsureDir 캐시가 워커 간 공유되어야 하고(락 필요), 디렉터리
+// 내부의 정렬 순서도 무너진다. 한 디렉터리를 한 워커가 통째로 잡으면
+// 캐시는 워커 로컬로 충분하고 내부 순서도 보존된다.
+type directoryBatch struct {
+	Category  domain.Category
+	RemoteDir string
+
+	// Candidates 는 이 디렉터리에 속한 후보들이며, 정렬된 kept 의
+	// 상대 순서를 그대로 유지한다 (groupByDirectory 가 순서대로 append).
+	Candidates []Candidate
+}
+
+// dirKey 는 그룹핑 조회표의 키다. 배치 순서를 만드는 데는 쓰지 않는다.
+type dirKey struct {
+	category domain.Category
+	dir      string
+}
+
+// Transfer 는 후보를 원격 디렉터리 단위로 나누어 병렬 전송한다.
 //
-// 파일 하나의 확정 순서:
+// 작업 단위와 동시 상한은 다른 것이다.
 //
-//	[preflight]
-//	  로컬 파일 존재 / regular / Size 불변 확인
+//	작업 단위(분배) = 원격 디렉터리. 한 디렉터리를 한 워커가 전담한다.
+//	동시 상한       = MaxWorkers. 디렉터리가 그보다 많아도 워커는 이
+//	                  수만큼 뜨고, 큐에서 하나씩 꺼내 처리한다.
+//	                  디렉터리가 더 적으면(Daily 단독=2) 그만큼만 뜬다.
 //
-//	[실제 PUT 착수]
-//	  BeginPut
-//	    → IN_PROGRESS
-//	    → attempts++
-//	    → remote_path / part_path / local_size 기록
+// 디렉터리당 워커를 무제한 생성하지 않는다. Deep Hourly 는 7×24=168
+// 디렉터리라 그대로 두면 168 고루틴이 단일 SFTP 세션을 동시에 두드려
+// 수신측 동시 연결 제한을 넘기고, 처리량은 회선에서 병목이라 이득도
+// 없이 메모리만 압박한다 (2026-09-01 확정).
 //
-//	[전송]
-//	  EnsureDir (디렉터리 단위. 같은 dir 재호출은 캐시가 걷어낸다)
-//	  → UploadPart
-//	  → .part Size == local_size
-//	  → Rename(.part → final)
-//	  → final Size == local_size
+// 파일 하나의 확정 순서(preflight → BeginPut → 전송 → 검증 → FinishPut)
+// 와 상태 전이 규칙은 단일 전송 시절과 동일하다. 병렬화는 그 단위를
+// 디렉터리별로 나눠 돌릴 뿐, 파일 단위 로직을 바꾸지 않는다.
 //
-//	[확정]
-//	  FinishPut
-//	  → VERIFIED
+// 오류는 두 층위다 (단일 전송 철학의 병렬화).
 //
-// preflight 를 BeginPut 보다 먼저 두는 이유:
+//	파일 전송 실패 → FailPut 으로 FAILED 기록 → 해당 워커는 다음 파일 계속.
+//	fatal(Ledger 오류·ctx 취소·조립 오류) → 첫 오류가 pool 전체를 취소하고
+//	  return err. 나머지 워커는 진행 중 파일을 접은 뒤 종료한다.
 //
-// attempts 의 확정 의미는 "실제 PUT 전송 착수 횟수" 다.
-// Scan 이후 로컬 파일이 사라졌거나 크기가 변한 것은 SFTP 전송 실패가
-// 아니라 로컬 입력 문제이므로 retry budget 을 소모하면 안 된다.
+// errgroup 을 쓰지 않는다. vendor 에 golang.org/x/sync 가 없고(실측),
+// 계약은 "첫 fatal 이 전체를 취소한다" 이지 특정 라이브러리가 아니다.
+// sync.WaitGroup + context.WithCancel + mutex 로 직접 조립한다.
 //
-// 다만 그것이 "실행을 중단한다" 는 뜻은 아니다. 해당 파일만 건너뛴다.
-// 중단시키면 후보 정렬이 매 실행 동일하므로 같은 파일이 같은 위치에서
-// 계속 막고, attempts 가 오르지 않아 MaxRetries 소진으로 빠지지도 않아
-// 그 뒤 후보 전체가 영구히 전송되지 않는다.
+// Report 는 워커별 로컬 TransferReport 에 쌓고 전 워커 종료 후 합산한다.
+// 공유 report + mutex 를 두지 않아 race 여지를 원천 제거한다.
 //
-// BeginPut 을 실제 원격 작업보다 먼저 두는 이유:
-//
-// BeginPut 이후 프로세스가 죽으면 Ledger 에 IN_PROGRESS + part_path 가
-// 남는다. 다음 시작의 recovery 가 잔여 .part 를 찾아 정리할 수 있다.
-//
-// UploadPart 가 오류 없이 반환했다는 사실만으로 VERIFIED 하지 않는다.
-// .part Size 검증과 Rename 후 최종 Size 검증까지 성공해야 FinishPut 한다.
-//
-// 개별 전송 실패는 .part cleanup 을 best-effort 로 수행한 뒤 FailPut 으로
-// FAILED 에 접고 다음 후보로 진행한다.
-//
-// 반환 error 는 파일 한 건의 전송 실패가 아니라, 실행 자체를 중단해야
-// 하는 오류(ctx 취소, Ledger 오류, 조립 오류)다.
+// 반환 error 는 파일 한 건의 실패가 아니라 실행 자체를 중단해야 하는
+// 오류다. Elapsed 는 어느 경로로 빠져나가든 defer 가 채운다.
 func (r *Runner) Transfer(
 	ctx context.Context,
 	up Uploader,
@@ -176,8 +181,6 @@ func (r *Runner) Transfer(
 ) (rep TransferReport, err error) {
 	started := r.now()
 
-	// Elapsed 는 어느 경로로 빠져나가든 채워져야 한다.
-	// 반환 지점마다 수동으로 대입하면 언젠가 한 곳을 빠뜨린다.
 	defer func() {
 		rep.Elapsed = r.now().Sub(started)
 	}()
@@ -186,29 +189,181 @@ func (r *Runner) Transfer(
 		return rep, fmt.Errorf("put: uploader is required")
 	}
 
-	// Category → Job 조회표.
-	//
-	// Candidate 는 Runner.Run 이 만든 목록이므로 정상적인 조립에서는
-	// 반드시 같은 category 의 CategoryJob 이 존재해야 한다.
-	//
-	// 키를 string 으로 변환하지 않는다. domain.Category 가 이미 비교
-	// 가능하고, checkInput 도 map[domain.Category]struct{} 를 쓴다.
-	// 같은 패키지 안에서 두 표현이 섞이면 조회 실패가 조용히 난다.
+	// 후보를 디렉터리 단위로 묶는다. jobs 검증(중복 category·nil
+	// RemotePath·후보 category 누락)도 여기서 함께 한다 — 전송이 실제로
+	// 쓰는 입력이기 때문이다.
+	batches, err := r.groupByDirectory(jobs, cands)
+	if err != nil {
+		return rep, err
+	}
+
+	if len(batches) == 0 {
+		// 후보 0건도 요약 한 줄은 남긴다. "재실행 시 전송 0건" 은
+		// 중복 방지의 증거이며(시연 ④), 라인이 아예 없으면 "전송
+		// 단계가 돌지 않았다" 와 구분되지 않는다.
+		r.logf(
+			"[XFER] attempted=0 verified=0 failed=0 "+
+				"not_candidate=0 skipped_preflight=0 workers=0 dirs=0 elapsed=%s",
+			r.now().Sub(started).Round(time.Millisecond),
+		)
+
+		return rep, nil
+	}
+
+	// 워커 수는 MaxWorkers 로 상한하되, 디렉터리보다 많이 띄우지 않는다.
+	// MaxWorkers <= 0 은 validate 가 이미 막지만, DB 를 직접 여는
+	// 호출자를 위해 1 로 보정한다 (BeginPut 의 maxRetries 가드와 같은 이유).
+	workers := r.Opts.MaxWorkers
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(batches) {
+		workers = len(batches)
+	}
+
+	// 첫 fatal 이 나면 이 ctx 를 취소해 나머지 워커·피더를 접는다.
+	poolCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var (
+		wg       sync.WaitGroup
+		errMu    sync.Mutex
+		firstErr error
+	)
+
+	// setErr 는 첫 fatal 만 붙잡고 pool 을 취소한다. 이후 오류는 버린다 —
+	// 원인은 첫 번째이고, 뒤따르는 것들은 대개 취소의 파생이다.
+	setErr := func(e error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = e
+			cancel()
+		}
+		errMu.Unlock()
+	}
+
+	// 워커별 로컬 리포트. 인덱스로 분리하여 워커는 자기 것만 쓴다.
+	// 합산은 wg.Wait 이후이므로 happens-before 가 성립해 race 가 없다.
+	reports := make([]TransferReport, workers)
+
+	batchCh := make(chan directoryBatch)
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+
+		go func(idx int) {
+			defer wg.Done()
+
+			local := &reports[idx]
+
+			// EnsureDir 캐시는 워커 로컬이다. 디렉터리 전담 구조라
+			// 워커 간 캐시 키가 겹치지 않으므로 공유 map + mutex 가
+			// 필요 없다. 서로 다른 워커가 공통 부모 디렉터리를 동시에
+			// mkdir 하는 경우는 캐시 문제가 아니라 원격 mkdir 멱등성
+			// 문제이며, EnsureDir 계약("이미 있음 = 성공")이 흡수한다.
+			ensured := make(map[string]struct{})
+
+			for {
+				select {
+				case <-poolCtx.Done():
+					return
+
+				case b, ok := <-batchCh:
+					if !ok {
+						return
+					}
+
+					if bErr := r.transferBatch(
+						poolCtx, up, b, local, ensured,
+					); bErr != nil {
+						setErr(bErr)
+						return
+					}
+				}
+			}
+		}(w)
+	}
+
+	// 피더는 별도 고루틴이다. 취소되면 남은 배치를 흘리지 않고 채널을
+	// 닫아, 워커들이 채널 닫힘 또는 Done 으로 빠져나가게 한다.
+	go func() {
+		defer close(batchCh)
+
+		for _, b := range batches {
+			select {
+			case <-poolCtx.Done():
+				return
+			case batchCh <- b:
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	for i := range reports {
+		rep.Attempted += reports[i].Attempted
+		rep.Verified += reports[i].Verified
+		rep.Failed += reports[i].Failed
+		rep.NotCandidate += reports[i].NotCandidate
+		rep.SkippedPreflight += reports[i].SkippedPreflight
+	}
+
+	// fatal 이 있으면 그것을 우선 올린다. 없더라도 부모 ctx 가 취소된
+	// 경우(피더/유휴 중 취소 등 워커가 setErr 를 못 남긴 경로)를 위해
+	// ctx.Err 을 backstop 으로 확인한다 — 단일 전송의 취소 반환과 동일.
+	if firstErr != nil {
+		return rep, firstErr
+	}
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return rep, ctxErr
+	}
+
+	r.logf(
+		"[XFER] attempted=%d verified=%d failed=%d "+
+			"not_candidate=%d skipped_preflight=%d workers=%d dirs=%d elapsed=%s",
+		rep.Attempted,
+		rep.Verified,
+		rep.Failed,
+		rep.NotCandidate,
+		rep.SkippedPreflight,
+		workers,
+		len(batches),
+		r.now().Sub(started).Round(time.Millisecond),
+	)
+
+	return rep, nil
+}
+
+// groupByDirectory 는 정렬된 후보를 원격 디렉터리 단위로 묶는다.
+//
+// ★ 배치 순서는 정렬된 cands 를 순서대로 순회하며 first-seen 으로
+// 만든다. dirKey→인덱스 맵은 "이 디렉터리가 이미 어느 배치에 있나" 를
+// O(1) 로 찾는 조회용일 뿐, 순회하지 않는다. map 순회로 배치 순서를
+// 만들면 Go map 순회의 무작위성 때문에 When→file_name 정렬이 조용히
+// 깨진다 (가끔만 실패하는 최악 부류). 같은 디렉터리 파일이 정렬상
+// 연속이 아니어도(정렬 키가 file_name 우선이라 흩어질 수 있다) 이
+// 방식은 각 배치 내부 순서를 정렬 순서 그대로 보존한다.
+//
+// jobs 검증도 여기서 한다. Transfer 는 Run 과 별개 진입점이라
+// checkInput 을 재사용할 수 없고(Scanner 를 요구), 전송이 실제로 쓰는
+// 입력만 검사한다.
+func (r *Runner) groupByDirectory(
+	jobs []CategoryJob,
+	cands []Candidate,
+) ([]directoryBatch, error) {
 	remoteJobs := make(map[domain.Category]*CategoryJob, len(jobs))
 
 	for i := range jobs {
 		if _, dup := remoteJobs[jobs[i].Category]; dup {
-			return rep, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"put: duplicate category job %s",
 				jobs[i].Category,
 			)
 		}
 
-		// Transfer 는 Run 과 별개 진입점이므로 checkInput 을 재사용할
-		// 수 없다 (checkInput 은 Scanner 를 요구하는데 Transfer 는
-		// 스캔하지 않는다). 전송이 실제로 쓰는 입력만 여기서 검사한다.
 		if jobs[i].RemotePath == nil {
-			return rep, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"put: category %s has nil RemotePath template",
 				jobs[i].Category,
 			)
@@ -217,245 +372,212 @@ func (r *Runner) Transfer(
 		remoteJobs[jobs[i].Category] = &jobs[i]
 	}
 
-	// EnsureDir 중복 호출 제거용 캐시.
-	//
-	// 캐시를 구현체가 아니라 여기에 두는 것은 Uploader 계약이 정한
-	// 책임 배치다. 구현체를 무상태로 두어야 LocalFS 와 SFTPFS 가 같은
-	// 최적화를 각자 구현하지 않는다.
-	//
-	// 한 시각 디렉터리에 관측소 100여 개 파일이 함께 들어 있으므로,
-	// 캐시가 없으면 같은 경로로 100번 넘게 호출된다. SFTP 에서는
-	// 경로 세그먼트 수만큼 왕복이 곱해진다. (GUIDELINES 9.2)
-	//
-	// 실패한 디렉터리는 캐시에 넣지 않는다. 일시적 실패였다면
-	// 다음 파일에서 다시 시도할 수 있어야 한다.
-	//
-	// 순차 Transfer 에서는 동기화가 필요 없다. Worker 도입 때
-	// 이 맵의 동시 접근을 호출자가 막아야 한다.
-	ensured := make(map[string]struct{})
+	var batches []directoryBatch
+	index := make(map[dirKey]int, len(cands))
 
 	for _, c := range cands {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return rep, ctxErr
-		}
-
 		job, ok := remoteJobs[c.Key.Category]
 		if !ok {
-			return rep, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"put: no job for candidate category %s",
 				c.Key.Category,
 			)
 		}
 
-		// ------------------------------------------------------------
-		// PRE-FLIGHT
-		// ------------------------------------------------------------
-		//
-		// Scan 과 실제 전송 사이에는 시간이 존재하므로 로컬 원본이
-		// 사라지거나 교체/증가할 수 있다. MaxFilesPerRun 이 크고 회선이
-		// 느리면 마지막 후보는 스캔된 지 수십 분 뒤에 전송된다.
-		//
-		// 이것을 BeginPut 이후에 발견하면 attempts 가 증가하여
-		// "실제 PUT 전송 착수 횟수" 라는 의미가 깨진다.
-		// 따라서 로컬 입력 상태는 반드시 BeginPut 전에 다시 확인한다.
-		//
-		// 실패해도 실행을 중단하지 않고 이 파일만 건너뛴다.
-		if pfErr := preflightLocal(c); pfErr != nil {
-			rep.SkippedPreflight++
-
-			// IsRetry(기존 FAILED 행)는 stale 이어도 장부 정리가 필요
-			// 없다. 행이 이미 FAILED 고 preflight 는 attempts 를
-			// 소모하지 않으므로 할 일이 없다. FailPut 을 부르면 WHERE
-			// 가드(PENDING, IN_PROGRESS)에 걸리지 않아 전이 위반
-			// 오류가 되고, 파일 하나의 크기 변화가 회차 전체를
-			// 중단시킨다 (2026-08-31 교차 리뷰에서 발견).
-			//
-			// 불변식: 이 시점에 put_ledger 행이 FAILED 인 후보는
-			// IsRetry 뿐이다. (runner.go 후보 필터 — 행없음/PENDING
-			// 고아는 PENDING, VERIFIED·IN_PROGRESS·소진은 후보가
-			// 아니다. InsertPendingBatch 는 기존 행을 건드리지 않는다.)
-			// 이 불변식이 깨지면 FailPut 의 WHERE 가드에 걸려 회차가
-			// 중단된다. 후보 필터에 경로를 추가할 때 이 문장을 먼저
-			// 읽어라. 필터가 복잡해져 IsRetry 로 상태를 추론하기
-			// 어려워지면, 그때는 ledger 에 ErrNotPending sentinel 을
-			// 두고 failPending 이 errors.Is 로 no-op 하는 판으로
-			// 갈아탄다 (보류 중인 대안 ③).
-			if errors.Is(pfErr, errPreflightStale) && !c.IsRetry {
-				if failErr := r.failPending(ctx, c, pfErr); failErr != nil {
-					if ctxErr := ctx.Err(); ctxErr != nil {
-						return rep, errors.Join(ctxErr, failErr)
-					}
-
-					return rep, failErr
-				}
-			}
-
-			r.logf(
-				"[XFER][SKIP] %s rev=%d: %v",
-				c.Key.FileName,
-				c.Key.Revision,
-				pfErr,
-			)
-
-			continue
-		}
-
-		// 원격에는 스캔에서 관측한 원본 파일명의 대소문자를 보존한다.
-		//
-		// Key.FileName 은 Ledger 식별을 위해 NormalizeName 된 값이므로
-		// RINEX 파일의 실제 이름을 그대로 출력하는 용도로 쓰면 안 된다.
-		//
-		// filepath.Base 는 로컬 경로 조작이므로 로컬 OS 규칙이 맞다.
-		// 원격 경로 결합에만 up.Join 을 쓴다.
-		base := filepath.Base(c.LocalPath)
 		remoteDir := job.RemotePath.Expand(c.When)
-		finalPath := up.Join(remoteDir, base)
-		partPath := finalPath + putPartSuffix
+		k := dirKey{category: c.Key.Category, dir: remoteDir}
 
-		// ------------------------------------------------------------
-		// 실제 PUT 착수
-		// ------------------------------------------------------------
-		//
-		// 여기서부터 attempts 를 소모한다.
-		//
-		// BeginPut 은 status 변경 + attempts++ + 경로/크기 기록을
-		// 하나의 UPDATE 로 수행한다.
-		if beginErr := r.DB.BeginPut(
-			ctx,
-			c.Key,
-			finalPath,
-			partPath,
-			c.Size,
-			r.Opts.MaxRetries,
-		); beginErr != nil {
-			if errors.Is(beginErr, ledger.ErrNotCandidate) {
-				// 후보 재확인 시점과 실제 BeginPut 사이에 상태가 바뀌거나
-				// attempts 상한에 도달했다면 skip 이 정상 동작이다.
-				rep.NotCandidate++
-				continue
-			}
-
-			// Ledger 자체가 상태 전이를 수행하지 못했다면 이후 원격 I/O 를
-			// 수행할 근거가 없으므로 실행을 중단한다.
-			return rep, fmt.Errorf(
-				"begin put %q: %w",
-				c.Key.FileName,
-				beginErr,
-			)
+		i, seen := index[k]
+		if !seen {
+			batches = append(batches, directoryBatch{
+				Category:  c.Key.Category,
+				RemoteDir: remoteDir,
+			})
+			i = len(batches) - 1
+			index[k] = i
 		}
 
-		rep.Attempted++
-
-		// ------------------------------------------------------------
-		// 실제 파일 전송 + Transfer Verification
-		// ------------------------------------------------------------
-		//
-		// EnsureDir 실패도 전송 실패로 취급한다. BeginPut 이 이미
-		// 성공했으므로 attempts 를 소모하며, 권한이나 RemotePath 설정
-		// 문제라면 재시도해도 같은 결과라 MaxRetries 소진이 옳은 귀결이다.
-		var res uploadResult
-
-		transferErr := r.ensureRemoteDir(ctx, up, remoteDir, ensured)
-		if transferErr == nil {
-			res, transferErr = r.uploadOne(ctx, up, c, partPath, finalPath)
-		}
-
-		if transferErr != nil {
-			if failErr := r.failOne(
-				ctx,
-				up,
-				c,
-				partPath,
-				res,
-				transferErr,
-			); failErr != nil {
-				// FAILED 확정에 실패하면 IN_PROGRESS 가 남는다.
-				// 취소 때문이라면 그 사실도 함께 올린다.
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return rep, errors.Join(ctxErr, failErr)
-				}
-
-				return rep, failErr
-			}
-
-			rep.Failed++
-
-			// 취소는 개별 파일 실패로 Ledger 에 접은 뒤
-			// 다음 파일로 진행하지 않고 실행 전체를 중단한다.
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return rep, ctxErr
-			}
-
-			continue
-		}
-
-		// uploadOne 이 성공했다는 것은
-		//
-		//	.part upload 성공
-		//	.part Size 일치
-		//	Rename 성공
-		//	final Size 일치
-		//
-		// 까지 끝났다는 뜻이다. 이 시점에만 VERIFIED 로 확정할 수 있다.
-		//
-		// 원격은 이미 맞다. 취소된 ctx 로 FinishPut 하면 IN_PROGRESS 가
-		// 남아 recovery 가 정상 파일을 실패로 오인한다.
-		finishCtx, finishCancel := context.WithTimeout(
-			context.WithoutCancel(ctx),
-			ledgerTimeout,
-		)
-		finishErr := r.DB.FinishPut(
-			finishCtx,
-			c.Key,
-			res.FinalSize,
-			res.SentAt,
-			r.now().UTC(),
-		)
-		finishCancel()
-
-		if finishErr != nil {
-			// 주의:
-			// 최종 파일 자체는 이미 올바르게 존재한다.
-			// FinishPut 실패를 파일 전송 실패처럼 FailPut 으로 덮지 않는다.
-			//
-			// Ledger 기록 실패는 실행 중단 사유다.
-			// 이 경우 IN_PROGRESS 가 남으며 다음 startup recovery 가 다룬다.
-			//
-			// recovery 설계 시 메모 — 이 경로로 남은 IN_PROGRESS 는
-			// .part 가 이미 rename 되어 없고 최종 파일은 정상이다.
-			// 무조건 FAILED 로 되돌리면 멀쩡한 파일을 재전송하게 되므로,
-			// remote_path 의 Size 를 먼저 확인하는 분기를 검토한다
-			// (seed 의 판정 로직과 같은 기준. CONCEPT 4.11).
-			return rep, fmt.Errorf(
-				"finish put %q: %w",
-				c.Key.FileName,
-				finishErr,
-			)
-		}
-
-		rep.Verified++
+		batches[i].Candidates = append(batches[i].Candidates, c)
 	}
 
-	r.logf(
-		"[XFER] attempted=%d verified=%d failed=%d "+
-			"not_candidate=%d skipped_preflight=%d elapsed=%s",
-		rep.Attempted,
-		rep.Verified,
-		rep.Failed,
-		rep.NotCandidate,
-		rep.SkippedPreflight,
-		r.now().Sub(started).Round(time.Millisecond),
-	)
-
-	return rep, nil
+	return batches, nil
 }
 
-// ensureRemoteDir 은 원격 목적지 디렉터리를 준비하되 같은 경로에 대한
-// 중복 호출을 걷어낸다.
+// transferBatch 는 디렉터리 하나의 후보를 정렬 순서대로 순차 전송한다.
 //
-// 기존 운영 스크립트도 put 전에 목적지 경로를 세그먼트 단위로 재귀
-// 생성하고 있었다. 이 절차가 없으면 첫 전송이 전부 "No such file
-// (code 2)" 로 실패한다. (GUIDELINES 9.2)
+// 워커 하나가 이 함수를 호출하며, ensured 와 rep 은 그 워커의 로컬
+// 소유물이다. 반환 error 는 fatal(실행 중단)뿐이다 — 파일 한 건의
+// 전송 실패는 transferOne 안에서 FAILED 로 접고 nil 을 돌려준다.
+func (r *Runner) transferBatch(
+	ctx context.Context,
+	up Uploader,
+	b directoryBatch,
+	rep *TransferReport,
+	ensured map[string]struct{},
+) error {
+	for _, c := range b.Candidates {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+
+		if err := r.transferOne(ctx, up, b.RemoteDir, c, rep, ensured); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// transferOne 은 파일 하나의 확정 순서를 실행한다.
+//
+//	preflight → BeginPut → EnsureDir → uploadOne → FinishPut
+//
+// 반환 error 는 fatal(실행 중단)뿐이다. preflight skip, ErrNotCandidate,
+// 전송 실패(FAILED 로 접음)는 rep 에 세고 nil 을 돌려준다. 파일 단위
+// 로직은 단일 전송 시절과 동일하며, 호출자(워커)가 remoteDir 을 배치에서
+// 넘겨주는 점만 다르다.
+func (r *Runner) transferOne(
+	ctx context.Context,
+	up Uploader,
+	remoteDir string,
+	c Candidate,
+	rep *TransferReport,
+	ensured map[string]struct{},
+) error {
+	// ------------------------------------------------------------
+	// PRE-FLIGHT
+	// ------------------------------------------------------------
+	//
+	// Scan 과 전송 사이에 로컬 원본이 사라지거나 크기가 변할 수 있다.
+	// BeginPut 이후에 발견하면 attempts 가 올라 "실제 PUT 착수 횟수"
+	// 의미가 깨지므로 BeginPut 전에 다시 확인한다. 실패해도 실행을
+	// 중단하지 않고 이 파일만 건너뛴다.
+	if pfErr := preflightLocal(c); pfErr != nil {
+		rep.SkippedPreflight++
+
+		// IsRetry(기존 FAILED 행)는 stale 이어도 장부 정리가 필요 없다.
+		// 행이 이미 FAILED 고 preflight 는 attempts 를 소모하지 않는다.
+		// FailPut 을 부르면 WHERE 가드에 걸려 전이 위반 오류가 되고,
+		// 파일 하나의 변화가 회차를 중단시킨다 (2026-08-31 교차 리뷰).
+		//
+		// 불변식: 이 시점에 put_ledger 행이 FAILED 인 후보는 IsRetry
+		// 뿐이다 (runner.go 후보 필터). 필터에 경로를 추가할 때 이
+		// 문장을 먼저 읽어라.
+		if errors.Is(pfErr, errPreflightStale) && !c.IsRetry {
+			if failErr := r.failPending(ctx, c, pfErr); failErr != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return errors.Join(ctxErr, failErr)
+				}
+
+				return failErr
+			}
+		}
+
+		r.logf(
+			"[XFER][SKIP] %s rev=%d: %v",
+			c.Key.FileName,
+			c.Key.Revision,
+			pfErr,
+		)
+
+		return nil
+	}
+
+	// 원격에는 스캔이 관측한 원본 파일명의 대소문자를 보존한다.
+	// Key.FileName 은 NormalizeName 된 값이라 실제 이름 출력에 쓰지 않는다.
+	// filepath.Base 는 로컬 경로 조작이므로 로컬 OS 규칙이 맞고,
+	// 원격 경로 결합에만 up.Join 을 쓴다.
+	base := filepath.Base(c.LocalPath)
+	finalPath := up.Join(remoteDir, base)
+	partPath := finalPath + putPartSuffix
+
+	// ------------------------------------------------------------
+	// 실제 PUT 착수 — 여기서부터 attempts 를 소모한다.
+	// ------------------------------------------------------------
+	if beginErr := r.DB.BeginPut(
+		ctx,
+		c.Key,
+		finalPath,
+		partPath,
+		c.Size,
+		r.Opts.MaxRetries,
+	); beginErr != nil {
+		if errors.Is(beginErr, ledger.ErrNotCandidate) {
+			// 후보 재확인 시점과 BeginPut 사이에 상태가 바뀌거나
+			// attempts 상한에 도달했다면 skip 이 정상 동작이다.
+			rep.NotCandidate++
+			return nil
+		}
+
+		// Ledger 가 상태 전이를 못 했다면 이후 원격 I/O 를 할 근거가
+		// 없으므로 실행을 중단한다.
+		return fmt.Errorf("begin put %q: %w", c.Key.FileName, beginErr)
+	}
+
+	rep.Attempted++
+
+	// EnsureDir 실패도 전송 실패로 취급한다. BeginPut 이 이미 성공해
+	// attempts 를 소모했고, 권한·경로 문제라면 재시도해도 같은 결과라
+	// MaxRetries 소진이 옳은 귀결이다.
+	var res uploadResult
+
+	transferErr := r.ensureRemoteDir(ctx, up, remoteDir, ensured)
+	if transferErr == nil {
+		res, transferErr = r.uploadOne(ctx, up, c, partPath, finalPath)
+	}
+
+	if transferErr != nil {
+		if failErr := r.failOne(ctx, up, c, partPath, res, transferErr); failErr != nil {
+			// FAILED 확정 실패면 IN_PROGRESS 가 남는다. 취소 때문이면
+			// 그 사실도 함께 올린다.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return errors.Join(ctxErr, failErr)
+			}
+
+			return failErr
+		}
+
+		rep.Failed++
+
+		// 취소는 개별 파일을 FAILED 로 접은 뒤 실행 전체를 중단한다.
+		// (워커가 이 오류를 setErr 로 올려 pool 을 취소한다)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+
+		return nil
+	}
+
+	// uploadOne 성공 = .part 업로드 → .part Size 일치 → Rename →
+	// final Size 일치. 이 시점에만 VERIFIED 로 확정한다.
+	//
+	// 원격은 이미 맞다. 취소된 ctx 로 FinishPut 하면 IN_PROGRESS 가
+	// 남아 recovery 가 정상 파일을 실패로 오인하므로 WithoutCancel 로
+	// 격리하고 timeout 만 다시 씌운다.
+	finishCtx, finishCancel := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		ledgerTimeout,
+	)
+	finishErr := r.DB.FinishPut(
+		finishCtx,
+		c.Key,
+		res.FinalSize,
+		res.SentAt,
+		r.now().UTC(),
+	)
+	finishCancel()
+
+	if finishErr != nil {
+		// 최종 파일은 이미 올바르게 존재한다. FinishPut 실패를 FailPut
+		// 으로 덮지 않는다. Ledger 기록 실패는 실행 중단 사유이며,
+		// 이 경우 남은 IN_PROGRESS 는 다음 startup recovery 가 다룬다.
+		return fmt.Errorf("finish put %q: %w", c.Key.FileName, finishErr)
+	}
+
+	rep.Verified++
+
+	return nil
+}
 func (r *Runner) ensureRemoteDir(
 	ctx context.Context,
 	up Uploader,

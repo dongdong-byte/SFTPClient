@@ -243,6 +243,7 @@ func run() error {
 			DryRun:           *dryRun,
 			MaxRetries:       cfg.Put.MaxRetries,
 			MaxFilesPerRun:   cfg.Put.MaxFilesPerRun,
+			MaxWorkers:       cfg.Put.MaxWorkers,
 			RepostDownloaded: cfg.General.RepostDownloaded,
 		},
 	}

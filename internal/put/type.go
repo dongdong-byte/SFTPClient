@@ -106,6 +106,14 @@ type RunOptions struct {
 	// 하는 일회성 복구 상황을 위한 것이다.
 	MaxFilesPerRun int
 
+	// MaxWorkers 는 디렉터리 단위 전송의 동시 워커 상한이다 (config.Put.MaxWorkers).
+	//
+	// 작업 단위는 원격 디렉터리이며, 디렉터리 수가 이 값보다 많아도 워커는
+	// 이 수만큼만 뜬다. 적으면(Daily 단독=2) 그만큼만 가동한다. 0 이하면
+	// Transfer 가 1 로 보정한다(단일 워커) — validate 가 이미 1 이상을 강제하나
+	// DB 를 직접 여는 호출자를 위한 방어다.
+	MaxWorkers int
+
 	// RepostDownloaded 가 false 면 Origin=DOWNLOAD 인 파일을 후보에서
 	// 제외한다 (Ping-Pong 방지, 설계안 9.1).
 	RepostDownloaded bool

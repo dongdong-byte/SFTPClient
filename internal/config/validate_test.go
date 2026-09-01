@@ -23,6 +23,63 @@ func mustTemplate(t *testing.T, value string) *pathpl.Template {
 	return tpl
 }
 
+func TestValidate_MaxWorkers(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name:    "0 은 거부",
+			mutate:  func(c *Config) { c.Put.MaxWorkers = 0 },
+			wantErr: "[PUT] MaxWorkers",
+		},
+		{
+			name:    "상한 초과(17)는 거부 — 40 같은 오타 방어",
+			mutate:  func(c *Config) { c.Put.MaxWorkers = 17 },
+			wantErr: "[PUT] MaxWorkers",
+		},
+		{
+			name:    "경계값 1 은 허용",
+			mutate:  func(c *Config) { c.Put.MaxWorkers = 1 },
+			wantErr: "",
+		},
+		{
+			name:    "경계값 16 은 허용",
+			mutate:  func(c *Config) { c.Put.MaxWorkers = 16 },
+			wantErr: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfigForValidate(t)
+			tt.mutate(cfg)
+
+			err := cfg.Validate()
+
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf(
+					"error = %v, want substring %q",
+					err,
+					tt.wantErr,
+				)
+			}
+		})
+	}
+}
+
 func validConfigForValidate(t *testing.T) *Config {
 	t.Helper()
 

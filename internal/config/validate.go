@@ -197,13 +197,18 @@ func (c *Config) checkLedger(add addFunc) {
 
 // checkPut 은 [PUT] 실행 제한값을 검사한다.
 func (c *Config) checkPut(add addFunc) {
-	if c.Put.MaxWorkers < 1 {
+	// MaxWorkers 의 양끝은 각각 다른 사고를 막는다.
+	//
+	// 하한 1: 0/음수면 워커가 뜨지 않아 전송이 조용히 0건이 된다.
+	// 상한 16: 40 같은 오타를 잡는다. *sftp.Client 세션 하나를 공유하는
+	// 구조라 처리량은 회선에서 병목이고, 16 초과는 이득 없이 수신측
+	// 동시 연결 제한 위반과 메모리 압박만 키운다. (LockStale 상한과 같은 논리)
+	if c.Put.MaxWorkers < 1 || c.Put.MaxWorkers > 16 {
 		add(
-			"[PUT] MaxWorkers = %d must be at least 1",
+			"[PUT] MaxWorkers = %d must be between 1 and 16",
 			c.Put.MaxWorkers,
 		)
 	}
-
 	// MaxRetries 는 동일 revision 의 누적 자동 시도 상한이다.
 	// 첫 시도를 포함한다. 최소 한 번은 시도해야 하므로 0 도 거부한다.
 	if c.Put.MaxRetries < 1 {
