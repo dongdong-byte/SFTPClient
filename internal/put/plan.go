@@ -24,6 +24,25 @@ func (r *Runner) finalize(
 
 	kept := all
 
+	// SeedMode 는 절단·PENDING 등록을 생략한다 (근거: RunOptions.SeedMode
+	// 주석). revision 검증은 live 와 동일하게 통과해야 한다 — seed 도
+	// 확정 revision 으로 SeedVerified 를 기록하기 때문이다.
+	if r.Opts.SeedMode {
+		for _, c := range kept {
+			if c.RevisionPending || c.Key.Revision < 1 {
+				return nil, 0, fmt.Errorf(
+					"put: unresolved revision in seed candidate: "+
+						"category=%s file=%q revision=%d",
+					c.Key.Category,
+					c.Key.FileName,
+					c.Key.Revision,
+				)
+			}
+		}
+
+		return kept, 0, nil
+	}
+
 	if r.Opts.MaxFilesPerRun > 0 &&
 		len(all) > r.Opts.MaxFilesPerRun {
 		// full slice expression 으로 cap 을 닫는다.

@@ -655,3 +655,78 @@ SELECT category, file_name, revision, part_path, remote_path
 
 	return out, nil
 }
+
+// SeedVerified 는 seed(설치 초기화) 전용의 VERIFIED 행 신규 등록이다.
+//
+// 원격 대조(예상 finalPath 존재 + Size == 로컬 Size)를 마친 파일을,
+// 이 프로그램이 전송한 적 없이 VERIFIED 로 장부에 반영한다. 대조는
+// 호출자(put.Seed)의 몫이고 여기서는 등록만 한다.
+//
+// 기록 형태 (2026-09-01 확정):
+//
+//	status               = VERIFIED
+//	attempts             = 0        (이 프로그램의 PUT 착수 이력 없음)
+//	sent_at              = NULL     (실제 전송 시각을 모른다 — 기존
+//	                                 시스템이 보냈다. 추정값을 넣지 않는다)
+//	transfer_verified_at = 대조 시각 (실제로 검증한 시각이므로 사실이다)
+//	remote_path/size     = 실제 확인한 값
+//	error                = NULL     (실패 필드를 출처 표시로 오염시키지
+//	                                 않는다 — "seeded" 표기 기각)
+//
+// attempts=0 AND sent_at IS NULL AND status='VERIFIED' 조합 자체가
+// seed 출신의 관측 지표다. 별도 컬럼이 필요 없다:
+//
+//	SELECT COUNT(*) FROM put_ledger
+//	 WHERE status='VERIFIED' AND sent_at IS NULL;   -- seed 행 수
+//
+// 불변식 개정: "VERIFIED 면 sent_at 이 있다" 는 seed 도입과 함께
+// "이 프로그램이 직접 전송한 VERIFIED 면 sent_at 이 있다" 로 좁힌다
+// (CONCEPT 문서에 함께 기록).
+//
+// ON CONFLICT DO NOTHING: 같은 (category, file_name, revision) 행이
+// 이미 있으면(부분 운영 후 재실행 seed 가 만난 FAILED/PENDING 등)
+// 건드리지 않고 false 를 돌려준다. 기존 행은 live 경로의 소유이며
+// seed 가 상태를 덮어쓰면 전이표 밖의 전이가 된다.
+func (db *DB) SeedVerified(
+	ctx context.Context,
+	key PutKey,
+	remotePath string,
+	remoteSize int64,
+	verifiedAt time.Time,
+) (bool, error) {
+	res, err := db.conn.ExecContext(
+		ctx,
+		`
+INSERT INTO put_ledger
+       (category, file_name, revision, status, attempts,
+        remote_path, remote_size, transfer_verified_at)
+VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+ON CONFLICT(category, file_name, revision) DO NOTHING;`,
+		key.Category.String(),
+		key.FileName,
+		key.Revision,
+		string(domain.StatusVerified),
+		remotePath,
+		remoteSize,
+		verifiedAt.UTC().Unix(),
+	)
+	if err != nil {
+		return false, fmt.Errorf(
+			"ledger: seed verified %s %q rev=%d: %w",
+			key.Category,
+			key.FileName,
+			key.Revision,
+			err,
+		)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf(
+			"ledger: seed verified rows affected: %w",
+			err,
+		)
+	}
+
+	return n == 1, nil
+}

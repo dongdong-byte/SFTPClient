@@ -42,17 +42,18 @@ func run() error {
 		dryRun = flag.Bool("dry-run", false,
 			"ledger 에 쓰지 않고 무엇을 할 것인지만 보고한다")
 		deep = flag.Bool("deep", false,
-			"Deep Scan 범위(ScanDays)로 실행한다. "+
-				"DeepScanHour 자동 판정은 스케줄러 연동과 함께 붙는다")
+			"Deep Scan 범위(ScanDays)로 강제 실행한다. "+
+				"DeepScanHour 회차에는 플래그 없이도 자동으로 Deep 이 되며, "+
+				"이 플래그는 장애 점검 등 수동 강제용이다")
 
-		// TODO(seed 구현 시): live 가 기본이 되면 이 플래그를 제거한다.
-		seedCommon = flag.Bool("seed-common", false,
-			"전송하지 않고 common_ledger 만 실제로 기록한다. "+
-				"Unchanged 경로 검증용이며 seed 자체는 아니다")
+		seed = flag.Bool("seed", false,
+			"설치 초기화: ScanDays 창의 로컬 파일 중 원격에 이미 있고 "+
+				"Size 가 일치하는 것만 VERIFIED 로 선반영하고 종료한다. "+
+				"전송하지 않는다. --transport 필수")
 
 		transportName = flag.String("transport", "",
-			"live 전송 계층 (localfs | sftp). "+
-				"live(--dry-run/--seed-common 없이)는 이 값이 필수다")
+			"원격 접근 계층 (localfs | sftp). "+
+				"live 전송과 --seed 실행에는 이 값이 필수다")
 	)
 
 	flag.Parse()
@@ -81,15 +82,26 @@ func run() error {
 		return err
 	}
 
-	if *dryRun && *seedCommon {
+	if *dryRun && *seed {
 		return fmt.Errorf(
-			"--dry-run 과 --seed-common 은 함께 쓸 수 없다 " +
+			"--dry-run 과 --seed 는 함께 쓸 수 없다 " +
 				"(전자는 쓰지 않고 후자는 쓴다)",
 		)
 	}
 
-	// 세 모드는 상호 배타다: dry-run(관측) / seed-common(장부만) / live(전송).
-	live := !*dryRun && !*seedCommon
+	if *deep && *seed {
+		return fmt.Errorf(
+			"--deep 과 --seed 는 함께 쓸 수 없다 " +
+				"(seed 는 항상 ScanDays 창으로 돈다 — 2026-09-01 확정: " +
+				"좁게 seed 하면 다음 Deep 이 나머지를 재전송한다)",
+		)
+	}
+
+	// 세 모드는 상호 배타다: dry-run(관측) / seed(초기화) / live(전송).
+	// (--seed-common 은 real seed 완성으로 역할이 끝나 제거했다 —
+	// common 만 기록해 PENDING 고아를 만들고 원격 검증이 없어
+	// real seed 와 이름·역할이 충돌했다.)
+	live := !*dryRun && !*seed
 
 	// Ctrl+C(Interrupt) 를 ctx 취소로 전파한다.
 	//
@@ -114,24 +126,27 @@ func run() error {
 		stop()
 	}()
 
-	// live 는 전송 계층을 명시해야 한다. 기본값으로 무언가를 보내기
-	// 시작하는 실행 경로는 두지 않는다 — "오류 없이 잘못 도는" 부류다.
+	// live 전송과 seed(원격 Stat 대조)는 전송 계층을 명시해야 한다.
+	// 기본값으로 무언가를 보내기 시작하는 실행 경로는 두지 않는다 —
+	// "오류 없이 잘못 도는" 부류다.
+	needsTransport := live || *seed
+
 	var uploader put.Uploader
 
 	switch {
-	case !live && *transportName != "":
-		return fmt.Errorf("--transport 는 live 전용이다 " +
-			"(--dry-run/--seed-common 과 함께 쓸 수 없다)")
+	case !needsTransport && *transportName != "":
+		return fmt.Errorf("--transport 는 live/seed 전용이다 " +
+			"(--dry-run 과 함께 쓸 수 없다)")
 
-	case live && *transportName == "":
+	case needsTransport && *transportName == "":
 		return fmt.Errorf(
-			"live 전송은 --transport 지정이 필수다 (localfs | sftp)",
+			"live 전송과 seed 는 --transport 지정이 필수다 (localfs | sftp)",
 		)
 
-	case live && *transportName == "localfs":
+	case needsTransport && *transportName == "localfs":
 		uploader = transport.LocalFS{}
 
-	case live && *transportName == "sftp":
+	case needsTransport && *transportName == "sftp":
 		// 접속 시점에 posix-rename 확장 지원을 확인하고 미지원이면
 		// 전송 시작 전에 거부한다 (DialSFTP 주석 — 2026-08-31 확정).
 		//
@@ -156,16 +171,8 @@ func run() error {
 		}()
 		uploader = sf
 
-	case live:
+	case needsTransport:
 		return fmt.Errorf("알 수 없는 transport: %q", *transportName)
-	}
-
-	if *seedCommon {
-		log.Printf(
-			"[SEED][WARN] common_ledger 를 실제로 기록한다. " +
-				"전송하지 않으므로 put_ledger 에 PENDING 고아가 남는다. " +
-				"이것은 원격 존재 여부를 반영하는 seed 가 아니다",
-		)
 	}
 
 	l, err := lock.Acquire(
@@ -208,20 +215,6 @@ func run() error {
 		}
 	}()
 
-	days := cfg.Scan.RecentDays
-	if *deep {
-		days = cfg.Scan.Days
-	}
-
-	// scan.Range 는 From·To 날짜를 모두 포함하며 내부에서 UTC 자정으로
-	// 내린다 (scan.Range 정의). 오늘 포함 days 일이므로 From 은
-	// 오늘−(days−1) 이다.
-	now := time.Now()
-	rng := scan.Range{
-		From: now.AddDate(0, 0, -(days - 1)),
-		To:   now,
-	}
-
 	jobs := make([]put.CategoryJob, 0)
 	for _, cc := range cfg.Put.EnabledCategories() {
 		jobs = append(jobs, put.CategoryJob{
@@ -245,7 +238,84 @@ func run() error {
 			MaxFilesPerRun:   cfg.Put.MaxFilesPerRun,
 			MaxWorkers:       cfg.Put.MaxWorkers,
 			RepostDownloaded: cfg.General.RepostDownloaded,
+			SeedMode:         *seed,
 		},
+	}
+
+	// seed 는 초기화 모드다: 후보 계산(Run, SeedMode) → 원격 대조
+	// (Seed) → 리포트 → 종료. 전송·recovery 를 하지 않는다 —
+	// recovery 는 live 시작 절차이고, seed 시점의 IN_PROGRESS 잔재는
+	// 후보 계산이 제외하므로(ExcludedInProgress) 건드리지 않는다.
+	//
+	// 창은 항상 ScanDays(7일) 고정이다. Hot(2일)만 seed 하면 다음
+	// Deep 회차가 3~7일째 파일을 "신규" 로 보아 재전송한다.
+	if *seed {
+		seedNow := time.Now()
+
+		seedRng := scan.Range{
+			From: seedNow.AddDate(0, 0, -(cfg.Scan.Days - 1)),
+			To:   seedNow,
+		}
+
+		kept, report, err := runner.Run(ctx, jobs, seedRng)
+		if err != nil {
+			return err
+		}
+
+		report.Print(nil)
+
+		if _, err := runner.Seed(ctx, uploader, jobs, kept); err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	// Deep 여부는 수동 플래그 OR 시각 자동 판정이다.
+	//
+	// DeepScanHour 는 서버 로컬 시간이고(확정 — "조용한 시간대" 는 로컬
+	// 개념), 스케줄러는 매시 HH:10 에 실행하므로 시(hour) 일치 비교로
+	// 충분하다. 분 단위 창 계산은 기각 — HH:10 은 시 경계에서 50분
+	// 떨어져 있어 정각 실행의 경계 문제가 없고, 매시 1회 실행이라
+	// 하루 중 정확히 한 회차만 참이 된다.
+	//
+	// 놓친 Deep 회차(크래시·재부팅으로 4:10 회차 누락)는 보충하지
+	// 않는다 (2026-09-01 조건부 기각). Hot 2일 창이 매시 돌고 있어
+	// 유실이 아니라 최대 24시간 지연이며, 유실은 Deep 이 6일 연속
+	// 빠져야 가능한데 그 정도면 사람이 개입할 서버 장애다.
+	// last_deep_run 류 meta 상태 추가는 초기화·시계 역행 처리가
+	// 따라와 이득 대비 비싸다. 누락 관측은 아래 deep run 로그로 한다.
+	// 재검토 트리거: 운영 중 Deep 누락이 실제 관측되고 지연이 문제 되면.
+	now := time.Now()
+
+	autoDeep := now.Hour() == cfg.Scan.DeepScanHour
+	isDeep := *deep || autoDeep
+
+	days := cfg.Scan.RecentDays
+	if isDeep {
+		days = cfg.Scan.Days
+
+		// 자동 발동 사유를 남긴다. 이 줄이 없으면 운영자가 "왜 이
+		// 회차만 7일 창인가" 를 로그로 구분할 수 없고, 하루치 로그에
+		// 이 줄이 없는 것이 곧 Deep 누락의 관측 신호다.
+		switch {
+		case *deep && autoDeep:
+			log.Printf("[SCAN] deep run (--deep, DeepScanHour=%d 도 일치)",
+				cfg.Scan.DeepScanHour)
+		case autoDeep:
+			log.Printf("[SCAN] deep run (DeepScanHour=%d matched)",
+				cfg.Scan.DeepScanHour)
+		default:
+			log.Printf("[SCAN] deep run (--deep 수동 강제)")
+		}
+	}
+
+	// scan.Range 는 From·To 날짜를 모두 포함하며 내부에서 UTC 자정으로
+	// 내린다 (scan.Range 정의). 오늘 포함 days 일이므로 From 은
+	// 오늘−(days−1) 이다.
+	rng := scan.Range{
+		From: now.AddDate(0, 0, -(days - 1)),
+		To:   now,
 	}
 
 	// 시작 시 IN_PROGRESS 회수 — 확정 흐름의 첫 단계

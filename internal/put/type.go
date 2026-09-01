@@ -114,6 +114,22 @@ type RunOptions struct {
 	// DB 를 직접 여는 호출자를 위한 방어다.
 	MaxWorkers int
 
+	// SeedMode 는 후보 계산 결과를 seed(설치 초기화)가 소비하는 모드다.
+	//
+	// finalize 에서 두 가지를 생략한다.
+	//
+	//	MaxFilesPerRun 절단 — seed 의 목적은 "첫 실행 창 전체의 중복
+	//	  방지" 다. 전송 회차 상한을 적용하면 2000건만 seed 되고
+	//	  나머지는 첫 live 실행이 재전송한다.
+	//	PENDING 등록 — seed 는 전송 목록을 만들지 않는다. 원격 대조로
+	//	  VERIFIED 를 직접 기록하고(SeedVerified), 대조 실패분은 첫
+	//	  live 실행이 정상 경로로 처리한다.
+	//
+	// 후보 계산(verify·upsert·revision 확정·DOWNLOAD origin 제외)은
+	// live 와 완전히 같다 — seed 전용 파이프라인 복제를 기각한 이유다
+	// (2026-09-01: 동일 로직 이중 유지보수).
+	SeedMode bool
+
 	// RepostDownloaded 가 false 면 Origin=DOWNLOAD 인 파일을 후보에서
 	// 제외한다 (Ping-Pong 방지, 설계안 9.1).
 	RepostDownloaded bool
