@@ -824,15 +824,6 @@ func TestScannerScan_InvalidInput(t *testing.T) {
 			visit: visit,
 		},
 		{
-			name:     "Hourly인데 HH 없음",
-			ctx:      context.Background(),
-			scanner:  New(&fakeLister{}),
-			category: domain.CategoryRINEX3Hourly,
-			tpl:      dailyTpl,
-			r:        validRange,
-			visit:    visit,
-		},
-		{
 			name:     "Daily인데 HH 있음",
 			ctx:      context.Background(),
 			scanner:  New(&fakeLister{}),
@@ -865,4 +856,98 @@ func TestScannerScan_InvalidInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestScannerScan_HourlyFlatMakesOneDirectoryPerDay 는 (HH) 가 없는 Hourly
+// 경로(flat 배치)에서 Scanner 가 날짜당 24회가 아니라 1회만 나열하고,
+// Batch.When 이 해당 날짜 00:00 UTC 인지 본다.
+//
+// 지리원처럼 한 디렉터리에 24시간 파일이 함께 놓이는 배치이며,
+// 시각은 파일명(세션문자 a~x)에 있으므로 디렉터리 순회는 날짜 단위면 된다.
+// 순회 횟수는 category 가 아니라 템플릿의 (HH) 유무로 결정된다.
+//
+// When 을 단언하는 이유: 전송 단계가 RemotePath.Expand(When) 에 이 값을
+// 쓴다. flat 원격에는 (HH) 가 없어 시각이 소비되지 않지만, 규약이
+// 문서로만 존재하면 조용히 바뀔 수 있으므로 테스트로 고정한다.
+func TestScannerScan_HourlyFlatMakesOneDirectoryPerDay(t *testing.T) {
+	lister := &fakeLister{
+		fn: func(_ context.Context, _ string) ([]Entry, error) {
+			return []Entry{
+				{
+					Name:  "ansg001a.26z.zip",
+					Size:  1024,
+					MTime: utcDate(2026, time.January, 1),
+				},
+			}, nil
+		},
+	}
+
+	scanner := New(lister)
+
+	var whens []time.Time
+
+	result, err := scanner.Scan(
+		context.Background(),
+		domain.CategoryRINEX3Hourly,
+		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
+		Range{
+			From: utcDate(2026, time.January, 1),
+			To:   utcDate(2026, time.January, 2),
+		},
+		func(b Batch) error {
+			whens = append(whens, b.When)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("Scan() unexpected error: %v", err)
+	}
+
+	// 이틀 × 하루 1회 = 2회. (HH) 가 없으므로 24배가 되지 않는다.
+	if len(lister.calls) != 2 {
+		t.Errorf("List calls = %d, want 2 (flat hourly = 1 dir/day)", len(lister.calls))
+	}
+
+	wantDirs := []string{"/data/2026/001", "/data/2026/002"}
+	for i, want := range wantDirs {
+		if i >= len(lister.calls) || lister.calls[i] != want {
+			t.Errorf("call[%d] = %q, want %q", i, safeAt(lister.calls, i), want)
+		}
+	}
+
+	if result.Dirs != 2 || result.Files != 2 {
+		t.Errorf(
+			"result = {Dirs:%d Files:%d}, want {Dirs:2 Files:2}",
+			result.Dirs,
+			result.Files,
+		)
+	}
+
+	// flat 의 When 은 해당 날짜 00:00 UTC 다 (Batch.When 규약).
+	wantWhens := []time.Time{
+		utcDate(2026, time.January, 1),
+		utcDate(2026, time.January, 2),
+	}
+
+	if len(whens) != len(wantWhens) {
+		t.Fatalf("visited batches = %d, want %d", len(whens), len(wantWhens))
+	}
+
+	for i, want := range wantWhens {
+		if !whens[i].Equal(want) {
+			t.Errorf(
+				"When[%d] = %v, want %v (day 00:00 UTC)",
+				i,
+				whens[i],
+				want,
+			)
+		}
+	}
+}
+
+func safeAt(s []string, i int) string {
+	if i < 0 || i >= len(s) {
+		return "<none>"
+	}
+	return s[i]
 }

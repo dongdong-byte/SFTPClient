@@ -25,7 +25,8 @@ import (
 )
 
 const (
-	// Hourly Category 는 날짜마다 00~23 디렉터리를 직접 계산한다.
+	// (HH) 토큰을 사용하는 Hourly dir 배치는
+	// 날짜마다 00~23 디렉터리를 직접 계산한다.
 	hoursPerDay = 24
 
 	// 디렉터리 나열 실패가 대량 발생해도 상세 오류를 무한히 보관하지 않는다.
@@ -106,12 +107,17 @@ type Batch struct {
 	// Dir 은 실제로 나열한 확장 완료 경로이다.
 	Dir string
 
-	// When 은 해당 디렉터리에 대응하는 UTC 관측 시각이다.
+	// When 은 이 Scan 슬롯을 확장할 때 사용한 UTC 시각이다.
 	//
-	// Daily 는 해당 날짜 00:00,
-	// Hourly 는 실제 00~23 시각이다.
+	// Daily 와 Hourly flat 은 해당 날짜 00:00 UTC,
+	// Hourly dir 은 실제로 순회한 00~23 UTC 시각이다.
 	//
-	// 이후 호출자가 대응되는 다른 Path Template 을 확장할 때 사용할 수 있다.
+	// 파일 자체의 실제 관측 시각을 의미하지 않는다.
+	// 특히 Hourly flat 에서는 한 날짜 디렉터리를 한 번만 나열하므로
+	// Entries 각각의 실제 시각과 When 은 다를 수 있다.
+	//
+	// 이후 같은 배치 구조의 Path Template 을 확장하거나,
+	// Scan 결과의 날짜 순서를 유지하는 용도로 사용한다.
 	When time.Time
 
 	// Entries 는 디렉터리에서 발견한 항목이다.
@@ -184,13 +190,13 @@ func New(lister DirLister) *Scanner {
 
 // Scan 은 날짜 범위에 해당하는 디렉터리를 순서대로 나열한다.
 //
-// Daily:
+// 날짜당 나열 횟수는 category 가 아니라 tpl 의 (HH) 토큰 유무로 정한다.
 //
-//	날짜당 1개 디렉터리
+//	(HH) 있음  → 날짜당 00~23, 총 24개 디렉터리 (Hourly dir 배치)
+//	(HH) 없음  → 날짜당 1개 디렉터리          (Hourly flat 배치 또는 Daily)
 //
-// Hourly:
-//
-//	날짜당 00~23, 총 24개 디렉터리
+// category 와 (HH) 유무의 일치(dir/flat 규칙)는 config.Validate 가
+// 시작 시 보장한다. Scan 은 그 판정을 소유하지 않고 템플릿대로만 순회한다.
 //
 // 디렉터리 나열 오류 정책:
 //
@@ -235,8 +241,17 @@ func (s *Scanner) Scan(
 	from := truncateToUTCDay(r.From)
 	days := r.Days()
 
+	// 로컬 경로에 (HH) 가 있으면 시각별 하위 디렉터리(dir 배치)이므로
+	// 00~23 을 각각 나열한다. 없으면 평면(flat) 배치 또는 Daily 이므로
+	// 날짜 디렉터리를 한 번만 나열한다.
+	//
+	// category.IsHourly() 가 아니라 템플릿 토큰으로 결정하는 이유:
+	// 같은 Hourly 라도 배치가 dir/flat 로 갈리며, 그 차이는 (HH) 유무로
+	// 이미 드러난다. 배치 판정은 config 가 소유하고(HourLayout), scan 은
+	// 확장할 템플릿이 지시하는 대로만 순회한다. dir/flat 과 (HH) 유무의
+	// 일치는 config.Validate 가 시작 시 보장한다.
 	perDay := 1
-	if category.IsHourly() {
+	if tpl.HasToken(pathpl.TokenHH) {
 		perDay = hoursPerDay
 	}
 
@@ -357,19 +372,14 @@ func checkInput(
 		)
 	}
 
-	// config.Validate 에서도 같은 불변식을 확인하지만,
-	// Scanner 를 직접 사용할 때의 조용한 오동작도 막는다.
-	switch {
-	case category.IsHourly() && !tpl.HasToken(pathpl.TokenHH):
-		return fmt.Errorf(
-			"%w: hourly category %s has no (%s) in %q",
-			ErrInvalidInput,
-			category,
-			pathpl.TokenHH,
-			tpl.String(),
-		)
-
-	case category.IsDaily() && tpl.HasToken(pathpl.TokenHH):
+	// Hourly 인데 (HH) 가 없는 경우는 더 이상 오류가 아니다(flat 배치).
+	// dir/flat 과 (HH) 유무의 일치는 config.Validate 가 소유하며,
+	// scan 은 perDay 를 (HH) 유무로 도출하므로 flat 은 자연히 1회 순회한다.
+	//
+	// Daily + (HH) 만 여기서 방어한다. 배치와 무관하게 항상 잘못이며,
+	// config.Validate 에서도 확인하지만 Scanner 를 직접 쓰는 경로의
+	// 조용한 오동작도 막는다.
+	if category.IsDaily() && tpl.HasToken(pathpl.TokenHH) {
 		return fmt.Errorf(
 			"%w: daily category %s must not have (%s) in %q",
 			ErrInvalidInput,

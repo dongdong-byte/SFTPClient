@@ -334,6 +334,39 @@ func (l *loader) template(s *iniSection, key string) *pathpl.Template {
 	return tpl
 }
 
+// hourLayout 은 HourLayout 값을 읽는다. Hourly 섹션에서만 호출한다.
+//
+// 선택 키다. 다른 필수 키와 달리 누락 시 absent 를 호출하지 않고
+// DefaultHourLayout(dir) 을 돌려준다. 이는 종전 동작과 같다.
+//
+// flat 은 항상 명시해야 하므로 생략이 조용히 평면으로 바뀌지 않는다.
+// 오히려 평면 배포에서 이 키를 빠뜨리면 경로에 (HH) 가 없어
+// validate 가 "dir 인데 (HH) 없음" 으로 거부한다(무음 오작동이 아니다).
+//
+// 키가 있는데 값이 dir/flat 이 아니면(빈 값 포함) ErrBadValue 다.
+func (l *loader) hourLayout(s *iniSection, key string) HourLayout {
+	v, ok := s.get(key)
+	if !ok {
+		return DefaultHourLayout
+	}
+
+	h, err := ParseHourLayout(v)
+	if err != nil {
+		l.addf(
+			"%w: line %d: [%s] %s: %v",
+			ErrBadValue,
+			s.lineOf(key),
+			s.name,
+			key,
+			err,
+		)
+
+		return DefaultHourLayout
+	}
+
+	return h
+}
+
 // resolvePath 는 config.ini 에 적힌 일반 파일시스템 경로를 확정한다.
 //
 // 절대 경로는 그대로 사용하고,
@@ -484,12 +517,22 @@ func (l *loader) categories() []CategoryConfig {
 		name := "PUT." + cat.String()
 		s := l.section(name)
 
-		out = append(out, CategoryConfig{
+		cc := CategoryConfig{
 			Category:   cat,
 			Enabled:    l.boolVal(s, "Enabled"),
 			LocalPath:  l.template(s, "LocalPath"),
 			RemotePath: l.template(s, "RemotePath"),
-		})
+		}
+
+		// HourLayout 은 Hourly 섹션에서만 읽는다(선택 키, 기본 dir).
+		// Daily 는 배치 개념이 없으므로 읽지 않으며 zero-value("") 로 둔다.
+		// Daily 섹션의 HourLayout 키는 knownKeys 에서 허용하지 않으므로
+		// 적으면 ErrUnknownKey 로 거부된다.
+		if cat.IsHourly() {
+			cc.HourLayout = l.hourLayout(s, "HourLayout")
+		}
+
+		out = append(out, cc)
 	}
 
 	return out
@@ -544,11 +587,20 @@ func knownKeys() map[string][]string {
 	}
 
 	for _, cat := range domain.Categories() {
-		m["PUT."+cat.String()] = []string{
+		keys := []string{
 			"Enabled",
 			"LocalPath",
 			"RemotePath",
 		}
+
+		// HourLayout 은 Hourly 섹션에서만 의미가 있다.
+		// Daily 섹션에 적으면 ErrUnknownKey 로 거부되어,
+		// "Daily 에 배치를 지정하려 한" 혼동을 시작 시 드러낸다.
+		if cat.IsHourly() {
+			keys = append(keys, "HourLayout")
+		}
+
+		m["PUT."+cat.String()] = keys
 	}
 
 	return m

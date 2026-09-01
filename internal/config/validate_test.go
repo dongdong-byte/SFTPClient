@@ -133,6 +133,7 @@ func validConfigForValidate(t *testing.T) *Config {
 				{
 					Category:   domain.CategoryRINEX2Hourly,
 					Enabled:    true,
+					HourLayout: HourLayoutDir,
 					LocalPath:  mustTemplate(t, "/local/r2h/(YYYY)/(DOY)/(HH)/"),
 					RemotePath: mustTemplate(t, "/remote/r2h/(YYYY)/(DOY)/(HH)/"),
 				},
@@ -145,6 +146,7 @@ func validConfigForValidate(t *testing.T) *Config {
 				{
 					Category:   domain.CategoryRINEX3Hourly,
 					Enabled:    true,
+					HourLayout: HourLayoutDir,
 					LocalPath:  mustTemplate(t, "/local/r3h/(YYYY)/(DOY)/(HH)/"),
 					RemotePath: mustTemplate(t, "/remote/r3h/(YYYY)/(DOY)/(HH)/"),
 				},
@@ -157,6 +159,7 @@ func validConfigForValidate(t *testing.T) *Config {
 				{
 					Category:   domain.CategoryRINEX4Hourly,
 					Enabled:    false,
+					HourLayout: HourLayoutDir,
 					LocalPath:  mustTemplate(t, "/local/r4h/(YYYY)/(DOY)/(HH)/"),
 					RemotePath: mustTemplate(t, "/remote/r4h/(YYYY)/(DOY)/(HH)/"),
 				},
