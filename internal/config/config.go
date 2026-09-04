@@ -7,6 +7,17 @@ import (
 	"SFTPClient/internal/pathpl"
 )
 
+// Protector 는 config 가 필요로 하는 보호 설정값 해석 능력의 선언이다.
+//
+// 인터페이스는 사용하는 쪽(config)이 선언한다.
+// 구현은 internal/security 가 제공하고 main 이 배선한다.
+// config 는 enc: 접두어, base64, DPAPI 같은 저장·보호 방식은 모른다.
+type Protector interface {
+	// Resolve 는 보호된 값이면 평문으로 풀어 (평문, true, nil) 을,
+	// 일반 값이면 그대로 (값, false, nil) 을 반환한다.
+	Resolve(value string) (plain string, wasEncrypted bool, err error)
+}
+
 // Config 는 실행에 필요한 설정 전부이다.
 //
 // 실행 중 다시 읽지 않는다. Hot Reload 를 두지 않는 이유는,
@@ -25,6 +36,11 @@ type Config struct {
 	Ledger  LedgerConfig
 	Put     PutConfig
 	Log     LogConfig
+
+	// Warnings 는 실행을 막지는 않지만 운영자가 알아야 하는 사항이다.
+	// main 이 시작 시 [WARN] 으로 기록한다.
+	// 현재 유일한 생산처: [PUT.SFTP] Host/User/Port 의 평문 저장.
+	Warnings []string
 }
 
 // GeneralConfig 는 [GENERAL] 섹션이다.
@@ -225,6 +241,9 @@ type SFTPConfig struct {
 	// MVP 1 에서는 publickey 만 허용하며 validate.go 가 그 외를 거부한다.
 	AuthMethod string
 
+	// Host / Port / User 는 config.ini 에서 enc: 보호 값을 지원한다.
+	// 복호화는 load 의 value() 가 수행하며, 이 필드에는 평문이 담긴다.
+	// 따라서 이 값들을 로그·오류 메시지에 그대로 찍지 않도록 주의한다.
 	Host string
 	Port int
 	User string

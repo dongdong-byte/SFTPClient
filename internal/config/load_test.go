@@ -93,10 +93,9 @@ func mapConfigForTest(
 
 	path := filepath.Join(t.TempDir(), "config.ini")
 
-	cfg, err := mapConfig(f, path)
+	cfg, err := mapConfig(f, path, fakeProtector{})
 	return cfg, path, err
 }
-
 func TestMapConfig_Normal(t *testing.T) {
 	cfg, path, err := mapConfigForTest(t, validINIForLoadTest())
 	if err != nil {
@@ -280,6 +279,7 @@ func TestLoaderBoolVal(t *testing.T) {
 
 			l := &loader{
 				path: "test.ini",
+				prot: fakeProtector{},
 			}
 
 			got := l.boolVal(s, "Flag")
@@ -309,6 +309,7 @@ func TestLoaderBoolVal_Invalid(t *testing.T) {
 
 	l := &loader{
 		path: "test.ini",
+		prot: fakeProtector{},
 	}
 
 	_ = l.boolVal(s, "Flag")

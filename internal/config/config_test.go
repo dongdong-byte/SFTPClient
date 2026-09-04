@@ -125,7 +125,7 @@ func TestExampleINI_LoadFromValidates(t *testing.T) {
 	defer file.Close()
 
 	// 상대 경로 해석 기준만 필요하다. 실제 파일이 아니어도 된다.
-	cfg, err := LoadFrom(file, filepath.Join(t.TempDir(), "config.ini"))
+	cfg, err := LoadFrom(file, filepath.Join(t.TempDir(), "config.ini"), fakeProtector{})
 	if err != nil {
 		t.Fatalf("LoadFrom(config.example.ini) 실패: %v", err)
 	}

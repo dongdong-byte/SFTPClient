@@ -50,13 +50,17 @@ func DefaultPath() (string, error) {
 
 // Load 는 설정 파일을 읽어 검증까지 마친 Config 를 돌려준다.
 //
-//	parseINI          문법
-//	→ mapConfig       키 매핑
-//	→ Validate        값 조합
+//	parseINI           문법
+//	→ mapConfig        키 매핑
+//	→ Validate         값 조합
 //	→ CheckEnvironment 파일·디렉터리 실재
 //
 // 네 단계 중 하나라도 실패하면 실행하지 않는다.
-func Load(path string) (*Config, error) {
+//
+// p 는 보호된 설정값을 해석하는 Protector 다.
+// main 이 security.New() 로 배선한다.
+// config 는 enc: 접두어, base64, DPAPI 같은 저장·보호 방식은 모른다.
+func Load(path string, p Protector) (*Config, error) {
 	configPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: resolve path %q: %w", path, err)
@@ -67,7 +71,7 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	cfg, err := mapConfig(f, configPath)
+	cfg, err := mapConfig(f, configPath, p)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +93,7 @@ func Load(path string) (*Config, error) {
 // 키·개인키 같은 실제 파일을 요구하지 않고 값 검증만 시험하기 위함이다.
 //
 // path 는 상대 경로 해석의 기준이 되는 가상의 config.ini 경로이다.
-func LoadFrom(r io.Reader, path string) (*Config, error) {
+func LoadFrom(r io.Reader, path string, p Protector) (*Config, error) {
 	configPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: resolve path %q: %w", path, err)
@@ -100,7 +104,7 @@ func LoadFrom(r io.Reader, path string) (*Config, error) {
 		return nil, err
 	}
 
-	cfg, err := mapConfig(f, configPath)
+	cfg, err := mapConfig(f, configPath, p)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +124,17 @@ type loader struct {
 	file *iniFile
 	path string
 	errs []error
+
+	// prot 은 보호된 설정값을 해석하는 Protector 다.
+	// mapConfig 가 배선한다.
+	prot Protector
+
+	// encrypted 는 어떤 (섹션/키) 값이 보호된 값이었는지 기록한다.
+	// 키는 settingID 로 정규화하여 [put.sftp] 와 [PUT.SFTP] 같은
+	// 대소문자 차이가 동일한 설정으로 수렴하게 한다.
+	//
+	// 현재 [PUT.SFTP] Host/User/Port 평문 경고가 이 기록을 조회한다.
+	encrypted map[string]bool
 
 	// missing 은 파일에 없어서 대체 섹션을 만들어 준 섹션 이름이다.
 	// 키는 foldKey 를 거친 값이다.
@@ -180,14 +195,68 @@ func (l *loader) absent(s *iniSection, key string) {
 	l.addf("%w: [%s] %s", ErrMissingKey, s.name, key)
 }
 
-// str 은 문자열 값을 읽는다. 빈 값도 그대로 돌려준다.
+// settingID 는 섹션/키 조합을 비교·추적하기 위한 정규화 ID 를 만든다.
 //
-// 비어 있으면 안 되는 키인지는 validate.go 가 판정한다.
-func (l *loader) str(s *iniSection, key string) string {
+// INI 의 섹션명과 키는 대소문자를 구분하지 않으므로,
+// 파일 원문 표기와 관계없이 같은 설정은 같은 ID 로 수렴해야 한다.
+func settingID(section, key string) string {
+	return foldKey(section) + "/" + foldKey(key)
+}
+
+// value 는 필수 설정값 접근의 단일 통로다.
+//
+// 필수 타입 리더(str/intVal/boolVal/durationSeconds/template/mode)가
+// s.get 대신 이 함수를 거친다. 보호 값의 해석을 이 한 곳에 두고,
+// 부재 오류와 복호화 오류의 생산처도 여기로 모은다.
+//
+// 복호화가 타입 변환보다 먼저 수행되므로:
+//
+//	Port = enc:...
+//
+// 역시 평문 문자열로 복호화된 뒤 intVal 에서 정수로 변환된다.
+//
+// 복호화 실패 시 오류를 여기서 기록하고 ("", false) 를 반환한다.
+// 호출 리더는 기본값만 반환하므로 복호화 오류 뒤에
+// "not an integer" 같은 2차 오류가 중복으로 쌓이지 않는다.
+//
+// hourLayout 은 선택 키이므로 이 통로를 사용하지 않는다.
+// 키 부재가 정상이며 DefaultHourLayout 을 사용해야 하기 때문이다.
+// 현재 보안 요구 대상인 Host/User/Port에는 영향을 주지 않는다.
+func (l *loader) value(s *iniSection, key string) (string, bool) {
 	v, ok := s.get(key)
 	if !ok {
 		l.absent(s, key)
 
+		return "", false
+	}
+
+	plain, wasEnc, err := l.prot.Resolve(v)
+	if err != nil {
+		l.addf(
+			"%w: line %d: [%s] %s: %v",
+			ErrBadValue,
+			s.lineOf(key),
+			s.name,
+			key,
+			err,
+		)
+
+		return "", false
+	}
+
+	if wasEnc {
+		l.encrypted[settingID(s.name, key)] = true
+	}
+
+	return plain, true
+}
+
+// str 은 문자열 값을 읽는다. 빈 값도 그대로 돌려준다.
+//
+// 비어 있으면 안 되는 키인지는 validate.go 가 판정한다.
+func (l *loader) str(s *iniSection, key string) string {
+	v, ok := l.value(s, key)
+	if !ok {
 		return ""
 	}
 
@@ -196,10 +265,8 @@ func (l *loader) str(s *iniSection, key string) string {
 
 // intVal 은 정수 값을 읽는다.
 func (l *loader) intVal(s *iniSection, key string) int {
-	v, ok := s.get(key)
+	v, ok := l.value(s, key)
 	if !ok {
-		l.absent(s, key)
-
 		return 0
 	}
 
@@ -225,10 +292,8 @@ func (l *loader) intVal(s *iniSection, key string) int {
 // true/false 외에 yes/no, on/off, 1/0 을 허용한다.
 // 전부 뜻이 분명한 표기이므로 관대해도 조용히 틀릴 여지가 없다.
 func (l *loader) boolVal(s *iniSection, key string) bool {
-	v, ok := s.get(key)
+	v, ok := l.value(s, key)
 	if !ok {
-		l.absent(s, key)
-
 		return false
 	}
 
@@ -263,10 +328,8 @@ func (l *loader) boolVal(s *iniSection, key string) bool {
 // 숫자로서 읽을 수 있으므로 Load 는 성공시키고,
 // GraceSeconds < 0 이 위험한 설정이라는 판정은 validate.go 가 담당한다.
 func (l *loader) durationSeconds(s *iniSection, key string) time.Duration {
-	v, ok := s.get(key)
+	v, ok := l.value(s, key)
 	if !ok {
-		l.absent(s, key)
-
 		return 0
 	}
 
@@ -310,10 +373,8 @@ func (l *loader) durationSeconds(s *iniSection, key string) time.Duration {
 // 문자열이 아니라 파싱 결과를 들고 있어야 스캔 도중이 아니라
 // 시작 시점에 문법 오류가 드러난다.
 func (l *loader) template(s *iniSection, key string) *pathpl.Template {
-	v, ok := s.get(key)
+	v, ok := l.value(s, key)
 	if !ok {
-		l.absent(s, key)
-
 		return nil
 	}
 
@@ -337,11 +398,17 @@ func (l *loader) template(s *iniSection, key string) *pathpl.Template {
 // hourLayout 은 HourLayout 값을 읽는다. Hourly 섹션에서만 호출한다.
 //
 // 선택 키다. 다른 필수 키와 달리 누락 시 absent 를 호출하지 않고
-// DefaultHourLayout(dir) 을 돌려준다. 이는 종전 동작과 같다.
+// DefaultHourLayout(dir) 을 반환한다. 이는 기존 동작을 유지하기 위함이다.
+//
+// 이 리더는 l.value 를 거치지 않는다. 키 부재가 정상인 선택값이므로
+// 필수 값용 value() 를 사용하면 누락 오류가 발생하기 때문이다.
+//
+// 현재 암호화 요구 대상은 [PUT.SFTP] Host/User/Port 이므로
+// HourLayout 에 보호 값 해석을 적용하지 않는다.
 //
 // flat 은 항상 명시해야 하므로 생략이 조용히 평면으로 바뀌지 않는다.
-// 오히려 평면 배포에서 이 키를 빠뜨리면 경로에 (HH) 가 없어
-// validate 가 "dir 인데 (HH) 없음" 으로 거부한다(무음 오작동이 아니다).
+// 평면 배포에서 이 키를 빠뜨리면 LocalPath 에 (HH) 가 없어
+// validate 가 "dir 인데 (HH) 없음" 으로 거부한다.
 //
 // 키가 있는데 값이 dir/flat 이 아니면(빈 값 포함) ErrBadValue 다.
 func (l *loader) hourLayout(s *iniSection, key string) HourLayout {
@@ -396,11 +463,20 @@ func resolvePath(configPath, value string) string {
 // 단, 상대경로 → config.ini 기준 절대경로 변환과
 // 초 → time.Duration 변환처럼 타입 자체를 확정하기 위해 필요한 변환은
 // 이 단계에서 수행한다.
-func mapConfig(f *iniFile, path string) (*Config, error) {
+//
+// p 는 Load/LoadFrom 이 관통 배선한다.
+// 여기서 nil 을 한 번에 잡아 두 진입점 모두를 보호한다.
+func mapConfig(f *iniFile, path string, p Protector) (*Config, error) {
+	if p == nil {
+		return nil, fmt.Errorf("config: Protector 가 nil 이다 (배선 누락)")
+	}
+
 	l := &loader{
-		file:    f,
-		path:    path,
-		missing: make(map[string]bool),
+		file:      f,
+		path:      path,
+		prot:      p,
+		encrypted: make(map[string]bool),
+		missing:   make(map[string]bool),
 	}
 
 	l.checkUnknown()
@@ -456,6 +532,35 @@ func mapConfig(f *iniFile, path string) (*Config, error) {
 		l.str(sftp, "KnownHosts"),
 	)
 
+	// 평문 접속 설정 경고.
+	//
+	// "어떤 키가 기관의 평문 금지 대상인가"라는 정책은 이 매핑부가 안다.
+	// 범용 복호화인 l.value 는 개별 키의 보안 정책을 알지 않는다.
+	//
+	// Transport=sftp 일 때만 경고한다.
+	// mapConfig 는 [PUT.SFTP]를 Transport 분기 없이 읽으므로,
+	// 조건이 없으면 localfs 검증에서도 불필요한 경고가 발생한다.
+	//
+	// settingID 를 사용하므로 [put.sftp], [PUT.SFTP] 같은
+	// 대소문자 차이와 관계없이 같은 설정으로 판정한다.
+	//
+	// 평문을 거부하지 않고 경고만 하는 이유는 개발·테스트 환경에서는
+	// 평문 config 사용을 허용하기 때문이다.
+	if cfg.General.Transport == "sftp" {
+		for _, key := range []string{"Host", "User", "Port"} {
+			if !l.encrypted[settingID("PUT.SFTP", key)] {
+				cfg.Warnings = append(
+					cfg.Warnings,
+					fmt.Sprintf(
+						"[PUT.SFTP] %s 가 평문으로 저장되어 있다 — "+
+							"rinexclient.exe secure-set 으로 암호화를 권장한다",
+						key,
+					),
+				)
+			}
+		}
+	}
+
 	cfg.Put.Categories = l.categories()
 
 	logSec := l.section("LOG")
@@ -476,10 +581,8 @@ func mapConfig(f *iniFile, path string) (*Config, error) {
 // mode 는 Mode 값을 읽는다.
 // domain 이 공백과 대소문자를 흡수한다.
 func (l *loader) mode(s *iniSection, key string) domain.Mode {
-	v, ok := s.get(key)
+	v, ok := l.value(s, key)
 	if !ok {
-		l.absent(s, key)
-
 		return ""
 	}
 
