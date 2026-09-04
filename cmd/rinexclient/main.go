@@ -21,6 +21,7 @@ import (
 	"SFTPClient/internal/lock"
 	"SFTPClient/internal/put"
 	"SFTPClient/internal/scan"
+	"SFTPClient/internal/security"
 	"SFTPClient/internal/transport"
 	"SFTPClient/internal/verify"
 )
@@ -37,6 +38,17 @@ func main() {
 // lock.ErrHeld 는 오류가 아니라 정상 종료(0)다 — 스케줄러 회차 겹침은
 // 장애가 아니며, 스케줄러가 이를 실패로 집계하면 안 된다.
 func run() error {
+	// secure-set 은 설치 시 1회용 서브커맨드다. flag.Parse 보다 먼저
+	// 가로챈다 — 가로채지 않으면 flag 가 "secure-set" 을 위치 인자로
+	// 조용히 무시하고 정기 실행(live 전송)에 들어간다. 프로비저닝을
+	// 하려던 운영자가 전송을 발동시키는 사고를 여기서 차단한다.
+	//
+	// 런타임 무인자 원칙과 충돌하지 않는다 — --seed 와 같은
+	// "설치 시 1회 도구" 범주다.
+	if len(os.Args) > 1 && os.Args[1] == "secure-set" {
+		return secureSet()
+	}
+
 	var (
 		configPath = flag.String(
 			"config",
@@ -93,9 +105,18 @@ func run() error {
 		*configPath = p
 	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(*configPath, security.New())
 	if err != nil {
 		return err
+	}
+
+	// 평문 자격증명 경고 출력.
+	//
+	// Warnings 는 config.ini 에 적힌 Transport 기준으로 Load 가 만든 것이다.
+	// 아래 --transport CLI override 는 반영하지 않는다 — override 는
+	// 수동 점검 전용이고, 파일에 적힌 상태가 경고의 대상이기 때문이다.
+	for _, w := range cfg.Warnings {
+		log.Printf("[WARN] %s", w)
 	}
 
 	if *dryRun && *seed {
