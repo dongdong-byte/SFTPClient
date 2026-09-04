@@ -380,6 +380,13 @@ func TestValidate_HourToken(t *testing.T) {
 			},
 		},
 		{
+			name: "Daily LocalPath에 HH 있음",
+			mutate: func(t *testing.T, cfg *Config) {
+				cfg.Put.Categories[2].LocalPath =
+					mustTemplate(t, "/local/r3d/(YYYY)/(DOY)/(HH)/")
+			},
+		},
+		{
 			name: "Daily RemotePath에 HH 있음",
 			mutate: func(t *testing.T, cfg *Config) {
 				cfg.Put.Categories[2].RemotePath =
@@ -420,6 +427,17 @@ func TestValidate_DisabledCategoryStillChecksHourToken(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "HH") {
 		t.Errorf("error does not mention HH: %v", err)
+	}
+}
+
+func TestValidate_HourlyRemotePathWithoutHHIsAllowed(t *testing.T) {
+	cfg := validConfigForValidate(t)
+
+	// HourLayout=dir 기본값. LocalPath 는 (HH) 유지, 목적지만 flat.
+	cfg.Put.Categories[1].RemotePath = mustTemplate(t, "/RNX2/")
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("dir 소스 + flat RemotePath 가 거부됐다: %v", err)
 	}
 }
 

@@ -33,6 +33,7 @@ import (
 
 	"SFTPClient/internal/domain"
 	"SFTPClient/internal/ledger"
+	"SFTPClient/internal/pathpl"
 )
 
 // poolRunner 는 병렬 안전한 Now 를 가진 Runner 다.
@@ -190,6 +191,76 @@ func TestGroupByDirectoryPreservesOrder(t *testing.T) {
 			"batch[1] = %v, want [b1 b2]",
 			got1,
 		)
+	}
+}
+
+// TestGroupByDirectoryFlatRemoteCollapsesHours 는 RemotePath 에 (HH) 가
+// 없으면 서로 다른 시각의 Hourly 파일이 한 원격 디렉터리로 묶이는지 본다.
+//
+// 서울시 Hourly 소스(dir) → /RNX2/ (flat) 조합이다.
+// 파일명 세션 문자(f=5시, g=6시)가 달라 같은 폴더에서도 충돌하지 않는다.
+func TestGroupByDirectoryFlatRemoteCollapsesHours(t *testing.T) {
+	r := poolRunner(nil, 4)
+
+	remote, err := pathpl.Parse("/RNX2/")
+	if err != nil {
+		t.Fatalf("pathpl.Parse(remote): %v", err)
+	}
+
+	local, err := pathpl.Parse(`Z:\RINEX-V2-H\(YYYY)\(DOY)\(HH)\`)
+	if err != nil {
+		t.Fatalf("pathpl.Parse(local): %v", err)
+	}
+
+	jobs := []CategoryJob{{
+		Category:   xferTestCat,
+		LocalPath:  local,
+		RemotePath: remote,
+	}}
+
+	mk := func(name string, hour int) Candidate {
+		return Candidate{
+			Key: ledger.PutKey{
+				Category: xferTestCat,
+				FileName: name,
+				Revision: 1,
+			},
+			LocalPath: "/local/" + name,
+			Size:      10,
+			When: time.Date(
+				2026,
+				9,
+				1,
+				hour,
+				0,
+				0,
+				0,
+				time.UTC,
+			),
+		}
+	}
+
+	cands := []Candidate{
+		mk("dbon244f.26o", 5),
+		mk("dbon244g.26o", 6),
+	}
+
+	batches, err := r.groupByDirectory(jobs, cands)
+	if err != nil {
+		t.Fatalf("groupByDirectory() 오류: %v", err)
+	}
+
+	if len(batches) != 1 {
+		t.Fatalf("배치 수 = %d, want 1 (flat RemotePath)", len(batches))
+	}
+
+	if batches[0].RemoteDir != "/RNX2/" {
+		t.Errorf("RemoteDir = %q, want /RNX2/", batches[0].RemoteDir)
+	}
+
+	got := fileNames(batches[0].Candidates)
+	if !equalStrings(got, []string{"dbon244f.26o", "dbon244g.26o"}) {
+		t.Errorf("candidates = %v, want [dbon244f.26o dbon244g.26o]", got)
 	}
 }
 

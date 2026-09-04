@@ -27,14 +27,14 @@ import (
 // DB 에 저장하지 않는다.
 //
 // scan 은 이 값을 직접 참조하지 않고 LocalPath 의 (HH) 토큰 유무로
-// 순회 횟수를 결정한다. config validate 가 HourLayout 선언과 Path Template 을
+// 순회 횟수를 결정한다. config validate 가 HourLayout 선언과 LocalPath 를
 // 먼저 교차 검증하므로 scan 이 config.HourLayout 에 직접 의존할 필요가 없다.
 //
-// HourLayout 의 역할은 "선언과 경로의 일치"를 시작 시 강제하는 것이다.
-// validate 가 아래를 교차 검증한다(checkHourToken).
+// HourLayout 의 역할은 "선언과 LocalPath 의 일치"를 시작 시 강제하는 것이다.
+// validate 가 아래를 교차 검증한다(checkHourToken). RemotePath 는 대상이 아니다.
 //
-//	dir  인데 경로에 (HH) 없음  → 거부
-//	flat 인데 경로에 (HH) 있음  → 거부
+//	dir  인데 LocalPath 에 (HH) 없음  → 거부
+//	flat 인데 LocalPath 에 (HH) 있음  → 거부
 //
 // 이렇게 하면 "(HH) 없으면 flat 으로 간주" 같은 암묵적 완화 때문에
 // 설정 오타가 조용히 통과하는 일을 막을 수 있다.
@@ -44,12 +44,13 @@ const (
 	// HourLayoutDir 은 시각별 하위 디렉터리 배치이다.
 	//
 	// LocalPath 에 (HH) 가 있으며 Scanner 가 이를 00~23으로 확장하여
-	// 날짜당 24개 디렉터리를 나열한다.
+	// 날짜당 24개 디렉터리를 나열한다. RemotePath 의 (HH) 는 강제하지 않는다.
 	HourLayoutDir HourLayout = "dir"
 
 	// HourLayoutFlat 은 한 디렉터리에 24시간 파일이 함께 놓이는 배치이다.
 	//
 	// LocalPath 에 (HH) 가 없으며 Scanner 는 날짜 디렉터리를 한 번만 나열한다.
+	// RemotePath 의 (HH) 는 강제하지 않는다.
 	HourLayoutFlat HourLayout = "flat"
 )
 

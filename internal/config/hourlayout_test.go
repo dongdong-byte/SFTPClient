@@ -19,26 +19,97 @@ func TestValidate_HourLayout(t *testing.T) {
 		wantErr string // "" 이면 통과 기대
 	}{
 		{
-			name: "flat + (HH) 없음 → 통과 (지리원 배치)",
+			name: "1 dir 소스 + dir 목적지 → 통과",
+			mutate: func(c *Config) {
+				c.Put.Categories[idx].HourLayout = HourLayoutDir
+				c.Put.Categories[idx].LocalPath =
+					mustTemplate(t, `Z:\RINEX-V2-H\(YYYY)\(DOY)\(HH)\`)
+				c.Put.Categories[idx].RemotePath =
+					mustTemplate(t, "/RNX2/(YYYY)/(DOY)/(HH)/")
+			},
+			wantErr: "",
+		},
+		{
+			name: "2 dir 소스 + flat 목적지 → 통과 (서울시 Hourly)",
+			mutate: func(c *Config) {
+				c.Put.Categories[idx].HourLayout = HourLayoutDir
+				c.Put.Categories[idx].LocalPath =
+					mustTemplate(t, `Z:\RINEX-V2-H\(YYYY)\(DOY)\(HH)\`)
+				c.Put.Categories[idx].RemotePath =
+					mustTemplate(t, "/RNX2/")
+			},
+			wantErr: "",
+		},
+		{
+			name: "3 flat 소스 + flat 목적지 → 통과 (지리원)",
 			mutate: func(c *Config) {
 				c.Put.Categories[idx].HourLayout = HourLayoutFlat
 				c.Put.Categories[idx].LocalPath =
 					mustTemplate(t, "/local/r3h/(YYYY)/(DOY)/")
 				c.Put.Categories[idx].RemotePath =
-					mustTemplate(t, "/remote/r3h/(YYYY)/(DOY)/")
+					mustTemplate(t, "/RNX2/")
 			},
 			wantErr: "",
 		},
 		{
-			name: "flat + (HH) 있음 → 거부",
+			name: "4 dir 소스인데 LocalPath에 (HH) 없음 → 거부",
+			mutate: func(c *Config) {
+				c.Put.Categories[idx].HourLayout = HourLayoutDir
+				c.Put.Categories[idx].LocalPath =
+					mustTemplate(t, "/local/r3h/(YYYY)/(DOY)/")
+				c.Put.Categories[idx].RemotePath =
+					mustTemplate(t, "/RNX2/")
+			},
+			wantErr: "dir layout requires",
+		},
+		{
+			name: "5 flat 소스인데 LocalPath에 (HH) 있음 → 거부",
 			mutate: func(c *Config) {
 				c.Put.Categories[idx].HourLayout = HourLayoutFlat
-				// LocalPath/RemotePath 는 기본값(HH 포함)을 그대로 둔다.
+				c.Put.Categories[idx].LocalPath =
+					mustTemplate(t, "/local/r3h/(YYYY)/(DOY)/(HH)/")
+				c.Put.Categories[idx].RemotePath =
+					mustTemplate(t, "/RNX2/")
 			},
 			wantErr: "flat layout must not include",
 		},
 		{
-			name: "dir + (HH) 없음 → 거부 (평면인데 dir 로 오설정)",
+			name: "6 Daily LocalPath에 (HH) 있음 → 거부",
+			mutate: func(c *Config) {
+				c.Put.Categories[0].LocalPath =
+					mustTemplate(t, "/local/r2d/(YYYY)/(DOY)/(HH)/")
+			},
+			wantErr: "daily paths must not include",
+		},
+		{
+			name: "6 Daily RemotePath에 (HH) 있음 → 거부",
+			mutate: func(c *Config) {
+				c.Put.Categories[0].RemotePath =
+					mustTemplate(t, "/remote/r2d/(YYYY)/(DOY)/(HH)/")
+			},
+			wantErr: "daily paths must not include",
+		},
+		{
+			name: "Hourly RemotePath (HH) 유무는 HourLayout 과 무관 → 통과",
+			mutate: func(c *Config) {
+				c.Put.Categories[idx].HourLayout = HourLayoutFlat
+				c.Put.Categories[idx].LocalPath =
+					mustTemplate(t, "/local/r3h/(YYYY)/(DOY)/")
+				c.Put.Categories[idx].RemotePath =
+					mustTemplate(t, "/remote/r3h/(YYYY)/(DOY)/(HH)/")
+			},
+			wantErr: "",
+		},
+		{
+			name: "flat + LocalPath (HH) 있음 → 거부 (RemotePath 는 무관)",
+			mutate: func(c *Config) {
+				c.Put.Categories[idx].HourLayout = HourLayoutFlat
+				// LocalPath 기본값에 (HH) 가 있다.
+			},
+			wantErr: "flat layout must not include",
+		},
+		{
+			name: "dir + LocalPath (HH) 없음 → 거부 (평면인데 dir 로 오설정)",
 			mutate: func(c *Config) {
 				c.Put.Categories[idx].HourLayout = HourLayoutDir
 				c.Put.Categories[idx].LocalPath =

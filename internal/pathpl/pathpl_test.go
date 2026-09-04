@@ -40,6 +40,11 @@ func TestExpandRealPaths(t *testing.T) {
 			tmpl: "/RNXOutgoing/(YYYY)/(DOY)/(HH)/",
 			want: "/RNXOutgoing/2026/182/00/",
 		},
+		{
+			name: "토큰 없는 flat RemotePath",
+			tmpl: "/RNX2/",
+			want: "/RNX2/",
+		},
 	}
 
 	for _, tt := range tests {
@@ -53,6 +58,24 @@ func TestExpandRealPaths(t *testing.T) {
 				t.Errorf("Expand() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestExpandLiteralRemotePath 는 (HH) 가 없는 템플릿이 When 과 무관하게
+// 같은 경로를 내는지 본다. Hourly dir 소스 → flat 목적지 전송이
+// RemotePath.Expand(c.When) 에서 오류 없이 한 폴더로 모인다.
+func TestExpandLiteralRemotePath(t *testing.T) {
+	tpl, err := Parse("/RNX2/")
+	if err != nil {
+		t.Fatalf("Parse 실패: %v", err)
+	}
+
+	hours := []int{0, 5, 6, 23}
+	for _, h := range hours {
+		when := utc(2026, time.September, 1, h)
+		if got := tpl.Expand(when); got != "/RNX2/" {
+			t.Errorf("Expand(hour=%d) = %q, want /RNX2/", h, got)
+		}
 	}
 }
 

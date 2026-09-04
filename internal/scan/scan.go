@@ -249,7 +249,7 @@ func (s *Scanner) Scan(
 	// 같은 Hourly 라도 배치가 dir/flat 로 갈리며, 그 차이는 (HH) 유무로
 	// 이미 드러난다. 배치 판정은 config 가 소유하고(HourLayout), scan 은
 	// 확장할 템플릿이 지시하는 대로만 순회한다. dir/flat 과 (HH) 유무의
-	// 일치는 config.Validate 가 시작 시 보장한다.
+	// 일치는 config.Validate 가 LocalPath 에 대해 시작 시 보장한다.
 	perDay := 1
 	if tpl.HasToken(pathpl.TokenHH) {
 		perDay = hoursPerDay

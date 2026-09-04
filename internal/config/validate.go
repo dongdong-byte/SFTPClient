@@ -377,25 +377,32 @@ func (c *Config) checkCategories(add addFunc) {
 
 // checkHourToken 은 (HH) 토큰의 유무가 Category·HourLayout 과 맞는지 검사한다.
 //
-// Daily:
+// Daily (LocalPath / RemotePath 모두):
 //
 //	(HH) 를 갖지 않는다.
 //	Daily 경로에 시각 토큰이 들어가면 실제 Daily 저장 구조와 다른 경로를
 //	조회하게 되어 파일을 조용히 놓칠 수 있으므로 시작 시 거부한다.
 //
-// Hourly + dir:
+// Hourly + LocalPath + dir:
 //
 //	(HH) 가 반드시 있어야 한다.
 //	Scanner 는 00~23을 각각 계산하여 해당 디렉터리를 나열한다.
 //	빠지면 24개 시각이 모두 같은 디렉터리로 확장되어 같은 곳을 반복해서 읽는다.
 //
-// Hourly + flat:
+// Hourly + LocalPath + flat:
 //
 //	(HH) 가 없어야 한다.
 //	한 날짜 디렉터리를 한 번 나열하여 그 안의 24시간 파일을 함께 관측한다.
 //
-// 선언과 경로가 어긋나도 파일시스템 오류 없이 일부 동작할 수 있기 때문에
-// 추측해서 보정하지 않고 시작 시 거부한다.
+// Hourly + RemotePath:
+//
+//	HourLayout 과 무관하게 (HH) 유무를 강제하지 않는다.
+//	소스는 시각 폴더(dir)인데 목적지는 한 폴더(flat)로 받는 조합이
+//	운영상 존재한다. 파일명 세션 문자(a~x)가 시각을 구분하므로
+//	flat 목적지에서 파일명이 충돌하지 않는다.
+//
+// 선언과 LocalPath 가 어긋나도 파일시스템 오류 없이 일부 동작할 수 있기
+// 때문에 추측해서 보정하지 않고 시작 시 거부한다.
 //
 // HourLayout 이 유효하지 않은 경우(dir/flat 아님)는 checkCategories 의
 // 가드가 별도로 보고하므로, 여기서는 (HH) 검사를 조용히 건너뛴다.
@@ -420,6 +427,11 @@ func checkHourToken(
 		}
 
 	case cc.Category.IsHourly():
+		// HourLayout 은 소스 스캔 배치(LocalPath)에만 적용한다.
+		if key == "RemotePath" {
+			return
+		}
+
 		switch cc.HourLayout {
 		case HourLayoutDir:
 			if !has {
