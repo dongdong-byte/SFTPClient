@@ -37,6 +37,14 @@ type Config struct {
 	Put     PutConfig
 	Log     LogConfig
 
+	// Set 은 [SET.RINEXx] 세트 완성도 정책이다.
+	//
+	// [PUT] 아래가 아니라 최상위에 두는 이유는, 세트 정책이 버전 단위이고
+	// PUT 카테고리(버전×주기)와 축이 다르기 때문이다. ini 에서도
+	// [PUT.RINEX2_DAILY] 가 아니라 [SET.RINEX2] 로 버전당 한 번만 적는다.
+	// (확정 v2 §17 원칙 7 — Daily/Hourly 중복 설정 없음)
+	Set SetConfig
+
 	// Warnings 는 실행을 막지는 않지만 운영자가 알아야 하는 사항이다.
 	// main 이 시작 시 [WARN] 으로 기록한다.
 	// 현재 유일한 생산처: [PUT.SFTP] Host/User/Port 의 평문 저장.

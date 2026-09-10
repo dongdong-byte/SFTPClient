@@ -562,6 +562,7 @@ func mapConfig(f *iniFile, path string, p Protector) (*Config, error) {
 	}
 
 	cfg.Put.Categories = l.categories()
+	cfg.Set = l.setConfig()
 
 	logSec := l.section("LOG")
 	cfg.Log.Level = strings.ToLower(l.str(logSec, "Level"))
@@ -648,7 +649,91 @@ func (l *loader) categories() []CategoryConfig {
 // 여기에 있는 키를 example 에서 빠뜨리면 새 서버 설치 때 누락된다.
 //
 // config_test.go 가 example 파일로 이 표를 대조한다.
-func knownKeys() map[string][]string {
+// setConfig 는 버전별 세트 완성도 정책([SET.RINEXx])을 읽는다.
+//
+// 섹션 부재는 오류가 아니라 게이트 OFF 다. 이미 배포된 기관들의
+// config.ini 에는 이 섹션이 없고 게이트 기본값이 OFF(§3)이므로,
+// 섹션을 요구하면 실행파일 교체만으로 끝날 배포가 전 기관 config
+// 수정 작업이 된다. 부재 허용이 그 사고 경로를 없앤다.
+//
+// 반면 섹션이 존재하면 RequiredKinds 키는 필수다. 섹션 머리만 적고
+// 키를 빠뜨린 것은 게이트를 만지려다 만 절반짜리 설정이며, 조용한
+// OFF 로 해석하면 운영자는 켰다고 믿는데 실제로는 꺼진 상태가 된다.
+// 배포 논리(위 문단)는 "섹션이 아예 없는" 경우만 정당화하므로,
+// 이 경우는 기존 규약대로 시끄럽게 잡는다.
+//
+// RequiredKinds 는 sec.get 으로 평문만 읽는다. 연결 정보와 달리
+// 비밀이 아니므로 Protector 해석 경로를 태우지 않는다.
+// 명시적인 빈 값·true 는 parseRequiredKinds 가 오류로 처리한다.
+//
+// 버전 매핑 오류는 loader 에 기록한다. 따라서 반환된 빈 정책이
+// 정상 설정으로 쓰이는 일 없이 mapConfig 마지막 검사에서 로드가
+// 실패한다.
+func (l *loader) setConfig() SetConfig {
+	sc := SetConfig{policies: make(map[int]SetPolicy)}
+
+	versions, err := setVersions()
+	if err != nil {
+		l.addf("config: load SET policies: %w", err)
+		return sc
+	}
+
+	for _, version := range versions {
+		name := setSectionName(version)
+
+		sec, ok := l.file.section(name)
+		if !ok {
+			continue
+		}
+
+		raw, ok := sec.get("RequiredKinds")
+		if !ok {
+			l.addf(
+				"%w: [%s] RequiredKinds "+
+					"(섹션을 두었으면 키는 필수 — 게이트 OFF 는 false 로 명시한다)",
+				ErrMissingKey,
+				name,
+			)
+
+			continue
+		}
+
+		kinds, enabled, err := parseRequiredKinds(raw)
+		if err != nil {
+			l.addf(
+				"%w: line %d: [%s] RequiredKinds: %v",
+				ErrBadValue,
+				sec.lineOf("RequiredKinds"),
+				name,
+				err,
+			)
+
+			continue
+		}
+
+		sc.policies[version] = SetPolicy{
+			Version:       version,
+			Enabled:       enabled,
+			RequiredKinds: kinds,
+		}
+	}
+
+	return sc
+}
+
+// knownKeys 가 오류를 함께 돌려주는 이유:
+// SET 섹션 목록을 [2,3,4] 하드코딩 대신 domain.Categories() 와
+// Category.RinexVersion() 에서 파생하는데(§5 3차 확정 — 버전의 출처는
+// 닫힌 열거형 하나), 그 매핑이 깨진 상태(새 카테고리 추가 후 switch
+// 누락)를 조용한 빈 목록이 아니라 로드 실패로 승격하기 위해서다.
+func knownKeys() (map[string][]string, error) {
+	versions, err := setVersions()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"config: build known keys: %w", err,
+		)
+	}
+
 	m := map[string][]string{
 		"GENERAL": {
 			"Mode",
@@ -706,7 +791,14 @@ func knownKeys() map[string][]string {
 		m["PUT."+cat.String()] = keys
 	}
 
-	return m
+	// Set Completeness Gate 정책 섹션 (버전 단위, §3~§4).
+	// 섹션 부재는 오류가 아니지만(setConfig 주석 참조),
+	// 존재하는 섹션의 오타 키는 여기 등록으로 잡는다.
+	for _, version := range versions {
+		m[setSectionName(version)] = []string{"RequiredKinds"}
+	}
+
+	return m, nil
 }
 
 // checkUnknown 은 정의되지 않은 섹션과 키를 오류로 기록한다.
@@ -719,7 +811,11 @@ func knownKeys() map[string][]string {
 // 그 값을 그대로 대조하면 ScanDays 조차 알 수 없는 키로 판정된다.
 // 대조는 folded, 보고는 원래 표기로 나눈다.
 func (l *loader) checkUnknown() {
-	known := knownKeys()
+	known, err := knownKeys()
+	if err != nil {
+		l.addf("%w", err)
+		return
+	}
 
 	for _, name := range l.file.sectionNames() {
 		folded := foldKey(name)

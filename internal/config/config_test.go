@@ -46,7 +46,10 @@ func TestExampleINI_MatchesKnownKeys(t *testing.T) {
 		t.Fatalf("config.example.ini 파싱 실패: %v", err)
 	}
 
-	known := knownKeys()
+	known, err := knownKeys()
+	if err != nil {
+		t.Fatalf("knownKeys(): %v", err)
+	}
 
 	exampleSections := make(map[string]map[string]bool, len(f.sectionNames()))
 

@@ -484,3 +484,161 @@ func TestMapConfig_AccumulatesErrors(t *testing.T) {
 		}
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Set Completeness Gate 로더 동작 (유닛 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// withSetSections 는 validINIForLoadTest 의 [LOG] 앞에 SET 설정을 끼운다.
+func withSetSections(t *testing.T, sections string) string {
+	t.Helper()
+
+	base := validINIForLoadTest()
+
+	if !strings.Contains(base, "[LOG]") {
+		t.Fatal("픽스처에 [LOG] 섹션이 없다")
+	}
+
+	return strings.Replace(base, "[LOG]", sections+"\n[LOG]", 1)
+}
+
+// TestMapConfig_SetAbsentIsOff 는 [SET.*] 섹션 부재가 오류가 아니라
+// 게이트 OFF 임을 고정한다.
+//
+// 배포된 기관들의 config.ini 에는 이 섹션이 없다. 실행파일 교체만으로
+// 배포가 끝나는 성질이 이 동작에 의존한다. (load.go setConfig 주석)
+func TestMapConfig_SetAbsentIsOff(t *testing.T) {
+	cfg, _, err := mapConfigForTest(t, validINIForLoadTest())
+	if err != nil {
+		t.Fatalf("mapConfig() unexpected error: %v", err)
+	}
+
+	for _, v := range []int{2, 3, 4} {
+		p := cfg.Set.Policy(v)
+
+		if p.Enabled {
+			t.Errorf("버전 %d: 섹션 부재인데 Enabled", v)
+		}
+
+		if p.RequiredKinds != nil {
+			t.Errorf("버전 %d: 섹션 부재인데 kinds=%v", v, p.RequiredKinds)
+		}
+	}
+}
+
+// TestMapConfig_SetPolicies 는 버전별 on / false 명시 / 부재 혼합을 고정한다.
+func TestMapConfig_SetPolicies(t *testing.T) {
+	input := withSetSections(t, `[SET.RINEX2]
+RequiredKinds = G,L,N,O
+
+[SET.RINEX3]
+RequiredKinds = false
+
+`)
+
+	cfg, _, err := mapConfigForTest(t, input)
+	if err != nil {
+		t.Fatalf("mapConfig() unexpected error: %v", err)
+	}
+
+	p2 := cfg.Set.Policy(2)
+	if !p2.Enabled {
+		t.Fatal("버전 2: 목록 설정인데 Enabled=false")
+	}
+
+	want := []string{"g", "l", "n", "o"}
+	if len(p2.RequiredKinds) != len(want) {
+		t.Fatalf("버전 2 kinds = %v, want %v", p2.RequiredKinds, want)
+	}
+
+	for i, k := range want {
+		if p2.RequiredKinds[i] != k {
+			t.Errorf("버전 2 kinds[%d] = %q, want %q (소문자 정규화)",
+				i, p2.RequiredKinds[i], k)
+		}
+	}
+
+	// false 명시와 섹션 부재는 같은 OFF 다.
+	if cfg.Set.Policy(3).Enabled {
+		t.Error("버전 3: false 명시인데 Enabled")
+	}
+
+	if cfg.Set.Policy(4).Enabled {
+		t.Error("버전 4: 섹션 부재인데 Enabled")
+	}
+}
+
+// TestMapConfig_SetSectionWithoutKey 는 섹션 머리만 있고 RequiredKinds 가
+// 없는 절반짜리 설정이 조용한 OFF 가 아니라 시작 오류임을 고정한다.
+//
+// 부재=OFF 의 배포 논리는 "섹션이 아예 없는" 경우만 정당화한다.
+// (load.go setConfig 주석)
+func TestMapConfig_SetSectionWithoutKey(t *testing.T) {
+	input := withSetSections(t, `[SET.RINEX2]
+
+`)
+
+	_, _, err := mapConfigForTest(t, input)
+	if err == nil {
+		t.Fatal("섹션만 있고 RequiredKinds 없음: expected error")
+	}
+
+	if !errors.Is(err, ErrMissingKey) {
+		t.Errorf("error = %v, want ErrMissingKey", err)
+	}
+}
+
+// TestMapConfig_SetBadValues 는 허용하지 않는 RequiredKinds 값들이
+// 시작 오류로 잡힘을 고정한다. (§4, §11)
+func TestMapConfig_SetBadValues(t *testing.T) {
+	tests := []struct {
+		name string
+		val  string
+	}{
+		{"빈 값", ""},
+		{"true", "true"},
+		{"빈 항목", "g,,o"},
+		{"끝 콤마", "g,l,"},
+		{"중복 kind", "g,l,G"},
+		{"표현 형식 포함 (§11)", "MO.crx,MN.rnx"},
+		{"영문 외 문자", "g,1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := withSetSections(t,
+				"[SET.RINEX2]\nRequiredKinds = "+tt.val+"\n\n")
+
+			_, _, err := mapConfigForTest(t, input)
+			if err == nil {
+				t.Fatalf("RequiredKinds = %q: expected error", tt.val)
+			}
+
+			if !errors.Is(err, ErrBadValue) {
+				t.Errorf("error = %v, want ErrBadValue", err)
+			}
+		})
+	}
+}
+
+// TestParseRequiredKinds_Normalization 은 표기 유연성(공백·대소문자)과
+// 단일 종 목록을 고정한다. (위성센터: O 단독 제공 사례)
+func TestParseRequiredKinds_Normalization(t *testing.T) {
+	kinds, enabled, err := parseRequiredKinds(" MO , MN ")
+	if err != nil || !enabled {
+		t.Fatalf("공백 섞인 목록: enabled=%v err=%v", enabled, err)
+	}
+
+	if len(kinds) != 2 || kinds[0] != "mo" || kinds[1] != "mn" {
+		t.Errorf("kinds = %v, want [mo mn]", kinds)
+	}
+
+	kinds, enabled, err = parseRequiredKinds("O")
+	if err != nil || !enabled || len(kinds) != 1 || kinds[0] != "o" {
+		t.Errorf("단일 종: kinds=%v enabled=%v err=%v", kinds, enabled, err)
+	}
+
+	if _, enabled, err = parseRequiredKinds(" False "); err != nil || enabled {
+		t.Errorf("대소문자 무관 false: enabled=%v err=%v", enabled, err)
+	}
+}
