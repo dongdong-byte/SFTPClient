@@ -607,9 +607,11 @@ func TestCommonLedgerHasNoLocalPath(t *testing.T) {
 	//	state
 	//	first_seen
 	//	ingress_verified_at
-	if len(columns) != 10 {
+	//	set_key   (v4→v5, MVP2 세트 게이트)
+	//	kind      (v4→v5, MVP2 세트 게이트)
+	if len(columns) != 12 {
 		t.Errorf(
-			"common_ledger 컬럼 수 = %d, want 10: %v\n"+
+			"common_ledger 컬럼 수 = %d, want 12: %v\n"+
 				"의도한 스키마 변경이라면 이 숫자와 위 주석의 목록을 함께 고친다",
 			len(columns),
 			columns,
