@@ -1,13 +1,20 @@
 # SFTPClient Ledger 개념 · 논리 모델
 
-> 대상 산출물: `internal/ledger/schema.sql` (**schema_version = 4**, 개정 이력 v7)
+> 대상 산출물: `internal/ledger/schema.sql` (**schema_version = 5**, 개정 이력 v8)
 > 기준 문서: `../../../../../Downloads/Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx` 9절
 > 함께 읽을 것: `SFTPClient_SCAN_DESIGN_DECISIONS.md` (Scan 범위·복구 전략 결정 경위)
 > 이 문서는 스키마의 **근거**를 남긴다. 스키마 자체는 SQL 파일이 원본이다.
 > 두 파일은 항상 함께 갱신한다. 한쪽만 바뀌면 근거를 잃은 스키마가 된다.
 >
 > 파일 상단의 v1~v7은 *설계* 개정 이력이고, `schema_meta.schema_version`은 *실재 DB* 구조 세대다.
-> 둘의 숫자가 같다고 가정하지 않는다. (현재: 개정 v7 ↔ `schema_version` `'4'`)
+> 둘의 숫자가 같다고 가정하지 않는다. (현재: 개정 v8 ↔ `schema_version` `'5'`)
+>
+> **2026-09-10 (v8 / `schema_version` '5')**: `common_ledger` 에 `set_key`·`kind`
+> 추가 (MVP2 세트 게이트, NOT NULL DEFAULT '' — ''=세트 소속 유보).
+> 최초의 운영 DB 보존 전환 — `ledger.Open` 이 v4→v5 를 단일 트랜잭션으로
+> 자동 마이그레이션(ALTER + `domain.SetKeyKind` 백필 + 버전 갱신)한다.
+> 판정 결과(COMPLETE/HELD)는 저장하지 않는다 — Ledger 는 사실만 기록.
+> 상세: `SFTPClient_MVP2_CONFIRMED_DECISIONS_v2.md` §13~14, §19-3.
 
 ### 개정 이력
 

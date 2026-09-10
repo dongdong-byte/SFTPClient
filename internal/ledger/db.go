@@ -53,7 +53,7 @@ const (
 	//
 	// ★ 이 값은 schema.sql 에도 같은 리터럴로 들어 있다.
 	//
-	//	INSERT OR IGNORE INTO schema_meta ... ('schema_version', '4', ...)
+	//	INSERT OR IGNORE INTO schema_meta ... ('schema_version', '5', ...)
 	//
 	// 한쪽만 올리면 새로 만든 DB 가 곧바로 열리지 않는다.
 	// 스크립트가 넣은 값과 실행파일이 기대하는 값이 달라

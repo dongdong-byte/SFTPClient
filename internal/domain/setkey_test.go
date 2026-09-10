@@ -56,9 +56,13 @@ func TestSetKeyKind_ReturnContract(t *testing.T) {
 	}
 
 	// 유보 시 부분 도출값이 새어 나가지 않는다.
-	if k, kd, _, _ := SetKeyKind(
+	k, kd, ok, err := SetKeyKind(
 		CategoryRINEX4Daily, "backup_old_2026_temp_mo.rnx.gz",
-	); k != "" || kd != "" {
+	)
+	if err != nil || ok {
+		t.Errorf("유보는 (ok=false, err=nil): ok=%v err=%v", ok, err)
+	}
+	if k != "" || kd != "" {
 		t.Errorf("유보인데 값이 남아 있다: %q %q", k, kd)
 	}
 }
@@ -342,15 +346,21 @@ func TestSetKeyKind_SetGrouping(t *testing.T) {
 	}
 
 	// 시간별 세트는 타임스탬프가 달라 서로 다른 키가 된다.
-	h3, _, _, _ := SetKeyKind(
+	h3, _, ok, err := SetKeyKind(
 		CategoryRINEX3Hourly,
 		"SONP00KOR_R_20260010300_01H_01S_MO.crx.gz",
 	)
+	if err != nil || !ok {
+		t.Fatalf("h3: 실파일이 유보/오류 — ok=%v err=%v", ok, err)
+	}
 
-	h4, _, _, _ := SetKeyKind(
+	h4, _, ok, err := SetKeyKind(
 		CategoryRINEX3Hourly,
 		"SONP00KOR_R_20260010400_01H_01S_MO.crx.gz",
 	)
+	if err != nil || !ok {
+		t.Fatalf("h4: 실파일이 유보/오류 — ok=%v err=%v", ok, err)
+	}
 
 	if h3 == h4 {
 		t.Errorf("다른 시간대가 같은 세트로 묶임: %q", h3)
