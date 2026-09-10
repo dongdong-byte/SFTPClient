@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"SFTPClient/internal/config"
+	"SFTPClient/internal/domain"
 	"SFTPClient/internal/ledger"
 	"SFTPClient/internal/lock"
 	"SFTPClient/internal/put"
@@ -294,6 +295,15 @@ func run() error {
 				Category:   cc.Category,
 				LocalPath:  cc.LocalPath,
 				RemotePath: cc.RemotePath,
+
+				// Set Completeness Gate 정책 (버전 단위, 확정 §5·§7).
+				// nil 이면 게이트 OFF — 기본 배포 상태이며 기존 동작과
+				// 완전히 동일하다. 버전의 출처는 닫힌 열거형 하나다
+				// (§5 3차 확정) — Category 는 config 가 ParseCategory 로
+				// 강제한 값이라 아래 err 는 발생하지 않아야 하며,
+				// 발생한다면 열거형/switch 정합이 깨진 코드 결함이므로
+				// 조용히 게이트를 끄는 대신 시작을 중단한다.
+				RequiredKinds: mustSetKinds(cfg, cc.Category),
 			},
 		)
 	}
@@ -462,4 +472,21 @@ func run() error {
 	// TODO(Retention 단계): Deep 실행일이면 Retention Cleanup.
 
 	return nil
+}
+
+// mustSetKinds 는 카테고리의 RINEX 버전에 해당하는 [SET.RINEXx]
+// RequiredKinds 를 돌려준다. 게이트 OFF(부재/false)는 nil 이다.
+//
+// RinexVersion 의 err 는 "열거형에 있는데 버전 switch 가 빠진" 설정
+// 공백이며, 정상 config 경로에서는 도달하지 않는다. 도달하면 게이트가
+// 조용히 꺼진 채 도는 것을 막기 위해 즉시 중단한다 (SetKeyKind 의
+// err/유보 이원 계약과 같은 원칙).
+func mustSetKinds(cfg *config.Config, cat domain.Category) []string {
+	ver, err := cat.RinexVersion()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "set gate: %v\n", err)
+		os.Exit(1)
+	}
+
+	return cfg.Set.Policy(ver).RequiredKinds
 }
