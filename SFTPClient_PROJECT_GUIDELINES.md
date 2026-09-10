@@ -35,6 +35,14 @@
 | 2026-08-31 | `main` — `signal.NotifyContext` 배선(Ctrl+C→ctx 취소), `--transport sftp` live 배선. "live 거부" 절단면 해제 |
 | 2026-08-31 | sftpfs 계약 테스트 — 오프라인 6종 + 실서버 10종(`SFTPTEST_*` 게이트). 로컬 SFTPGo 2.7.5 전부 PASS. ★RenameOverwritesExisting = posix-rename 실증 |
 | 2026-08-31 | 실서버 실측 — 관련정보 문서(260527)는 낡음. 지리원·서울시 OS 세대교체 확인, 측위원 SFTPGo 가동. 설치처는 기관 서버가 아닌 중간 전달자 호스트(대표 확인) |
+| 2026-09-01 | config 기본 경로 = exe 옆(`DefaultPath`). `remote_size` = 원격 `FinalSize`. 2차 Ctrl+C 재무장 |
+| **2026-09-01** | **IN_PROGRESS 회수 조립 (A안, salvage 없음).** live·lock 이후 Recover. Size만으로 rename 완료로 보지 않음 |
+| **2026-09-01** | **PUT Worker Pool** — 디렉터리 단위 `(category, RemotePath.Expand(When))`, `MaxWorkers` 기본 4 |
+| **2026-09-01** | **real seed** — 원격 Stat+Size 일치만 VERIFIED. List 기반·`--seed-common` 기각. 창은 `ScanDays` |
+| 2026-09-01 | `Transport` 를 `[GENERAL]` 필수 키로. `--transport` 는 이번 실행 override. 인자 없는 exe 기동 |
+| 2026-09-01 | `HourLayout` dir/flat. Daily `(HH)` 거부. Hourly `(HH)` 검증 |
+| 2026-09-04 | Hourly/타깃 경로에 `(HH)` 없는 단일 경로 수용 (서울시) |
+| **2026-09-04** | **enc: DPAPI LocalMachine.** `internal/security` · 로드 시 `value()` 복호화 · `secure-set`. SFTP 평문 Host/User/Port 는 WARN. 측위원 평문 저장 금지 대응 |
 | **2026-09-09** | **MVP2 세트 완성도 게이트 설계 확정.** 전송 시작 원자성만(롤백 없음), 기본 OFF·Opt-in, `[SET.RINEXx] RequiredKinds`(false/CSV, Enabled 키 없음), kind=데이터 종류만(표현 형식 제외), 게이트 위치 Upsert 뒤·PENDING 앞, 매 스캔 재계산, resend 는 게이트 우회, 활성화 전제조건(현장 접근 토폴로지). 12절 참조 |
 | **2026-09-10** | **세트 게이트 구현 완료 (커밋 5개).** §5 3차 확정(버전 출처=닫힌 열거형, ini 키 기각), 의미론 2건(미완성 세트 선택 종 포함 전체 보류 / 파싱 유보 개별 통과+관측), **스키마 v8·`schema_version` '5'** — `common_ledger` 에 `set_key`·`kind`(NOT NULL DEFAULT ''), 최초의 운영 DB 보존 전환을 Open 자동 마이그레이션으로 수행(서브커맨드 기각), 파생의 주인은 `UpsertCommon` 내부 `domain.SetKeyKind`, MaxFilesPerRun 세트 경계 절단. 12절 참조 |
 
