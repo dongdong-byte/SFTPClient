@@ -69,6 +69,13 @@ type Candidate struct {
 	// 추정하지 않기 때문이다 (A안, 2026-08-30 확정). 값을 지어내는 대신
 	// 아직 확정되지 않았다는 사실만 표시한다.
 	RevisionPending bool
+
+	// SetKey 는 세트 완성도 게이트가 켜진 카테고리에서만 채워지는 그룹 키다.
+	//
+	// finalize 의 MaxFilesPerRun 절단이 이 값으로 세트를 회차 경계에서
+	// 쪼개지 않도록 한다(§13.1). 게이트 OFF 이거나 파싱 불가 파일이면 빈
+	// 문자열이며, 그 경우 finalize 는 기존과 같이 파일 단위로 절단한다.
+	SetKey string
 }
 
 // CategoryJob 은 카테고리 하나의 스캔 입력 조립이다.
@@ -80,6 +87,13 @@ type CategoryJob struct {
 	Category   domain.Category
 	LocalPath  *pathpl.Template
 	RemotePath *pathpl.Template
+
+	// RequiredKinds 는 이 카테고리 버전의 세트 완성도 정책이다.
+	//
+	// config 의 [SET.RINEXx] RequiredKinds 를 main 이 카테고리 버전으로
+	// 조회해 넘긴다(소문자). 비어 있으면 게이트 OFF 다 — CategoryJob 이
+	// config 타입을 알지 않도록, 정책을 []string 으로만 전달받는다.
+	RequiredKinds []string
 }
 
 // RunOptions 는 실행 방식이다.
@@ -237,6 +251,13 @@ type CategoryReport struct {
 
 	// Candidates 는 필터 통과 후보 수다 (전 카테고리 절단 이전).
 	Candidates int
+
+	// SetHeld 는 세트 미완성으로 후보에서 보류된 파일 수다(§13).
+	//
+	// 게이트가 켜진 카테고리에서만 0 이 아니다. 보류된 파일의 도착 사실은
+	// common_ledger 에 기록되어 있으며, 세트가 완성되면 다음 회차에
+	// Unchanged + PutStatus=="" 경로로 후보가 된다.
+	SetHeld int
 
 	// Retries 는 그중 기존 FAILED revision 을 재시도하는 후보 수다.
 	Retries int

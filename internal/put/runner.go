@@ -186,6 +186,11 @@ func (r *Runner) runCategory(
 		changedObs []ledger.NameRev
 		seen       = map[string]struct{}{}
 		stations   = map[string]struct{}{}
+
+		// observed 는 이번 스캔에서 존재를 확인한, 검증된 파일명이다.
+		// 세트 게이트의 완성도 판정 우주다 — 후보 여부와 무관하게
+		// Ingress 를 통과한 실재 파일 전체를 담는다 (setGate 주석).
+		observed []string
 	)
 
 	visit := func(b scan.Batch) error {
@@ -199,6 +204,7 @@ func (r *Runner) runCategory(
 			&cands,
 			&failed,
 			&changedObs,
+			&observed,
 		)
 	}
 
@@ -226,6 +232,125 @@ func (r *Runner) runCategory(
 	// 여기 들어오는 FAILED 는 Unchanged 파일의 현재 revision 이다.
 	// 변경 파일은 live 에서 새 revision 이 생겨 예산이 리셋되므로
 	// 이 필터에 넣지 않는다.
+	// ── Set Completeness Gate (MVP2 확정 §13) ──────────────────
+	// 위치: Upsert 뒤(observed 완성 뒤), PENDING 등록 앞.
+	// FAILED 재시도 대기열(failed)에도 동일 정책을 적용한다 —
+	// 미완성 세트의 FAILED 멤버만 재시도로 새어 나가면 게이트가 뚫린다.
+	gate, err := newSetGate(job.Category, job.RequiredKinds, observed)
+	if err != nil {
+		return nil, rep, fmt.Errorf("build set gate: %w", err)
+	}
+
+	rep.SetGate = gate.on()
+
+	if gate.on() {
+		// 보류는 조용히 일어나면 안 된다. 일일 리포트 전까지는
+		// 이 로그가 유일한 관측 수단이다. (확정 §13 로그 형식)
+		for _, hs := range gate.heldSets() {
+			r.logf(
+				"[SET] category=%s held set=%s have=%s missing=%s",
+				job.Category,
+				hs.SetKey,
+				strings.Join(hs.Have, ","),
+				strings.Join(hs.Missing, ","),
+			)
+		}
+
+		// 세트 소속 유보(파싱 불가)는 거부가 아니라 개별 통과+관측이다
+		// (2026-09-10 확정 ①). 이 값이 늘면 파일명 규약이 가정과
+		// 다르다는 신호이므로 예시와 함께 남긴다.
+		var unparsedExamples []string
+
+		for _, name := range observed {
+			_, _, ok, err := gate.parse(name)
+			if err != nil {
+				return nil, rep, err
+			}
+
+			if ok {
+				continue
+			}
+
+			rep.SetUnparsed++
+
+			if len(unparsedExamples) < rejectedExampleCap {
+				unparsedExamples = append(unparsedExamples, name)
+			}
+		}
+
+		if rep.SetUnparsed > 0 {
+			r.logf(
+				"[SET][WARN] category=%s unparsed=%d "+
+					"(세트 소속 유보 — 개별 파일로 통과) examples=%q",
+				job.Category,
+				rep.SetUnparsed,
+				unparsedExamples,
+			)
+		}
+
+		// 일반 후보와 재시도 대기열에 같은 필터를 적용한다.
+		// 통과 후보에는 경계 절단용 SetKey 를 새긴다 (plan.go 가 사용).
+		filter := func(c Candidate) (Candidate, bool, error) {
+			held, err := gate.holds(c.Key.FileName)
+			if err != nil {
+				return c, false, err
+			}
+
+			if held {
+				rep.SetHeld++
+				return c, false, nil
+			}
+
+			setKey, err := gate.setKeyOf(c.Key.FileName)
+			if err != nil {
+				return c, false, err
+			}
+
+			c.SetKey = setKey
+
+			return c, true, nil
+		}
+
+		keptCands := cands[:0]
+
+		for _, c := range cands {
+			fc, keep, err := filter(c)
+			if err != nil {
+				return nil, rep, fmt.Errorf(
+					"filter set candidate %q: %w",
+					c.Key.FileName,
+					err,
+				)
+			}
+
+			if keep {
+				keptCands = append(keptCands, fc)
+			}
+		}
+
+		cands = keptCands
+
+		keptFailed := failed[:0]
+
+		for _, f := range failed {
+			fc, keep, err := filter(f.cand)
+			if err != nil {
+				return nil, rep, fmt.Errorf(
+					"filter failed set candidate %q: %w",
+					f.cand.Key.FileName,
+					err,
+				)
+			}
+
+			if keep {
+				f.cand = fc
+				keptFailed = append(keptFailed, f)
+			}
+		}
+
+		failed = keptFailed
+	}
+
 	if err := r.resolveFailed(
 		ctx,
 		job.Category,
@@ -278,6 +403,7 @@ func (r *Runner) visitBatch(
 	cands *[]Candidate,
 	failed *[]failedRef,
 	changedObs *[]ledger.NameRev,
+	observed *[]string,
 ) error {
 	names := make([]string, 0, len(b.Entries))
 	byName := make(map[string]scan.Entry, len(b.Entries))
@@ -381,6 +507,24 @@ func (r *Runner) visitBatch(
 		if exists &&
 			k.Origin == domain.OriginDownload &&
 			!r.Opts.RepostDownloaded {
+			// 후보에서는 빠지지만 디스크에 실재하는 데이터이므로
+			// 세트 완성도에는 존재로 센다 (setGate 의 observed 계약).
+			// 단, 변경된 DOWNLOAD 파일은 이전 검증을 재사용할 수 없어
+			// 현재 상태를 다시 검증해 통과할 때만 센다 — 손상된 멤버를
+			// 근거로 형제를 내보내지 않는다. 리포트 분류는 기존
+			// ExcludedDownloadOrigin 을 그대로 쓴다.
+			if k.Size == e.Size && k.MTime == mtime {
+				*observed = append(*observed, n)
+			} else if r.Verifier.Verify(verify.Input{
+				Name:     e.Name,
+				Size:     e.Size,
+				MTime:    e.MTime,
+				IsDir:    e.IsDir,
+				Category: job.Category,
+			}).OK() {
+				*observed = append(*observed, n)
+			}
+
 			rep.ExcludedDownloadOrigin++
 			continue
 		}
@@ -388,6 +532,12 @@ func (r *Runner) visitBatch(
 		// ── Unchanged ───────────────────────────────────────────────
 		if exists && k.Size == e.Size && k.MTime == mtime {
 			rep.Unchanged++
+
+			// 이전 회차에 Ingress 를 통과한 실재 파일이다. VERIFIED 로
+			// 후보에서 빠지는 멤버도 완성도에는 존재로 센다 — "G 는
+			// 이미 보냈고 L·N·O 가 오늘 도착" 한 세트가 영구 보류되지
+			// 않아야 한다 (setGate 의 observed 계약).
+			*observed = append(*observed, n)
 
 			proto.Key.Revision = k.Revision
 			// 현재 Ledger 의 실제 revision 이므로 RevisionPending=false.
@@ -449,6 +599,12 @@ func (r *Runner) visitBatch(
 		} else {
 			rep.New++
 		}
+
+		// Ingress 를 통과한 신규·변경 파일. 거부된 파일(0바이트,
+		// Grace 미경과)은 여기 도달하지 않으므로 존재로 세지 않는다.
+		// DryRun 과 live 가 같은 지점에서 기록되어 두 모드의 게이트
+		// 판정이 동일하다.
+		*observed = append(*observed, n)
 
 		if r.Opts.DryRun {
 			// dry-run 은 미래 revision 을 산술로 만들어내지 않는다.

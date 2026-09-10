@@ -231,6 +231,14 @@ func (r Result) String() string {
 //	  그래야 PUT 후보 기본 제외 규칙과 Ping-Pong 방지가 유지된다.
 //
 // v5 변경: local_path 컬럼이 삭제되어 INSERT·UPDATE 양쪽에서 사라졌다.
+// v8 변경: set_key·kind 컬럼이 추가되었다. 이 두 값은 CommonInput 이 아니라
+// (category, file_name) 에서 domain.SetKeyKind 로 도출한다(파일명 파생의 단일
+// 주인 — 호출자가 값을 구성하는 경로를 만들지 않는다).
+// 파라미터는 총 12개이다 — VALUES 바인딩 11개 + DO UPDATE 의 state 1개.
+//
+// set_key·kind 는 DO UPDATE 에도 넣는다. 같은 (category, file_name) 이면 값이
+// 동일하므로 사실상 불변 재기록이지만, 파서가 나중에 확장되어 과거 유보(”)
+// 이름을 읽게 되는 경우 size·mtime 변경 시점에 자연히 채워지는 이점이 있다.
 // 파라미터는 총 10개이다.
 // VALUES 절의 바인딩 9개 + DO UPDATE 의 state 1개이다.
 //
@@ -265,15 +273,19 @@ INSERT INTO common_ledger (
     revision,
     state,
     first_seen,
-    ingress_verified_at
-) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    ingress_verified_at,
+    set_key,
+    kind
+) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
 ON CONFLICT (category, file_name) DO UPDATE SET
     base_name           = excluded.base_name,
     size                = excluded.size,
     mtime               = excluded.mtime,
     revision            = common_ledger.revision + 1,
     state               = ?,
-    ingress_verified_at = excluded.ingress_verified_at
+    ingress_verified_at = excluded.ingress_verified_at,
+    set_key             = excluded.set_key,
+    kind                = excluded.kind
 WHERE common_ledger.size  <> excluded.size
    OR common_ledger.mtime <> excluded.mtime
 RETURNING revision;
@@ -318,9 +330,31 @@ func (db *DB) UpsertCommon(
 	// 기존 최초 발견 시각은 보존된다.
 	firstSeen := time.Now().UTC().Unix()
 
+	// set_key·kind 는 (category, file_name) 에서 도출한다. CommonInput 에
+	// 담지 않는 이유는 파일명 파생의 주인을 domain 하나로 두기 위함이다 —
+	// 게이트 ON/OFF 와 무관하게 모든 기록 경로가 이 파생을 지나므로
+	// "'' = 세트 소속을 확정할 수 없는 이름" 이라는 불변식이 구조적으로
+	// 보장된다 (마이그레이션 백필과 함께 그 불변식의 나머지 절반이다).
+	//
+	//	err != nil  — category 가 SetKeyKind 에 라우팅되지 않음(enum 공백).
+	//	              Validate 를 통과한 정상 category 에서는 발생하지 않지만,
+	//	              발생하면 조용히 넘기지 않고 이 파일의 기록을 막는다.
+	//	ok == false — 세트 소속 유보. SetKeyKind 가 돌려준 "" 를 그대로
+	//	              저장한다. 스키마가 NOT NULL DEFAULT '' 이므로 NULL
+	//	              바인딩은 제약 위반이다 — nullable 안은 기각되었다
+	//	              (2026-09-10, schema.sql v8 주석 참조).
+	setKey, kind, _, err := domain.SetKeyKind(in.Category, in.FileName)
+	if err != nil {
+		return ResultUnchanged, fmt.Errorf(
+			"ledger: set_key/kind for %q: %w",
+			in.FileName,
+			err,
+		)
+	}
+
 	var revision int64
 
-	err := db.conn.QueryRowContext(
+	err = db.conn.QueryRowContext(
 		ctx,
 		upsertCommonSQL,
 		in.FileName,
@@ -332,6 +366,8 @@ func (db *DB) UpsertCommon(
 		string(domain.StateReady),
 		firstSeen,
 		in.IngressVerifiedAt,
+		setKey,
+		kind,
 		string(domain.StateChanged),
 	).Scan(&revision)
 

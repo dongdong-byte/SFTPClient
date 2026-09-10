@@ -60,6 +60,28 @@ func (r *Runner) finalize(
 		//
 		// 즉 "아무 장부 기록도 남기지 않는다" 가 아니라
 		// "이번 실행 목록을 뜻하는 PENDING 을 만들지 않는다" 가 정확하다.
+
+		// 세트 경계 절단 (MVP2 확정 §13.1) — 절단선에 걸려 쪼개진
+		// 세트는 잔여 멤버를 이번 회차에서 통째로 빼 다음 회차로
+		// 넘긴다. 게이트를 통과한 세트가 회차 경계에서 부분 도착
+		// 창을 만들면 게이트의 목적이 무너지기 때문이다.
+		// SetKey 가 빈 파일(게이트 OFF / 소속 유보)은 기존과 동일한
+		// 파일 단위 절단 그대로다. 빠진 만큼 잘린 쪽에서 채워 넣지
+		// 않는다 — 상한은 "이하" 보장이지 "정확히" 보장이 아니고,
+		// 채움은 절단을 비결정적으로 만든다.
+		//
+		// dropSplitSets 는 kept 의 backing array 를 재사용하므로
+		// 위에서 닫은 cap 이 유지된다.
+		if kept2, moved := dropSplitSets(kept, all[len(kept):]); moved > 0 {
+			kept = kept2
+			report.Cut += moved
+
+			r.logf(
+				"[SET] MaxFilesPerRun 절단선을 세트 경계로 조정: "+
+					"moved=%d (쪼개진 세트의 잔여 멤버를 다음 회차로 이월)",
+				moved,
+			)
+		}
 	}
 
 	// Cut WARN 은 Print 가 아니라 실행 자체가 남긴다.
@@ -233,6 +255,15 @@ func (rr RunReport) Print(l *log.Logger) {
 			c.SkippedPart,
 			c.SkippedDuplicate,
 		)
+
+		if c.SetGate {
+			l.Printf(
+				"%s   set_gate: held=%d unparsed=%d",
+				tag,
+				c.SetHeld,
+				c.SetUnparsed,
+			)
+		}
 
 		// A안:
 		// 변경 파일의 후보 여부를 결정하는 값이 아니라,
