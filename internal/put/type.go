@@ -70,11 +70,10 @@ type Candidate struct {
 	// 아직 확정되지 않았다는 사실만 표시한다.
 	RevisionPending bool
 
-	// SetKey 는 세트 완성도 게이트가 켜진 카테고리에서만 채워지는 그룹 키다.
-	//
-	// finalize 의 MaxFilesPerRun 절단이 이 값으로 세트를 회차 경계에서
-	// 쪼개지 않도록 한다(§13.1). 게이트 OFF 이거나 파싱 불가 파일이면 빈
-	// 문자열이며, 그 경우 finalize 는 기존과 같이 파일 단위로 절단한다.
+	// SetKey 는 게이트를 통과한 후보가 속한 세트의 키다.
+	// MaxFilesPerRun 절단이 세트를 쪼개지 않도록 plan.go 가 사용한다.
+	// 빈 문자열은 게이트 OFF 카테고리 또는 세트 소속 유보 파일이며,
+	// 두 경우 모두 기존과 같은 파일 단위 절단을 따른다.
 	SetKey string
 }
 
@@ -88,11 +87,9 @@ type CategoryJob struct {
 	LocalPath  *pathpl.Template
 	RemotePath *pathpl.Template
 
-	// RequiredKinds 는 이 카테고리 버전의 세트 완성도 정책이다.
-	//
-	// config 의 [SET.RINEXx] RequiredKinds 를 main 이 카테고리 버전으로
-	// 조회해 넘긴다(소문자). 비어 있으면 게이트 OFF 다 — CategoryJob 이
-	// config 타입을 알지 않도록, 정책을 []string 으로만 전달받는다.
+	// RequiredKinds 는 Set Completeness Gate 의 필수 종 목록이다
+	// (config [SET.RINEXx], 소문자 정규화 완료 값). nil/빈 목록이면
+	// 이 카테고리의 게이트는 OFF 이며 기존 동작과 완전히 동일하다.
 	RequiredKinds []string
 }
 
@@ -249,15 +246,22 @@ type CategoryReport struct {
 	// live 실행에서는 항상 제로값이다. 이 관측은 dry-run 전용이다.
 	DryRunChangedCurrentPut CurrentPutObservation
 
+	// SetGate 는 이 카테고리에 세트 게이트가 켜져 있었는지다.
+	// 아래 카운터 0 이 "게이트 없음" 인지 "있었으나 전부 완성" 인지
+	// 로그에서 구분하기 위한 값이다.
+	SetGate bool
+
+	// SetHeld 는 필수 종 미완성으로 이번 회차 후보에서 보류된
+	// 파일 수다 (재시도 대기열 포함). put_ledger 에는 아무것도
+	// 기록되지 않으며 다음 스캔이 재계산한다. (§13)
+	SetHeld int
+
+	// SetUnparsed 는 게이트가 켜진 카테고리에서 세트 소속을 확정할
+	// 수 없어 개별 파일로 통과한 관측 파일 수다. (2026-09-10 확정 ①)
+	SetUnparsed int
+
 	// Candidates 는 필터 통과 후보 수다 (전 카테고리 절단 이전).
 	Candidates int
-
-	// SetHeld 는 세트 미완성으로 후보에서 보류된 파일 수다(§13).
-	//
-	// 게이트가 켜진 카테고리에서만 0 이 아니다. 보류된 파일의 도착 사실은
-	// common_ledger 에 기록되어 있으며, 세트가 완성되면 다음 회차에
-	// Unchanged + PutStatus=="" 경로로 후보가 된다.
-	SetHeld int
 
 	// Retries 는 그중 기존 FAILED revision 을 재시도하는 후보 수다.
 	Retries int

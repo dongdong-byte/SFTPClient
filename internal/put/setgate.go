@@ -262,3 +262,52 @@ func (g *setGate) heldSets() []heldSetInfo {
 
 	return out
 }
+
+// setID는 세트 경계 절단에서 세트를 식별하는 키다.
+//
+// SetKey 는 카테고리 안에서만 유일하다 — RINEX3 과 RINEX4 는 같은
+// 긴 파일명 규칙을 공유하므로 SetKey 만으로는 두 카테고리의 세트가
+// 합쳐질 수 있다. SortCandidates 가 category 를 보조 키로 두는 것과
+// 같은 이유다.
+func setID(c Candidate) string {
+	return string(c.Key.Category) + "\x00" + c.SetKey
+}
+
+// dropSplitSets는 MaxFilesPerRun 절단이 세트를 반으로 자르지 않도록
+// 절단선 양쪽에 걸친 세트의 kept 쪽 멤버를 제거해 돌려준다.
+// (세트 경계 절단, MVP2 확정 §13.1)
+//
+// 정렬 후에도 같은 세트의 멤버가 반드시 인접한다는 보장은 없다 —
+// 다른 카테고리의 파일명이 사전순으로 사이에 끼어들 수 있다. 따라서
+// "절단점에서 뒤로 물러나기" 가 아니라 잘린 쪽과 남은 쪽 양쪽에
+// 걸친 세트를 집합으로 찾아 제거한다.
+//
+// SetKey 가 빈 후보(게이트 OFF / 소속 유보)는 참여하지 않는다.
+func dropSplitSets(kept, cut []Candidate) (out []Candidate, moved int) {
+	split := map[string]struct{}{}
+
+	for _, c := range cut {
+		if c.SetKey != "" {
+			split[setID(c)] = struct{}{}
+		}
+	}
+
+	if len(split) == 0 {
+		return kept, 0
+	}
+
+	out = kept[:0]
+
+	for _, c := range kept {
+		if c.SetKey != "" {
+			if _, ok := split[setID(c)]; ok {
+				moved++
+				continue
+			}
+		}
+
+		out = append(out, c)
+	}
+
+	return out, moved
+}
