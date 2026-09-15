@@ -245,6 +245,8 @@ func (s *Scanner) Scan(
 	// 00~23 을 각각 나열한다. 없으면 평면(flat) 배치 또는 Daily 이므로
 	// 날짜 디렉터리를 한 번만 나열한다.
 	//
+	// 재귀 Scan 전의 임시 순회다. HourLayout 값을 여기서 늘리지 않는다.
+	//
 	// category.IsHourly() 가 아니라 템플릿 토큰으로 결정하는 이유:
 	// 같은 Hourly 라도 배치가 dir/flat 로 갈리며, 그 차이는 (HH) 유무로
 	// 이미 드러난다. 배치 판정은 config 가 소유하고(HourLayout), scan 은

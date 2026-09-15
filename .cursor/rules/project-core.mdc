@@ -28,6 +28,8 @@ alwaysApply: true
 - `utils`, `helper`, `common`처럼 책임이 불명확한 범용 패키지를 만들지 않는다.
 - `internal/sftp` 패키지명은 사용하지 않는다. `github.com/pkg/sftp`와 혼동을 피하기 위해 `transport`를 사용한다.
 - 기관별 차이는 Core 코드의 기관명 조건문이 아니라 `config.ini`와 Path Template으로 처리한다.
+- `HourLayout`(dir/flat)은 재귀 Scan 전의 임시 우회다. 기관이 늘 때마다 배치 값을 추가하지 않는다(특수 사례 폭증). Hourly RemotePath의 `(HH)`는 강제하지 않는다.
+- `[PUT.SFTP]` Host/User/Port 보호는 `enc:` + DPAPI LocalMachine이다. 인터페이스는 `config.Protector`, 구현은 `internal/security`, 설치는 `secure-set`. 상세는 `docs/SFTPClient_SECURITY_ENC_DESIGN.md`.
 
 ## Current MVP
 

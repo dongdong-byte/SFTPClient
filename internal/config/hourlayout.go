@@ -7,10 +7,14 @@ import (
 
 // HourLayout 은 Hourly Category 의 물리 디렉터리 배치이다.
 //
-// 같은 Hourly 자료라도 기관마다 배치가 다르다.
+// 임시 우회다. 재귀 Scan 전까지 LocalPath 의 (HH) 와 선언을 맞추기 위해 둔다.
+// 기관이 늘 때마다 값을 추가하지 않는다 (특수 사례 폭증). GUIDELINES 9.3.
 //
-//	dir :  ...\Hourly\(DOY)\(HH)\   시각별 하위 디렉터리   (예: 서울시)
-//	flat:  ...\Hourly\(DOY)\        한 디렉터리에 24시간   (예: 지리원)
+//	dir :  ...\(DOY)\(HH)\   시각별 하위 디렉터리
+//	flat:  ...\(DOY)\        한 날짜 폴더에 24시간 파일
+//
+// 서울시 2026-09: 소스는 dir, 목적지 RemotePath 는 (HH) 없는 flat (/RNX2/)
+// 이 흔하다. HourLayout 은 LocalPath 만 보고, RemotePath 는 강제하지 않는다.
 //
 // 두 경우 모두 파일 자체는 Hourly 이며, 실제 시각은 파일명에 인코딩된다.
 //
@@ -30,7 +34,7 @@ import (
 // 순회 횟수를 결정한다. config validate 가 HourLayout 선언과 LocalPath 를
 // 먼저 교차 검증하므로 scan 이 config.HourLayout 에 직접 의존할 필요가 없다.
 //
-// HourLayout 의 역할은 "선언과 LocalPath 의 일치"를 시작 시 강제하는 것이다.
+// 역할은 선언과 LocalPath 의 일치를 시작 시 강제하는 것이다.
 // validate 가 아래를 교차 검증한다(checkHourToken). RemotePath 는 대상이 아니다.
 //
 //	dir  인데 LocalPath 에 (HH) 없음  → 거부
@@ -44,13 +48,14 @@ const (
 	// HourLayoutDir 은 시각별 하위 디렉터리 배치이다.
 	//
 	// LocalPath 에 (HH) 가 있으며 Scanner 가 이를 00~23으로 확장하여
-	// 날짜당 24개 디렉터리를 나열한다. RemotePath 의 (HH) 는 강제하지 않는다.
+	// 날짜당 24개 디렉터리를 나열한다. RemotePath 의 (HH) 는 강제하지 않는다
+	// (재귀 Scan 전 임시 규칙).
 	HourLayoutDir HourLayout = "dir"
 
 	// HourLayoutFlat 은 한 디렉터리에 24시간 파일이 함께 놓이는 배치이다.
 	//
 	// LocalPath 에 (HH) 가 없으며 Scanner 는 날짜 디렉터리를 한 번만 나열한다.
-	// RemotePath 의 (HH) 는 강제하지 않는다.
+	// RemotePath 의 (HH) 는 강제하지 않는다 (재귀 Scan 전 임시 규칙).
 	HourLayoutFlat HourLayout = "flat"
 )
 

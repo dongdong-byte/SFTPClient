@@ -290,6 +290,7 @@ type CategoryConfig struct {
 	// 실행 중에는 Parse 를 반복하지 않고 Expand 만 수행한다.
 	//
 	// Hourly Category 의 LocalPath (HH) 사용 여부는 HourLayout 이 결정한다.
+	// (재귀 Scan 전 임시. 값을 늘리지 않는다. GUIDELINES 9.3)
 	//
 	//	HourLayout=dir  → LocalPath 에 (HH) 필수
 	//	HourLayout=flat → LocalPath 에 (HH) 금지
@@ -306,6 +307,7 @@ type CategoryConfig struct {
 	RemotePath *pathpl.Template
 
 	// HourLayout 은 Hourly Category 의 디렉터리 배치이다 (dir | flat).
+	// 재귀 Scan 전까지의 임시 키다. 기관별 값을 추가하지 않는다.
 	//
 	// Hourly 섹션에서만 읽는다. load 가 생략 시 DefaultHourLayout(dir) 로
 	// 채운다. Daily Category 에서는 사용하지 않으며 zero-value("") 로 남는다.

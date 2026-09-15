@@ -397,9 +397,9 @@ func (c *Config) checkCategories(add addFunc) {
 // Hourly + RemotePath:
 //
 //	HourLayout 과 무관하게 (HH) 유무를 강제하지 않는다.
-//	소스는 시각 폴더(dir)인데 목적지는 한 폴더(flat)로 받는 조합이
-//	운영상 존재한다. 파일명 세션 문자(a~x)가 시각을 구분하므로
-//	flat 목적지에서 파일명이 충돌하지 않는다.
+//	서울시: 소스는 시각 폴더(dir), 목적지는 /RNX2/ 같은 flat.
+//	파일명 세션 문자(a~x)가 시각을 구분하므로 이름이 충돌하지 않는다.
+//	이 완화와 HourLayout 자체는 재귀 Scan 전의 임시 규칙이다.
 //
 // 선언과 LocalPath 가 어긋나도 파일시스템 오류 없이 일부 동작할 수 있기
 // 때문에 추측해서 보정하지 않고 시작 시 거부한다.
