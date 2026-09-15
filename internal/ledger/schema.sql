@@ -83,7 +83,7 @@
 --
 --  적용 범위
 --    [현재] common_ledger, put_ledger, schema_meta
---    [예정] download_ledger  (MVP 2 에서 추가. 설계안 9)
+--    [예정] download_ledger  (MVP3에서 추가. 설계안 9)
 -- =============================================================================
 
 
@@ -251,6 +251,15 @@ CREATE TABLE IF NOT EXISTS common_ledger (
     -- revision 이 올라가도 갱신하지 않는다. 최초 입고 시점을 보존한다.
 
     ingress_verified_at INTEGER NOT NULL,
+    -- Ingress Verification 을 통과한 시각 (Unix epoch 초, UTC). (7)
+    -- 위 state 주석대로 미통과 파일은 행이 생기지 않으므로 NULL 이 없다.
+    -- revision 이 올라가면 재검증 시각으로 갱신한다.
+    --
+    -- put_ledger 에도 transfer_verified_at 이 있다. 둘은 다른 검증이다.
+    --   ingress  — 파일이 정상적으로 완성되었는가 (설계안 7)
+    --   transfer — 목적지에 제대로 도착했는가   (설계안 8.1)
+    -- 양쪽을 같은 이름으로 두면 조인 조회에서 어느 쪽 시각인지 알 수 없어
+    -- 접두어로 구분한다.
 
     set_key     TEXT    NOT NULL DEFAULT ''
     CHECK (set_key = lower(set_key)),
@@ -276,16 +285,6 @@ CREATE TABLE IF NOT EXISTS common_ledger (
     -- lower CHECK 를 두는 이유는 file_name 과 같다 — 게이트가 이 값으로
     -- 그룹핑하므로 대소문자 누출은 세트 분열이라는 조용한 오류가 된다.
     -- 코드 규율에만 맡기지 않는다.
-
-    -- Ingress Verification 을 통과한 시각 (Unix epoch 초, UTC). (7)
-    -- 위 state 주석대로 미통과 파일은 행이 생기지 않으므로 NULL 이 없다.
-    -- revision 이 올라가면 재검증 시각으로 갱신한다.
-    --
-    -- put_ledger 에도 transfer_verified_at 이 있다. 둘은 다른 검증이다.
-    --   ingress  — 파일이 정상적으로 완성되었는가 (설계안 7)
-    --   transfer — 목적지에 제대로 도착했는가   (설계안 8.1)
-    -- 양쪽을 같은 이름으로 두면 조인 조회에서 어느 쪽 시각인지 알 수 없어
-    -- 접두어로 구분한다.
 
     PRIMARY KEY (category, file_name)
     -- RINEX3/RINEX4 동일 file_name 공존을 허용하면서
@@ -338,8 +337,8 @@ CREATE TABLE IF NOT EXISTS common_ledger (
 --  파생 효과
 --    v4 에서는 FAILED 행이 Scan 범위 밖으로 밀려나도 영구히 후보로 남았으나,
 --    v5 에서는 자연히 만료된다. Deep Scan 범위(기본 7일)를 벗어나면 후보에서
---    빠지고, 필요하면 Recovery Scan 으로 명시적으로 부른다.
---    자동 재시도와 수동 복구의 경계가 명확해진다.
+--    빠진다. 기간·대상을 명시하는 향후 resend 가 수동 재전송을 담당한다.
+--    자동 재시도와 운영자 지정 재전송의 경계가 명확해진다.
 -- -----------------------------------------------------------------------------
 
 -- category 별 집계·조회 경로.
@@ -412,7 +411,7 @@ CREATE TABLE IF NOT EXISTS put_ledger (
     -- 범위 밖이면(중단 후 ScanDays 를 넘겨 방치된 경우) 자동으로는
     -- 회수되지 않는다. 이는 결함이 아니라 v5 의 의도된 성질이다.
     -- FAILED 가 영구히 후보로 남지 않고 자연히 만료되도록 한 것이며,
-    -- 그런 항목은 Recovery Scan 으로 명시적으로 부른다.
+    -- 그런 항목의 수동 재전송은 향후 resend 가 담당한다.
     -- (SCAN_DESIGN_DECISIONS 6절 파생 효과)
     --
     -- 전송 함수가 오류 없이 끝났다는 사실만으로 VERIFIED 로 두지 않는다.
@@ -476,7 +475,8 @@ CREATE TABLE IF NOT EXISTS put_ledger (
     --   그 파일은 다음 Scan 에서 신규로 판정되어 재전송된다.
     --   로컬 보존이 10년이므로 이 조건이 깨지면 피해가 크다.
     --   config 검증에서 LedgerRetentionDays > ScanDays 를 강제한다.
-    --   또한 이 값이 Recovery Scan 의 실질 상한이 된다.
+    --   Retention 으로 지운 기간까지 자동·재귀 탐색하면 로컬 파일이 신규로
+    --   판정될 수 있으므로 탐색 날짜 경계와 함께 검증해야 한다.
     --
     -- 한계: FK 는 (category, file_name) 만 참조하므로 revision 정합성은
     -- 강제되지 않는다. 부모가 revision=1 인데 자식에 revision=99 를
@@ -493,10 +493,11 @@ CREATE INDEX IF NOT EXISTS idx_put_status
 
 
 -- -----------------------------------------------------------------------------
---  Ledger Retention Cleanup 정책 (v5)
+--  Ledger Retention Cleanup 정책 (v5 설계 확정, 2026-09-15 현재 미구현)
 --
 --  RetentionDays 는 애플리케이션 설정값이며 SQLite 가 자동으로 행을 지우지 않는다.
---  하루 1회 Deep Scan 완료 후 애플리케이션에서 다음 기준으로 정리한다.
+--  현재 구현은 설정 로드와 RetentionDays > ScanDays 검증까지다.
+--  MVP2에서 Deep Scan 성공 후 다음 기준으로 정리하도록 구현·테스트한다.
 --
 --      DELETE FROM common_ledger
 --       WHERE ingress_verified_at < ?;   -- now - RetentionDays
@@ -507,7 +508,7 @@ CREATE INDEX IF NOT EXISTS idx_put_status
 --    오래전에 처음 발견된 파일이 최근 다시 갱신되어 revision 이 증가했다면
 --    최신 Ingress 검증 시각을 보존해야 하기 때문이다.
 --
---  정리 순서:
+--  구현할 정리 순서:
 --    시작 시 IN_PROGRESS 복구 → Scan/전송 → Deep Scan 실행일이면 Retention Cleanup.
 --
 --  VACUUM 은 정기 실행하지 않는다.
@@ -550,6 +551,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 --                   조용히 잘못된 행이 생길 수 있으므로 양방향 모두 막는다.
 --
 --   mvp_stage       검증하지 않는다. 로그 태그 용도이다.
+--                   현재 값 MVP1_PUT 은 DB 최초 생성 단계의 역사적 표기이며
+--                   현재 로드맵이나 기능 완료 상태를 판정하는 값이 아니다.
 --
 -- 아래 INSERT 는 OR IGNORE 이므로 기존 DB 의 값을 덮어쓰지 않는다.
 -- 즉 기존 DB 에 이 스크립트를 적용해도 schema_version 은 원래 값으로 남는다.
@@ -592,7 +595,8 @@ INSERT OR IGNORE INTO schema_meta (key, value, updated_at) VALUES
 --    완료 시 [LEDGER] 로그로 행 수·백필 수·유보 수를 남긴다.
 --
 --  set_key·kind 조회 인덱스(예: (category, set_key))는 지금 두지 않는다.
---  일일 리포트가 실제로 그 조회를 요구할 때 함께 추가한다. (선제 구현 금지)
+--  현재 세트 게이트는 메모리에서 판정하므로 필요하지 않다. 구체적인 조회
+--  요구와 측정된 병목이 생길 때만 추가한다. (선제 구현 금지)
 --
 --  주의:
 --    CREATE TABLE IF NOT EXISTS 는 기존 테이블에 컬럼을 추가하지 않는다.

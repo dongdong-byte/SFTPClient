@@ -3,6 +3,9 @@
 > 작성일 2026-08-28 · 대상 `internal/scan`, `internal/config`, `internal/verify`
 > 개정 2026-08-30 — `[GENERAL] LockStaleSeconds` 확정 (Seconds 채택, Minutes 기각). 14절.
 > 개정 2026-08-30 — main lock 배선 완료. PUT 조립·Retry·회수 요약은 15절 (원본 GUIDELINES).
+> 개정 2026-09-15 — MVP2 범위와 구현 상태 갱신. 수동 `recovery`를 `resend`로 분리하고,
+> 서울시 긴급 대응용 `HourLayout`을 범위 제한 재귀 탐색으로 대체하는 방향을 확정했다.
+> DOWNLOAD는 MVP3으로 연기했으며 Ledger Retention Cleanup을 MVP2에 추가했다.
 >
 > 이 문서는 `SFTPClient_PROJECT_GUIDELINES.md` 및 `SFTPClient_LEDGER_CONCEPT.md` 의
 > 보조 문서다. 스캔 범위·주기·복구 전략을 정하는 과정에서 제기된 문제와
@@ -14,7 +17,7 @@
 
 ---
 
-## 0. 요약 — 확정값
+## 0. 요약 — 2026-09-15 현재 기준
 
 ```ini
 [GENERAL]
@@ -29,29 +32,48 @@ UseDirMtimeSkip = false
 GraceSeconds    = 60
 
 [LEDGER]
-RetentionDays   = 60     ; Recovery Scan 의 실질 상한
+RetentionDays   = 60     ; Ledger 재발견 안전 기준. resend 의미론은 구현 전 결정 필요
+
+[LOG]
+RetentionDays   = 30     ; 로그 보존기간. Ledger 60일과 별개
 ```
 
-**경로 템플릿 원칙** — Hourly 는 `LocalPath` / `RemotePath` 모두 시각까지 적는다.
+**현재 경로 방향** — 로컬은 설정 루트 아래를 범위 제한 재귀 탐색하고,
+발견한 파일은 RINEX 버전별 고정 평면 `RemotePath`로 전송한다.
+로컬 하위 디렉터리 구조를 원격에 복제하거나 파일 날짜·시각으로 원격 경로를
+계산하지 않는다.
 
 ```
-Hourly   E:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\
-Daily    E:\RINEX-V3-D\(YYYY)\(DOY)\
+RINEX2 → D:\incoming\RNX2\
+RINEX3 → D:\incoming\RNX3\
 ```
 
-config 검증에서 Hourly 에 `(HH)` 가 없으면 거부하고,
-Daily 에 `(HH)` 가 있으면 거부한다. (9절)
+현재 코드의 `HourLayout=dir/flat`과 `(HH)` 00~23 계산은 서울시 평면 Hourly
+경로를 급히 지원하기 위해 추가한 과도기 구현이다. MVP2에서 제거한다.
+재귀 시작점·최대 깊이·날짜 범위 적용·권한 오류·symbolic link/junction 정책은
+Linux OS 버전과 실제 경로를 받은 뒤 확정하며, 이 문서에서 먼저 추측하지 않는다.
 
 ```
-RINEXClient.exe recovery --from 2026-06-01 --to 2026-06-15 --dry-run
-RINEXClient.exe recovery --from 2026-06-01 --to 2026-06-15
+RINEXClient.exe resend --from 2026-06-01 --to 2026-06-15 --dry-run  ; 잠정 예시
+RINEXClient.exe resend --from 2026-06-01 --to 2026-06-15            ; 잠정 예시
 RINEXClient.exe --dry-run                       ; 전송 없이 규모 보고
 RINEXClient.exe seed --days 7                   ; 원격 나열 기준 전환 시딩 (8절)
 ```
 
+`resend`라는 명령 이름과 세트 게이트 우회는 확정했지만 세부 인자는 아직 설계 전이다.
+위 `--from`/`--to`/`--dry-run`은 기존 제안을 옮긴 잠정 예시이지 CLI 계약이 아니다.
+
+용어를 다음처럼 분리한다.
+
+- `Recover`: 시작 시 `IN_PROGRESS`를 `FAILED`로 회수하는 자동 크래시 복구
+- `resend`: 운영자가 기간·대상을 지정하는 수동 재전송
+- Deep Scan: 늦게 유입된 파일을 최근 `ScanDays` 범위에서 다시 찾는 자동 탐색
+
 **추가된 DB 없음. 추가된 테이블 없음.**
 
-**스키마 변경 1건** — `common_ledger.local_path` **삭제** (→ `schema_v5.sql`). 6절 참조.
+**현재 스키마 원본** — `internal/ledger/schema.sql` (설계 개정 v8,
+`schema_meta.schema_version = 5`). `common_ledger.local_path`는 과거 v5 설계에서
+삭제되었다. 6절 참조.
 
 ---
 
@@ -93,7 +115,9 @@ RINEXClient.exe seed --days 7                   ; 원격 나열 기준 전환 �
 신규 관측소는 첫날 하루 지연이 생기나, 첫날은 비교 기준 자체가 없으므로 문제가 아니다.
 
 전송 파이프라인이 아니라 **조회 명령**(설계안 9.2 `db status` 계열)으로 분리하며,
-MVP 2 이후로 미룬다. 이름도 "누락"이 아니라 **결측 리포트**로 구분한다.
+현재 구현 범위에서 제외한다. 특히 세트 보류 리포트는 대표 확인 결과 보안 취약점
+우려가 있어 구현하지 않는다. Scan 요약과 오류 로그는 전송 관측에 필요하므로 유지한다.
+이름도 "누락"이 아니라 **결측 리포트**로 구분한다.
 
 ### 보강 — 크롤링 매트릭스와의 대조 (2026-08-28 추가)
 
@@ -189,6 +213,10 @@ RINEXClient.exe 하나 → config.ini 의 Mode 로 역할 결정
 DOWNLOAD 관련 구조물(`origin` 컬럼, `RepostDownloaded`, `download_ledger`)은
 **유지한다.** 빼는 비용이 두는 비용보다 크다. 행이 안 생기면 용량도 쓰지 않는다.
 
+**2026-09-15 일정 결정:** DOWNLOAD와 `download_ledger` 구현은 MVP3으로 연기한다.
+MVP2는 세트 원자성, `resend`, 경로 범용화, Linux 배포·테스트,
+Retention Cleanup을 다룬다. 이 절의 DOWNLOAD 분석은 향후 설계 근거로 보존한다.
+
 ---
 
 ## 3. 문제 — 0KB 파일은 실제로 발생하는가
@@ -249,7 +277,7 @@ type WriteDetector interface {
 
 `security` 패키지의 DPAPI 처리와 같은 빌드태그 구조를 쓴다.
 
-> **미확인** — Linux 는 강제 잠금이 없어 이 수단을 쓸 수 없다 (MVP 5).
+> **미확인** — Linux 는 강제 잠금이 없어 이 수단을 쓸 수 없다 (MVP2 Linux 단계).
 > SAN/SMB 뒤에 있을 때의 동작도 실측이 필요하다.
 
 ### 결정 3 — revision 의 근거가 더 강해졌다
@@ -350,9 +378,9 @@ type WriteDetector interface {
   Deep Scan      최근 7일   하루 1회  늦게 유입된 일반 누락 회수
 
 [수동 · 장애복구]
-  Recovery Scan  기간 고정 안 함
-                 운영자가 장애 기간 지정 → 해당 구간 전체 재Scan
-                 → Ledger 가 신규/변경만 판별 → 필요한 것만 자동 PUT
+  resend         기간 고정 안 함
+                 운영자가 장애 기간·대상 지정 → 해당 구간을 재탐색·재전송
+                 → 자동 파이프라인의 세트 게이트는 우회
 ```
 
 **상한을 정하려 하지 않고, "그건 사람이 아는 일"이라고 인정한 뒤 입력받는 구조다.**
@@ -366,14 +394,15 @@ type WriteDetector interface {
 | 장부 보존 | 120일 (440MB) | **60일 (220MB)** |
 | 30일 초과 백필 | 못 잡음 | **잡음** |
 
-`scan` 패키지 입장에서 **Hot / Deep / Recovery 는 같은 코드에 날짜 범위만 다르게 넣는 것**이다.
-분기가 늘지 않는다.
+과거에는 `scan` 패키지에 Hot / Deep / Recovery 날짜 범위만 다르게 넣는 구조를
+상정했다. 현재는 수동 재전송을 `resend` 명령으로 분리했으며, 정확한 Scan 재사용
+경계와 Ledger 처리 방식은 `resend` 설계 시 확정한다.
 
 ### 부수 결정
 
 - Deep Scan 이 도는 시각에는 Hot Scan 을 건너뛴다 (7일이 2일을 포함)
-- Recovery 는 `--dry-run` 을 먼저 돌리도록 안내한다. 날짜 오타 방지
-- Recovery 실행 중에는 정기 실행과 `lock` 을 공유한다.
+- `resend` 는 dry-run을 지원하는 방향으로 설계한다. 날짜 오타 방지
+- `resend` 실행 중에는 정기 실행과 `lock` 을 공유한다.
   오래 걸리는 명령이라 겹치면 같은 파일을 두 프로세스가 전송한다.
   stale 문턱은 `[GENERAL] LockStaleSeconds` (14절).
 
@@ -389,7 +418,7 @@ type WriteDetector interface {
 
 ---
 
-## 5. 문제 — 장부 보존기간이 Recovery 의 상한이다
+## 5. 검토 — 장부 보존기간과 `resend`의 관계
 
 ### 제기된 의문
 
@@ -401,14 +430,17 @@ type WriteDetector interface {
 디스크에 3년치가 있고 장부가 30일치만 들고 있으면:
 
 ```
-recovery --from 2026-02-01 --to 2026-02-28
+resend --from 2026-02-01 --to 2026-02-28   # 잠정 예시
   → 그 구간 파일이 장부에 없음 → 전부 "신규" 판정
   → 2월 한 달치 전량 재전송        ← 이미 다 보낸 파일들
 ```
 
-### 결정
+### 당시 설계안 — 최종 의미론 결정 필요
 
-**`LedgerRetentionDays` 가 Recovery Scan 의 실질 상한이다.**
+`resend`가 일반 Scan처럼 Ledger 판정을 재사용하는 방식이라면
+**`LedgerRetentionDays`가 안전 범위의 실질 상한**이 된다. 반대로 지정 범위 전체를
+강제로 다시 보내는 명령이라면 Ledger 보존기간은 후보 판정의 상한이 아니다.
+두 방식 중 무엇을 채택할지는 MVP2 `resend` 구현 전에 결정한다.
 
 값은 **60일**로 확정한다. 근거는 운영 경험이다.
 
@@ -429,10 +461,10 @@ recovery --from 2026-02-01 --to 2026-02-28
 재사용할 뿐 OS 에 반환하지 않는다. 220MB 에서 평형을 이룬다.
 줄이려면 `VACUUM` 이 필요하고 그동안 DB 전체가 잠긴다.
 
-### 안전장치 — 명령이 스스로 막는다
+### 검토한 안전장치 — 미확정
 
 ```
-$ RINEXClient.exe recovery --from 2026-02-01
+$ RINEXClient.exe resend --from 2026-02-01   # 잠정 예시
 
 거부: 지정 구간이 장부 보존범위(60일) 밖입니다.
       장부 최초 기록: 2026-06-29
@@ -441,6 +473,7 @@ $ RINEXClient.exe recovery --from 2026-02-01
 ```
 
 되돌릴 수 없는 명령이므로 문턱을 둔다.
+정확한 플래그와 `--force` 제공 여부는 아직 확정하지 않았으며 `resend` 설계에서 결정한다.
 
 ### config 검증에 추가할 항목
 
@@ -454,6 +487,30 @@ LedgerRetentionDays > ScanDays     ; 깨지면 시작 시 거부
 > **미확인** — 3형태(`.rnx` / `.crx` / `.crx.gz`) 유입이 확인되면
 > 60일이어도 약 670MB 가 된다. `--dry-run` 결과로 확인 후 재검토한다.
 
+### 2026-09-15 구현 상태 — 설정만 있고 실제 삭제는 없다
+
+`[LEDGER] RetentionDays = 60`과 `RetentionDays > ScanDays` 시작 검증은 구현됐다.
+그러나 `cmd/rinexclient/main.go`에는 Deep Scan 뒤 Cleanup이 TODO로 남아 있어,
+현재 실행파일은 60일이 지나도 `common_ledger`와 연결된 `put_ledger` 행을
+자동 삭제하지 않는다.
+
+`[LOG] RetentionDays = 30`은 로그 보존 설정이며 DB 행 삭제와 무관하다.
+현재 저장소에는 로그 보존 정리를 수행하는 `internal/logging` 구현도 없다.
+이 절의 DB 검증 대상은 `[LEDGER] RetentionDays = 60`이다.
+
+MVP2에서 다음을 구현·검증한다.
+
+- 성공한 Deep Scan 뒤 `ingress_verified_at < now - RetentionDays`인 common 행 삭제
+- FK `ON DELETE CASCADE`에 의한 관련 put 행 삭제
+- 정확한 60일 경계의 포함/제외와 최근 행 보존
+- Cleanup 실패 처리
+- SQLite free page 재사용 유지, 정기 `VACUUM` 미실행
+- 재귀 Scan이 보존기간 밖의 오래된 파일을 신규로 되살려 재전송하지 않는지 검증
+
+마지막 항목은 경로 범용화의 필수 안전조건이다. 로컬에 10년치 파일이 남아 있으므로
+재귀 탐색이 무제한이면 Retention으로 지운 과거 행이 다음 Scan에서 신규가 될 수 있다.
+재귀 방식은 반드시 Hot/Deep의 날짜 범위와 함께 설계한다.
+
 ---
 
 ## 6. 문제 — 스캔 성능이 저하되지 않는가
@@ -463,7 +520,7 @@ LedgerRetentionDays > ScanDays     ; 깨지면 시작 시 거부
 지리원 120개 관측소 × 24시간 × 7일 × 4 Category 를 매번 스캔하면
 성능 저하가 일어나지 않는가. 팀장도 같은 지적을 했다.
 
-### 확인된 사실 1 — 상위 폴더를 walk 하지 않는다
+### 과거 결정 1 — 상위 폴더를 walk 하지 않는다 (2026-09-15 폐기)
 
 ```
 ❌ walk 방식        E:\RINEX-V3-H\ 부터 하위 전부 재귀 → 폴더 수만 개
@@ -473,6 +530,17 @@ LedgerRetentionDays > ScanDays     ; 깨지면 시작 시 거부
 `pathpl` 이 존재하는 이유가 이것이다.
 **보관기간이 7일이든 3년이든 스캔 비용이 늘지 않는다.**
 지적된 "상위 폴더 스캔 성능" 문제는 이미 설계에서 회피되어 있다.
+
+이 결정은 모든 기관의 날짜·시간 디렉터리 모양을 템플릿으로 정확히 표현할 수
+있다는 전제에 의존했다. 서울시의 `(HH)` 없는 평면 Hourly 경로 때문에
+`HourLayout`을 긴급 추가했고, 2026-09-15 지리원에도 `(HH)` 폴더가 없음을
+재확인했다. 다음 Linux 설치처의 경로도 다를 가능성이 있어 이 전제는 더 이상
+유지하지 않는다.
+
+**현재 방향:** 설정한 로컬 루트를 벗어나지 않는 범위 제한 재귀 탐색으로 전환한다.
+무제한 전체 디스크 walk를 채택한 것은 아니다. 재귀 시작점·깊이·날짜 범위·권한
+오류·symbolic link/junction 정책은 Linux OS 버전과 실제 경로를 받은 뒤 확정한다.
+Scan은 계속 순차 실행하며, 한 번에 전체 파일을 메모리에 적재하지 않는다.
 
 ### 확인된 사실 2 — 관측소별 디렉터리가 없다
 
@@ -488,7 +556,7 @@ LedgerRetentionDays > ScanDays     ; 깨지면 시작 시 거부
 
 | | 위험 | 대응 |
 |---|---|---|
-| 파일당 `os.Stat` | Linux/SMB 에서 파일당 왕복 | Windows 는 `ReadDir` 이 크기·시각을 함께 반환하므로 `Info()` 가 무료. MVP 5 에서 실측 |
+| 파일당 `os.Stat` | Linux/SMB 에서 파일당 왕복 | Windows 는 `ReadDir` 이 크기·시각을 함께 반환하므로 `Info()` 가 무료. MVP2 Linux 단계에서 실측 |
 | 파일당 DB 조회 | 4.2만 번 `SELECT` | **디렉터리 단위로 일괄 조회 후 메모리 대조** |
 
 ### 기각 — `idx_common_local_path` 추가안
@@ -510,7 +578,7 @@ LedgerRetentionDays > ScanDays     ; 깨지면 시작 시 거부
 
 ### 파생 결과 — 후보 선정이 DB 주도에서 스캔 주도로 바뀐다
 
-`schema_v4.sql` 191행의 후보 조회는 `local_path` 를 SELECT 하여
+당시 `schema_v4.sql` 초안의 후보 조회는 `local_path` 를 SELECT 하여
 "무엇을 어디서 보낼지"를 DB 가 지시하는 구조였다. 컬럼을 삭제하면 성립하지 않는다.
 
 ```
@@ -531,7 +599,7 @@ SELECT file_name, revision, size, mtime
 
 부수 효과 — DB 주도에서는 `FAILED` 행이 스캔 범위 밖으로 밀려나도
 영구히 후보로 남았으나, 스캔 주도에서는 **자연히 만료된다.**
-7일이 지나면 후보에서 빠지고, 필요하면 Recovery Scan 으로 부른다.
+7일이 지나면 자동 후보에서 빠지고, 필요하면 운영자가 `resend`로 명시한다.
 자동 재시도와 수동 복구의 경계가 명확해진다.
 
 **`put_ledger.remote_path` 는 유지한다.** 그것은 "어디로 보냈는가"라는 이력이며,
@@ -541,7 +609,7 @@ SELECT file_name, revision, size, mtime
 
 | 대상 | 작업 |
 |---|---|
-| `schema_v5.sql` | `local_path` 컬럼 삭제, 191행 후보 조회 주석 재작성 |
+| `internal/ledger/schema.sql` | `local_path` 컬럼 삭제와 후보 조회 주석 반영 완료 |
 | `internal/ledger/common.go` | UPSERT 에서 `local_path` 제거 (작성 완료분 수정) |
 | `SFTPClient_LEDGER_CONCEPT.md` | 후보 선정 서술 갱신 |
 
@@ -564,7 +632,7 @@ SELECT file_name, revision, size, mtime
 > `os.ReadDir` 이 디렉터리 열거 API 를 쓰고, 이 API 가 파일명과 함께
 > 크기·수정시각을 한 번에 반환하므로 `DirEntry.Info()` 가 추가 호출을 하지 않는다.
 > SMB 여도 디렉터리당 왕복 1~2회지 파일당 왕복이 아니다.
-> 파일당 `lstat` 이 발생하는 것은 Linux 다 (MVP 5 항목).
+> 파일당 `lstat` 이 발생하는 것은 Linux 다 (MVP2 Linux 항목).
 
 ---
 
@@ -695,9 +763,10 @@ func (l *CategoryLedger) Candidates(ctx context.Context) ([]Candidate, error) {
 
 - `revision` 이 오르지 않는다 (파일이 안 바뀌므로)
 - 후보 조회에서 영구히 제외된다
-- Recovery Scan 으로도 부를 수 없다 (장부상 이미 성공이므로)
+- 자동 Scan과 Deep Scan으로는 다시 부를 수 없다 (장부상 이미 성공이므로)
 
-**영구 미전송이 된다.** 장부를 도입한 목적 자체를 무너뜨리는 동작이다.
+외부에서 누락을 발견해 명시적으로 `resend`하지 않는 한 영구 미전송이 된다.
+장부를 도입한 목적 자체를 무너뜨리는 동작이다.
 
 ### 채택 — 원격 나열 기준 `seed`
 
@@ -829,13 +898,30 @@ DOWNLOAD 재사용은 부수 효과다.
 > 원격(SFTP) 구현에서 취소·타임아웃 전파가 필요하고, 로컬 구현은 무시하면 된다.
 > 시그니처에서 ctx 를 빼면 나중에 원격 구현이 들어올 때 인터페이스가 깨진다.
 
-### Hourly 의 `(HH)` — **A 확정 (2026-08-28)**
+### Hourly의 `(HH)` — 과도기 결정, MVP2에서 교체 (2026-09-15)
 
-한때 이 문서와 `pathpl` 코드가 서로 다른 방침을 담고 있었다.
+**현재 결론:** `HourLayout=dir/flat`은 서울시의 `(HH)` 없는 평면 Hourly
+경로를 급히 지원하기 위해 2026-09-04 추가한 과도기 설정이다. 근본 해결은
+`HourLayout`과 날짜당 00~23 계산을 제거하고 설정 루트 아래를 범위 제한 재귀
+탐색하는 것이다.
+
+원격 전송 경로는 로컬 폴더 구조와 분리한다. 로컬 하위 구조를 복제하지 않고
+RINEX 버전별 고정 평면 경로(운영 예: `D:\incoming\RNX2`,
+`D:\incoming\RNX3`)로 전송하므로 날짜·시각을 이용해 원격 경로를 계산할
+필요가 없다.
+
+재귀 탐색의 상세 경계는 아직 확정하지 않는다. 대표가 다음 Linux 설치처에
+OS 버전과 실제 경로를 확인한 뒤 재귀 시작점·최대 깊이·날짜 범위 적용 방식·
+권한 오류·symbolic link/junction 정책을 정한다.
+
+아래는 2026-08-28 당시 정확한 템플릿 전개를 선택했던 역사 기록이다.
+
+당시 이 문서와 `pathpl` 코드가 서로 다른 방침을 담고 있었다.
 `pathpl.HasToken` 주석은 "Hourly 경로에 `(HH)` 가 빠지면 거부하라"고 적었는데,
-이 절은 "`(HH)` 를 계산하지 않는다"고 적혀 있었다. **코드 쪽으로 통일한다.**
+이 절은 "`(HH)` 를 계산하지 않는다"고 적혀 있었다. 당시에는 코드 쪽으로
+통일했지만, 2026-09-15 현재 그 결정은 폐기하고 제한 재귀 탐색으로 교체한다.
 
-**config.ini 의 Hourly `LocalPath` / `RemotePath` 는 시각까지 적는다.**
+**당시 결정은 config.ini의 Hourly `LocalPath` / `RemotePath`에 시각까지 적는 것이었다.**
 
 ```
 E:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\
@@ -843,21 +929,20 @@ E:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\
 
 **근거 — 현장 확인 (운영자)**
 
-> 모든 관측소가 시각까지 디렉터리를 둔다.
-> 지리원 화면에 `(HH)` 계층이 안 보였던 것은 그 화면이 Daily 경로였기 때문이며,
-> 지리원도 시각 폴더에는 `(HH)` 가 있다.
+> 당시에는 모든 관측소가 시각까지 디렉터리를 두며 지리원도 `(HH)` 폴더가
+> 있다고 판단했다. 2026-09-15 재확인 결과 지리원에는 `(HH)` 폴더가 없으므로
+> 이 전제는 폐기한다.
 
-이로써 12절의 "Hourly 경로에 `(HH)` 계층이 없다" 가설이 두 번째로 기각된다.
-같은 사진에서 같은 오독을 반복했으므로 기록해 둔다.
+12절에서 해당 가설을 기각했던 판단 역시 2026-09-15에 번복한다.
+현장 화면 일부만으로 전체 디렉터리 구조를 일반화하면 안 된다는 사례로 남긴다.
 
-**따라서 scan 은 시각 24개를 만들어 각각 `ReadDir` 한다.**
+**과도기 구현에서는 scan이 시각 24개를 만들어 각각 `ReadDir`한다.**
 하위 폴더를 나열해 `^\d{2}$` 로 거르는 방식은 채택하지 않는다.
 
 **부수 근거**
 
-- **RemotePath 는 어차피 `(HH)` 가 필요하다.** 03시 파일을 원격 03 디렉터리에
-  놓아야 하기 때문이다. LocalPath 만 날짜까지 두면 같은 `pathpl` 을 쓰면서
-  한쪽은 "나열할 접두사", 다른 쪽은 "완성된 경로"가 되어 의미가 갈린다.
+- **당시에는 RemotePath에도 `(HH)`가 필요하다고 가정했다.** 현재 운영 목적지는
+  RINEX 버전별 고정 평면 경로이므로 이 근거는 폐기한다.
 - **나열 방식은 필터 규칙이 하나 더 필요하다.** 현장 화면에 `00_backup` 같은
   항목이 섞여 있었으므로 예외 관리가 늘어난다.
 - `HasToken` 은 이미 구현·테스트가 끝난 검증 장치다. 나열 방식이면 쓸 곳이 없다.
@@ -871,7 +956,7 @@ E:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\
 
 1시간 주기에서 10초는 감당된다.
 
-**`pathpl` 은 수정하지 않는다.** 이 결정으로 확정되는 것은 두 곳이다.
+**당시에는 `pathpl`을 수정하지 않고** 다음 두 곳을 확정했다.
 
 | | 내용 |
 |---|---|
@@ -886,8 +971,7 @@ E:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\
 > 이것을 오류로 취급하면 정상 운영에서 매시간 수백 건의 오류 로그가 쌓여
 > 진짜 오류가 묻힌다.
 
-> **GUIDELINES 9.3 갱신 필요** — 그 문서에 나열 방침이 적혀 있다.
-> 이 결정에 맞춰 고친다.
+> `SFTPClient_PROJECT_GUIDELINES.md` 9.3은 2026-09-15 현재 결론으로 갱신했다.
 
 ### 반환 형태 — 콜백/이터레이터
 
@@ -909,7 +993,7 @@ E:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\
 GUIDELINES 의 **"Scan 은 병렬화 대상이 아니다. 항상 순차로 수행한다"**를 유지한다.
 전송은 MVP 1 부터 병렬, 스캔은 순차.
 
-> **재검토 지점 — DOWNLOAD 원격 스캔 (MVP 2).**
+> **재검토 지점 — DOWNLOAD 원격 스캔 (MVP3).**
 > SFTP 는 왕복 지연이 지배하므로 디렉터리 나열 336회가 RTT 30ms 만 되어도 10초다.
 > 거기서는 병렬화가 실제 답이며, `pipeline` 의 Global Limiter 와 함께 다룬다.
 > 계측 로그가 5초를 넘으면 그때 재론한다.
@@ -1024,7 +1108,7 @@ GUIDELINES 의 **"Scan 은 병렬화 대상이 아니다. 항상 순차로 수�
 > 크롤러가 다른 홉을 보고 있을 가능성이 있다.
 > **이 파일을 정답지로 삼을 수 없다는 근거이기도 하다.**
 
-### 4. 경로 템플릿 정확성 — 검증 불필요
+### 4. 경로 템플릿 정확성 — 2026-09-15 재검토
 
 설치자가 본인 또는 자사 직원으로 한정된다. **휴먼에러를 가정하는 것은 과설계다.**
 경로 오타 검증에 코드를 쓰지 않는다.
@@ -1032,6 +1116,12 @@ GUIDELINES 의 **"Scan 은 병렬화 대상이 아니다. 항상 순차로 수�
 단, `files=0` 경고는 유지한다. 이는 사람의 실수가 아니라
 **환경 이상(마운트 해제, 권한 변경, 드라이브 미인식)**을 잡는다.
 로그 한 줄이므로 비용이 없다.
+
+위 결론은 "정확한 경로 모양을 이미 안다"는 전제에서 나온 것이다. 이후 서울시
+평면 Hourly와 지리원의 `(HH)` 없는 경로가 확인되었고, Linux 설치처의 구조도
+확인 전이다. 따라서 개별 템플릿 오타를 추측해 교정하지 않는 원칙은 유지하되,
+템플릿이 모든 기관 구조를 표현할 수 있다는 전제는 폐기한다. MVP2에서는 설정
+루트 아래의 범위 제한 재귀 탐색으로 구조 차이를 흡수한다.
 
 ### 5. 다른 프로그램이 전송 중인가 — 전환기 한정 위험
 
@@ -1090,7 +1180,7 @@ X:  →  \\192.168.103.100\gnss-prod-nas\data
 
 Windows 에서는 `ReadDir` 이 크기·시각을 함께 반환하므로 디렉터리당 왕복이
 1~2회이고 파일당 왕복이 아니다. 현 단계에서 문제되지 않는다.
-**Linux 확장(MVP 5) 시에는 파일당 `lstat` 이 발생하므로 재검토가 필요하며,
+**Linux 확장(MVP2) 시에는 파일당 `lstat`이 발생하므로 재검토가 필요하며,
 계측 로그에 이 구간을 분리해 두는 것이 그때 근거가 된다.**
 
 > 대표 요구는 **어떠한 환경에서도 동작하는 것**이다.
@@ -1116,7 +1206,7 @@ Windows 에서는 `ReadDir` 이 크기·시각을 함께 반환하므로 디렉�
 ```
 
 DOWNLOAD 는 "타 기관 소유라 설치가 불가한 서버"가 나타날 때를 위한 빈 칸이다.
-구조물은 유지하되 우선순위는 확정적으로 뒤다.
+구조물은 유지하되 구현은 MVP3으로 연기한다.
 
 ### 9. 수신기 60분 설정 vs 3~4시간 지연
 
@@ -1137,9 +1227,9 @@ DOWNLOAD 는 "타 기관 소유라 설치가 불가한 서버"가 나타날 때�
 |---|---|
 | `SFTPClient_LEDGER_CONCEPT.md` 4.4 | Grace Time 무용론 철회. 전송 구조에서는 작동함 |
 | `SFTPClient_PROJECT_GUIDELINES.md` 4절 | `scan` 패키지 위치 확정 (미정 → `internal/scan`) |
-| `SFTPClient_PROJECT_GUIDELINES.md` 9.8 | Deep Scan 7일 + Recovery Scan 3갈래 구조 반영 |
-| `config.example.ini` | `ScanDays` 30→7, `RetentionDays` 60, Recovery 관련 주석 |
-| **`schema_v5.sql`** | **`local_path` 컬럼 삭제, 후보 조회 주석 재작성 (확정)** |
+| `SFTPClient_PROJECT_GUIDELINES.md` 9.8 | Deep Scan 7일 + `resend` 분리 구조 반영 |
+| `config.example.ini` | `ScanDays` 7, `RetentionDays` 60, `resend`·재귀 Scan 정책 반영 필요 |
+| **`internal/ledger/schema.sql`** | **`local_path` 삭제 반영 완료. 현재 설계 v8 / DB schema_version 5** |
 | **`internal/ledger/common.go`** | **UPSERT 에서 `local_path` 제거 (작성 완료분 수정)** |
 | `SFTPClient_LEDGER_CONCEPT.md` | 후보 선정을 스캔 주도로 서술 변경 |
 | ~~`LockStaleSeconds` config~~ | **2026-08-30 반영 완료** — GUIDELINES·example.ini·config 5곳·본 문서 14절 |
@@ -1154,7 +1244,7 @@ DOWNLOAD 는 "타 기관 소유라 설치가 불가한 서버"가 나타날 때�
 
 | 제기한 가설 | 근거로 삼은 관측 | 판정 |
 |---|---|---|
-| Hourly 경로에 `(HH)` 계층이 없다 | `D:\RINEX\2026\Hourly\(DOY)\` 까지만 보임 | **기각.** 그 화면은 Daily 경로였다. 모든 관측소가 시각까지 디렉터리를 두며 지리원도 시각 폴더에는 `(HH)` 가 있다 (9절 A 확정) |
+| Hourly 경로에 `(HH)` 계층이 없다 | `D:\RINEX\2026\Hourly\(DOY)\` 까지만 보임 | **2026-09-15 번복.** 지리원에는 `(HH)` 폴더가 없으며 서울시도 평면 Hourly 구조다. `HourLayout` 긴급 대응을 범위 제한 재귀 탐색으로 교체한다 |
 | RINEX2 디렉터리에 RINEX3 가 상시 혼입된다 | `X:\2026\Daily\001\` 에 두 형식 공존 | **기각.** 원인 불명의 오류이며 기관이 버전별 폴더를 분리할 예정 |
 | 원본과 압축본이 함께 유입되므로 원본을 걸러야 한다 | `NAMH142f.26o` 와 `.26o.Z` 공존 | **기각.** 그곳은 Incoming(입고 지점)이며, DOY 폴더에는 압축본만 저장됨 |
 
@@ -1202,8 +1292,8 @@ RINEX2  SSSSDDDh.YYt 형태. h='0' → Daily, 'a'~'x' → Hourly
 | `internal/ledger` | **있음** | `CommonInput.LocalPath` 제거, UPSERT SQL 파라미터 11→10, `schema_version` 검증 추가 |
 
 `pathpl` 은 입출력만 있는 순수 함수이며 `local_path` 컬럼과 무관하다.
-다만 위 "Hourly 의 `(HH)`" 항목이 **코드 주석과 이 문서 사이의 불일치**로
-드러난 지점이므로 결정이 필요하다. 코드 수정은 필요 없다.
+위 "Hourly의 `(HH)`" 결정은 2026-09-15 현장 사실에 따라 다시 번복되었다.
+현행 코드에는 `HourLayout`과 24회 계산이 남아 있으므로 MVP2에서 코드 수정이 필요하다.
 
 **패키지명 표기 정정** — 이 문서와 GUIDELINES 가 `pathtpl` 로 적었으나
 실제 패키지명은 `pathpl` 이다. 코드가 원본이므로 문서를 맞췄다.
@@ -1235,12 +1325,13 @@ RINEX2  SSSSDDDh.YYt 형태. h='0' → Daily, 'a'~'x' → Hourly
 | `rinexname.go` 전용 파서 | `Category.MatchesName` 하나 |
 | **DB 파일 4개** | **불가 — FK 소실, WAL 원자성 깨짐** |
 | **테이블 4개** | **단일 테이블 + `CategoryLedger`** |
-| **Deep Scan 상한 제거 + 디렉터리 mtime 필터** | **3갈래 분리 (Hot/Deep/Recovery)** |
-| **Deep Scan 30일** | **Deep 7일 + Recovery 수동 지정** |
+| **Deep Scan 상한 제거 + 디렉터리 mtime 필터** | **Hot/Deep + 운영자 명시 `resend` 분리** |
+| **Deep Scan 30일** | **Deep 7일 + `resend` 수동 지정** |
 | **Scan 고루틴 워커** | **순차 유지** |
 | Grace Time 무용론 | 철회 — 전송 구조에서는 작동 |
 | **`idx_common_local_path` 추가** | **`local_path` 컬럼 자체를 삭제** |
 | **DB 주도 후보 선정** | **스캔 주도 + `file_name IN (...)` 일괄 조회** |
+| **정확한 템플릿만 전개하고 상위 폴더를 walk하지 않음** | **2026-09-15 번복 — 설정 루트 아래 범위 제한 재귀 탐색** |
 | **경로 오타 검증** | **불필요. 설치자가 한정됨** |
 | **파일 잠금 검사를 주 판정 수단으로** | **보조로 강등. mtime + Grace 가 주** |
 | 고정 오프셋 `substr` 파일명 파싱 | `_` 분리 후 필드 검사 (항법 파일 대응) |
@@ -1248,7 +1339,7 @@ RINEX2  SSSSDDDh.YYt 형태. h='0' → Daily, 'a'~'x' → Hourly
 | 다른 송신자와의 영구 공존 설계 | 전환 계획으로 해소 — 통일이 개발 목적 |
 | **`ExcludeUncompressed` 필터 추가** | **철회 — DOY 폴더에는 압축본만 저장됨** |
 | **`[SCAN.PATHS]` config 개편** | **철회 — 혼입을 상정하지 않음** |
-| Hourly 경로에 `(HH)` 계층이 없다는 가설 | 기각 — 계층은 존재함 |
+| Hourly 경로에 `(HH)` 계층이 없다는 가설 | **기각을 번복 — 지리원·서울시에는 없는 구조가 실재** |
 | RINEX2/3 상시 혼입 가설 | 기각 — 오류이며 기관이 폴더 분리 예정 |
 | **로컬 기준 `seed`** | **원격 나열 기준 `seed` — 로컬 존재는 전송 증거가 아님** |
 | **`LockStaleMinutes` (분 단위 키)** | **`LockStaleSeconds` — 경과시간 단위 규약을 GraceSeconds 와 초로 통일 (14절)** |
@@ -1341,4 +1432,38 @@ Scan 설계와 직접 관련은 없으나, 같은 날 확정된 운영 규칙의
 | MaxRetries | 누적 시도 상한(기본 5). 실행 안 재시도 없음 |
 | IN_PROGRESS 회수 | → FAILED (PENDING 아님) |
 | Unchanged | 후보에서 제외하지 않음 |
-| 다음 절단면 | transport + Worker + 회수 조립 |
+| 구현 상태 | transport + Worker + IN_PROGRESS 회수 조립 완료 |
+
+---
+
+## 16. 2026-09-15 구현 현황과 다음 범위
+
+구현 완료:
+
+- Local Scan과 디렉터리 단위 callback
+- Scan 주도 Ledger 일괄 대조
+- PUT Runner와 Transfer Verification
+- localfs / sftpfs transport
+- `MaxWorkers=4` PUT Worker Pool
+- 시작 시 IN_PROGRESS `Recover` (`FAILED`, salvage 없음)
+- 원격 확인 기반 `seed`
+- Set Completeness Gate
+- Ledger 설계 v8 / `schema_version=5` 자동 마이그레이션
+- Windows DPAPI
+
+MVP2 미구현:
+
+- 기간·대상 지정 `resend`와 세트 게이트 우회
+- 서울시 긴급 대응용 `HourLayout` 제거
+- 설정 루트 아래 범위 제한 재귀 탐색
+- Linux 배포·권한·경로·자격증명 처리와 테스트
+- Ledger Retention Cleanup과 60일 경계·FK cascade·재전송 방지 테스트
+
+MVP3으로 연기:
+
+- DOWNLOAD
+- `download_ledger`
+
+미완성 세트 보류 리포트, 게이트 활성화 운영 절차, RINEX3 운영 프로파일은
+현재 구현 범위에서 제외한다. 재귀 탐색의 세부 정책은 Linux OS 버전과 실제
+경로를 받은 뒤 확정한다.

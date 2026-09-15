@@ -2,6 +2,10 @@
 
 > 위치: `docs/` (Scan·Ledger 결정 문서와 같다).
 > `internal/security` 에는 구현만 둔다. 패키지 안에 설계 사본을 두지 않는다.
+> 상태: Windows DPAPI 구현 완료 (2026-09-04).
+> 2026-09-15 Linux 보안 결정: Linux 전용 추가 자격증명 보호는 현재 개발 범위에
+> 넣지 않는다. 공식 보안점검에서 구체적인 보안 요구가 나온 경우에만 요구 범위에
+> 맞춰 별도 설계·구현한다.
 
 성격: 구현 지시서가 아니라 "어떻게 짤 것인가"의 구조 문서.
 v1 → v2: 교차검증 2라운드(Claude 실사 + GPT) 반영.
@@ -162,16 +166,22 @@ func (l *loader) value(s *iniSection, key string) (string, bool) {
 유예 조건 기록 (known_hosts `-H` 와 같은 부류):
 "기관이 로그 내 접속 주소 노출을 실제로 지적하면 별도 작업으로 수행."
 
-## 6. 플랫폼 전략 — Linux 확장은 Protector 가 확장점
+## 6. 지원 범위와 비 Windows 동작 (2026-09-15 확정)
 
 - Windows: DPAPI 구현 (`//go:build windows`)
 - 비 Windows(현재): 평문 통과 + **enc: 는 명시적 거부**.
   기각: 조용히 리터럴 통과 — `enc:AQAA...` 라는 호스트명으로 접속을
   시도하는, 오류 없이 잘못 도는 부류가 된다.
-- 비 Windows(추후, MVP 5): Linux 자격증명 보호를 별도 결정
-  (후보: systemd-creds / kernel keyring / 파일권한 등 — 미결).
-  이때 바뀌는 것은 internal/security 의 linux 빌드 태그 파일 하나뿐.
-  config / main / 테스트 무변경 — 이 구조를 택한 이유가 이것이다.
+
+비 Windows용 추가 암호화·자격증명 보호 기능은 선제 구현하지 않는다.
+후보 기술도 이 문서에서 미리 지정하지 않는다. 공식 보안점검에서 구체적인
+요구가 나온 경우에만 요구 범위와 운영환경을 근거로 새 설계를 작성한다.
+현재의 `Protector` 인터페이스는 기존 구조적 경계일 뿐, 후속 보안 구현을
+예약하거나 MVP 범위에 포함한다는 뜻이 아니다.
+
+특히 Linux 배포는 빌드·실행·경로·스케줄러·SFTPGo 연동을 검증하는 작업이며,
+Linux 전용 보안 기능 개발을 뜻하지 않는다. 기존 SSH 공개키 인증과
+`known_hosts` 검증은 공통 SFTP 연결 동작으로 유지한다.
 
 ## 7. 신규 의존성
 
@@ -182,11 +192,13 @@ DPAPI 는 순수 syscall 이므로 **CGO/MinGW 불필요** — 기존 mingw 요�
 `-race` 전용이었고 이번 작업은 동시성 변경이 없어 해당 없음.
 현장 Windows 에서 `go test ./... -count=1` 로 충분하다.
 
-## 8. 커밋 계획과 Git 안전 지침
+## 8. 당시 구현·커밋 기록 (역사 기록)
 
-**현재 working tree 는 깨끗하지 않다** (서울시 HourLayout 수정으로
-config.example.ini, internal/config/config.go 포함 13개 파일 변경 상태 —
-이번 작업이 그중 2개를 다시 건드린다).
+> 아래 내용은 2026-09-04 DPAPI 구현 당시의 작업 순서 기록이다.
+> 현재 working tree 상태나 앞으로 수행할 커밋 계획을 뜻하지 않는다.
+
+당시 working tree 는 서울시 HourLayout 수정분이 남아 있어 깨끗하지 않았고,
+보안 변경과 섞이지 않도록 다음 순서로 분리하기로 했다.
 
 순서:
 0. **보안 작업 착수 전에 서울시 수정분을 먼저 커밋**하여 tree 를
@@ -208,7 +220,7 @@ config.example.ini, internal/config/config.go 포함 13개 파일 변경 상태 
 
 - **security**: 빌드 태그로 분리.
   Windows 회차 — DPAPI 왕복, 손상 base64 거부, 평문 통과.
-  Linux 회차 — enc: 거부, 평문 통과. 공통 — isEncrypted 판정.
+  비 Windows 회차 — enc: 거부, 평문 통과. 공통 — isEncrypted 판정.
 - **config**: 테스트 전용 fakeProtector (`fake:` 성공 / `bad:` 실패 /
   그 외 통과). 프로덕션 API 로 export 하지 않는다.
   - `Port = fake:2222` → 정수 2222. **복호화→타입변환 순서의

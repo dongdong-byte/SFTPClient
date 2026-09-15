@@ -2,7 +2,11 @@
 
 > 이 문서는 SFTPClient 개발 시 ChatGPT, Claude Code, Cursor가 공통으로 따라야 하는 최종 개발 기준이다.
 > `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx`의 설계 내용은 기준 문서로 유지한다.
-> 단, 실제 개발 순서는 원문과 달리 **PUT → DOWNLOAD → BOTH → PUT 성능 개선 → Linux 대응**으로 진행한다.
+> 단, 현재 개발 순서는 원문과 달리 **PUT(MVP1) → MVP2 보강 → DOWNLOAD(MVP3) → BOTH/성능 개선 재검토**로 진행한다.
+> MVP2 보강 범위는 세트 원자성, `resend`, 경로 범용화, Linux 배포·테스트,
+> Retention Cleanup 구현·검증이다. DOWNLOAD는 MVP3으로 연기한다.
+> Linux 배포에는 Linux 전용 보안 기능 개발을 포함하지 않는다. 공식 보안점검에서
+> 구체적인 보안 요구가 나온 경우에만 요구 범위에 맞춰 별도 설계·구현한다.
 > 이 개발 순서의 차이 외에 원문 요구사항을 임의로 삭제·축소·대체하지 않는다.
 
 ### 개정 이력
@@ -45,6 +49,45 @@
 | **2026-09-04** | **enc: DPAPI LocalMachine.** `internal/security` · 로드 시 `value()` 복호화 · `secure-set`. SFTP 평문 Host/User/Port 는 WARN. 측위원 평문 저장 금지 대응 |
 | **2026-09-09** | **MVP2 세트 완성도 게이트 설계 확정.** 전송 시작 원자성만(롤백 없음), 기본 OFF·Opt-in, `[SET.RINEXx] RequiredKinds`(false/CSV, Enabled 키 없음), kind=데이터 종류만(표현 형식 제외), 게이트 위치 Upsert 뒤·PENDING 앞, 매 스캔 재계산, resend 는 게이트 우회, 활성화 전제조건(현장 접근 토폴로지). 12절 참조 |
 | **2026-09-10** | **세트 게이트 구현 완료 (커밋 5개).** §5 3차 확정(버전 출처=닫힌 열거형, ini 키 기각), 의미론 2건(미완성 세트 선택 종 포함 전체 보류 / 파싱 유보 개별 통과+관측), **스키마 v8·`schema_version` '5'** — `common_ledger` 에 `set_key`·`kind`(NOT NULL DEFAULT ''), 최초의 운영 DB 보존 전환을 Open 자동 마이그레이션으로 수행(서브커맨드 기각), 파생의 주인은 `UpsertCommon` 내부 `domain.SetKeyKind`, MaxFilesPerRun 세트 경계 절단. 12절 참조 |
+| **2026-09-15** | **MVP2 실행 범위 재확정.** ① 세트 원자성(완료) ② `resend` 명령 신설 ③ 서울시 긴급 대응으로 추가한 `HourLayout` 제거와 범위 제한 재귀 탐색 기반 경로 범용화 ④ Linux 배포·테스트 ⑤ Retention Cleanup 구현·검증. DOWNLOAD는 MVP3으로 연기. 보류 리포트는 보안 취약점 우려로 제외. 게이트 활성화 운영 절차와 RINEX3 운영 프로파일도 이번 범위에서 제외. Linux 전용 추가 보안은 선제 구현하지 않고 공식 보안점검 요구가 있을 때만 별도 진행. |
+
+### MVP2 현재 실행 범위 (2026-09-15 확정)
+
+| # | 목표 | 상태 / 범위 |
+|---|---|---|
+| 1 | 세트 원자성 | **완료.** 12절의 Set Completeness Gate 구현을 유지한다. |
+| 2 | `resend` 명령 신설 | **미구현.** 기간·대상 지정 재전송이며 세트 게이트를 우회한다. |
+| 3 | 경로 범용화 | **설계 예정.** 서울시 평면 Hourly 경로를 급히 지원하려고 추가한 `HourLayout`을 제거하고, 설정 루트 아래의 범위 제한 재귀 탐색으로 전환한다. 로컬 하위 구조는 원격에 복제하지 않고 RINEX 버전별 고정 평면 `RemotePath`로 전송한다. 상세 탐색 경계는 Linux OS·실경로 확인 후 확정한다. |
+| 4 | Linux 배포·테스트 | **미구현.** Linux 빌드, 실행환경·경로·스케줄러·SFTPGo 연동과 통합 테스트를 포함한다. Linux 전용 추가 보안은 포함하지 않으며 공식 보안점검에서 요구가 나온 경우에만 별도 진행한다. |
+| 5 | Retention Cleanup | **미구현.** Ledger 60일 보존 설정이 실제 DB 행 삭제로 이어지도록 구현하고 경계·FK cascade·재전송 방지 테스트를 수행한다. |
+
+이번 MVP2에서 명시적으로 제외하는 항목:
+
+- DOWNLOAD 및 `download_ledger`: MVP3으로 연기한다. BOTH의 후속 MVP 번호는 아직 정하지 않는다.
+- 미완성 세트 보류 리포트: 대표 확인 결과 보안 취약점 우려가 있어 구현하지 않는다.
+- 게이트 활성화 운영 절차: 이번 MVP2의 개발 산출물에서 제외한다. 기존 안전 전제 기록은 역사적 설계 근거로만 보존한다.
+- RINEX3 운영 프로파일: 작성·현장 적용하지 않는다. 이미 구현된 RINEX3 파싱·세트 게이트 지원을 제거한다는 뜻은 아니다.
+
+위 범위가 기존 문서의 MVP 순서, 잔여 항목 또는 우선순위와 충돌하면 이 절을 우선한다.
+
+### MVP2 구현 전 결정 필요 (2026-09-15)
+
+아래 항목은 아직 확정하지 않았다. 구현 시 임의로 가정하지 말고 현장 정보와
+교차검증을 거쳐 결정한 뒤 이 문서에 반영한다.
+
+- **`resend`의 Ledger 의미론:** 지정 범위 전체를 강제로 다시 보낼지, Ledger로
+  미전송·변경분을 거르고 별도 강제 옵션을 둘지 결정이 필요하다. 명령 인자와
+  보존기간 밖 요청의 처리도 이 결정에 맞춰 확정한다.
+- **제한 재귀 탐색의 경계:** 시작 루트, 최대 깊이, 날짜 범위 적용 방식,
+  권한 오류 처리, symbolic link/junction 추적 여부는 다음 Linux 설치처의
+  OS 버전과 실제 경로를 받은 뒤 결정한다.
+- **Retention과 재탐색/`resend`의 결합 규칙:** 60일이 지나 삭제된 Ledger 행의
+  로컬 파일이 자동 탐색에서 신규로 재등록·재전송되지 않도록 경계를 확정하고,
+  보존기간 밖 `resend`의 경고·거부·강제 실행 정책을 결정한다.
+
+이미 확정된 사항은 Ledger 보존기간 60일, 성공한 Deep Scan 뒤 Cleanup 수행,
+`common_ledger` 삭제 시 `put_ledger` FK cascade, 원격의 RINEX 버전별 고정 평면
+경로다. 위 미결 항목을 정할 때 이 결정을 임의로 변경하지 않는다.
 
 ### 관련 문서
 
@@ -133,7 +176,8 @@ SFTPClient/
 │   │                           그래야 문법 오류가 스캔 도중이 아니라 시작 시점에 드러난다.
 │   │                           SFTP 접속 정보는 [PUT.SFTP] 처럼 방향 아래에 둔다.
 │   │                           BOTH 에서 수신 서버와 송신 서버가 다르기 때문이다.
-│   │                           Daily 경로에 (HH) 가 있거나 Hourly 경로에 없으면 실행을 중단한다.
+│   │                           현재는 HourLayout(dir/flat)과 LocalPath의 (HH)를 대조한다.
+│   │                           이는 서울시 긴급 대응이며 MVP2 경로 범용화에서 제거할 예정이다.
 │   │                           알 수 없는 섹션·키도 거부한다. 오타가 무시되면
 │   │                           그 설정이 기본값으로 도는 것과 구분되지 않는다.
 │   │                           오류는 첫 건에서 멈추지 않고 줄 번호와 함께 모아서 낸다.
@@ -159,7 +203,7 @@ SFTPClient/
 │   │                           시각은 Expand 내부에서 UTC로 강제한다.
 │   │                           알 수 없는 토큰과 짝 없는 괄호는 Parse 단계에서 거부한다.
 │   │
-│   ├─ scan/           [완료]   디렉터리를 나열하여 어떤 파일이 어디에 있는지 사실만 수집.
+│   ├─ scan/  [현행 완료/개편 예정] 디렉터리를 나열하여 어떤 파일이 어디에 있는지 사실만 수집.
 │   │                           판정하지 않는다. 0바이트도 .part 도 거르지 않고 그대로 올린다.
 │   │                           DirLister 인터페이스를 consumer-side 로 선언하여
 │   │                           로컬과 원격 SFTP 를 같은 로직으로 다룬다.
@@ -168,11 +212,13 @@ SFTPClient/
 │   │                           디렉터리 단위로 콜백에 넘긴다. 수만 건을 슬라이스에 담지 않는다.
 │   │                           순차 실행한다. 병렬화 대상이 아니다.
 │   │                           fs.ErrNotExist 는 오류가 아니라 건너뛰기다.
+│   │                           현행은 템플릿의 정확한 디렉터리를 나열한다. MVP2에서
+│   │                           설정 루트 아래 범위 제한 재귀 탐색으로 개편한다.
 │   │
 │   ├─ verify/         [완료]   판정 로직 전담. 전송도 기록도 하지 않고 "정상인가"만 답한다.
 │   │                           Ingress  — size>0, IsPartFile(.part 제외), mtime grace (설계안 7)
 │   │                           Transfer — 원본/목적지 Size 대조, 최종 파일 존재 확인 (설계안 8)
-│   │                           [예정] Transfer 판정 구현. Ingress 는 완료.
+│   │                           Ingress와 Transfer 모두 구현·테스트 완료.
 │   │
 │   ├─ lock/           [완료]   프로세스 단위 중복 실행 방지. (설계안 14)
 │   │                           lock 디렉터리 + owner-<token>. RemoveAll 금지.
@@ -193,28 +239,23 @@ SFTPClient/
 │   │                           put/download를 모른다. 방향을 알지 못하고 파일만 옮긴다.
 │   │                           계약 테스트: localfs 10종 + sftpfs 오프라인 6종·실서버 10종.
 │   │
-│   ├─ logging/                 log/slog 설정. 출력 대상, 레벨, 보존 정책. (설계안 14)
+│   ├─ logging/       [미구현]  log/slog 설정. 출력 대상, 레벨, 보존 정책. (설계안 14)
 │   │                           성공은 집계, 실패·재시도는 상세 원인 기록.
 │   │
-│   ├─ put/            [조립 완료] 송신 흐름 조립 (GUIDELINES 5절).
+│   ├─ put/              [완료] 송신 흐름 조립 (GUIDELINES 5절).
 │   │                           Scan → Lookup → 대조 → (신규·변경) Verify → Upsert
 │   │                           → 후보 필터 → 정렬·절단 → PENDING 일괄 등록 → (--dry-run 리포트).
-│   │                           전송(Worker)·Transfer 검증은 transport 도입 후.
+│   │                           전송 Worker Pool(MaxWorkers 기본 4)과 Transfer 검증 완료.
 │   │                           Unchanged 도 후보 경로에 남긴다. "장부와 같다" ≠ "이미 보냈다".
 │   │                           transport를 import하지 않으므로 fake 주입으로 조립 테스트 가능.
-│   │
-│   ├─ pipeline/       [예정]   Worker Pool과 Global Limiter. (설계안 12.1)
-│   │                           버퍼드 채널 세마포어로 전체 동시 SFTP 작업 수를 제한.
-│   │                           PUT/DOWNLOAD가 같은 Limiter 인스턴스를 공유한다.
-│   │                           전송은 MVP 1부터 병렬로 수행한다. 기본 MaxWorkers=4.
-│   │                           Scan은 병렬화 대상이 아니다. 항상 순차로 수행한다.
-│   │                           (조립 단계에서는 아직 미배선. transport 와 함께 붙인다.)
+│   │                           별도 internal/pipeline 패키지 계획은 폐기하고 PUT Worker Pool을
+│   │                           internal/put/transfer.go에 통합했다. Global Limiter는 BOTH 착수 시 재검토한다.
 │   │
 │   ├─ ledger/                  common/put/download Ledger. (설계안 9)
 │   │                           schema.sql — 물리 스키마 원본. go:embed로 실행파일에 포함하고
 │   │                                        시작 시 실행한다. 스키마는 이 파일이 유일한 원본이며
 │   │                                        Go 코드에 CREATE TABLE 문자열을 중복해 두지 않는다.
-│   │                                        PK = (category, file_name). schema_version = 4.
+│   │                                        PK = (category, file_name). schema_version = 5.
 │   │                           db.go      — Open/PRAGMA/schema 적용                      [완료]
 │   │                                        identity_rule + schema_version 대조
 │   │                           common.go  — CommonInput, UpsertCommon (3분기 UPSERT)     [완료]
@@ -227,20 +268,21 @@ SFTPClient/
 │   │                                        LookupPut / ListInProgress. category 필수.
 │   │                                        MaxRetries = 동일 revision 누적 시도 상한.
 │   │                                        IN_PROGRESS 회수 재료는 ListInProgress;
-│   │                                        원격 .part 삭제+FailPut 조립은 transport 단계.
+│   │                                        원격 .part 삭제+FailPut 조립 완료.
 │   │                           판정은 하지 않되 revision·state 갱신은 여기서 한다. (CONCEPT 2.1)
 │   │                           SetMaxOpenConns(1)이 쓰기를 직렬화하므로 MaxWorkers>1 에서도
 │   │                           정합성은 안전하다. 단일 Writer 고루틴 + 배치 커밋은
 │   │                           처리량 최적화이며 MVP 4 범위이다. (CONCEPT 4.8)
-│   │                           [MVP 2] download Ledger까지 확장.
+│   │                           [MVP 3] download Ledger까지 확장.
 │   │
-│   ├─ download/       [MVP 2] 수신 흐름 조립. put과 대칭 구조.
+│   ├─ download/       [MVP 3] 수신 흐름 조립. put과 대칭 구조.
 │   │                           Origin=DOWNLOAD 기록으로 Ping-Pong 방지에 관여. (설계안 9.1)
 │   │
-│   └─ security/       [나중]   자격증명 및 설정값 보호. (설계안 15.1)
-│                               protector.go       — 인터페이스 및 enc: 접두어 처리
-│                               dpapi_windows.go   — Windows DPAPI 구현
-│                               dpapi_other.go     — 비Windows 스텁. Linux 빌드 보호
+│   └─ security/ [Windows 완료] 자격증명 및 설정값 보호. (설계안 15.1)
+│                               security.go         — 인터페이스 및 enc: 접두어 처리
+│                               security_windows.go — Windows DPAPI LocalMachine 구현
+│                               security_other.go   — 비Windows에서 enc: 명시적 거부
+│                               Linux 전용 추가 보안은 공식 보안점검 요구 시에만 별도 설계
 │
 ├─ docs/
 │   ├─ SFTPClient_LEDGER_CONCEPT.md   (schema.sql과 짝. 항상 함께 갱신)
@@ -257,8 +299,8 @@ SFTPClient/
 └─ go.mod                       모듈 경로(SFTPClient), Go 버전 및 의존성 목록.
                                 modernc.org/sqlite  — CGO 불필요. 순수 Go 포팅이라
                                                       CGO_ENABLED=0으로 Linux 크로스 빌드 가능
-                                github.com/pkg/sftp — [예정]
-                                폐쇄망 반입 전 go mod vendor로 vendor/를 확보한다.
+                                github.com/pkg/sftp — SFTP transport 구현 완료
+                                폐쇄망 반입용 vendor/ 확보 완료.
 ```
 
 ### 패키지 책임 및 의존 방향
@@ -365,26 +407,23 @@ ledger  이미 보냈는가                              (기록)
 ## 5. 실제 개발 순서
 
 원문 설계안의 개발 순서는 DOWNLOAD → PUT이지만, 실제 개발은 아래 순서로 진행한다.
-MVP2 의 범위는 운영 문제 기준으로 재정의되었다 (2026-09 대표 보고,
-`MVP2_일정_대표보고` / `MVP2_상세`). 원안의 "MVP2=DOWNLOAD" 는 폐기한다 —
-DOWNLOAD 는 MVP2 확장 단계의 한 항목이다.
+MVP2의 범위는 2026-09-15 운영 우선순위에 따라 재정의했다.
+DOWNLOAD는 급하지 않으므로 MVP3으로 연기한다.
 
 ```text
-MVP 1: PUT                                            ✅ 완료 (3개 기관 배포)
-MVP 2 핵심: 세트 원자성 · recovery(resend) · status/리포트+일일 메일
-            — 2주 (추석 연휴 제외 실작업 기준)
-            · 세트 원자성(Set Completeness Gate)       ✅ 완료 (2026-09-10, 12절)
-            · resend — 기간 지정 재전송                 ← 다음 (비긴급: -deep 이 커버)
-            · status/리포트 + 일일 메일                 ← 게이트 활성화 전 필수 (12절 §18)
-MVP 2 확장: 경로 템플릿 범용화 · download · Linux
-            — 별도 산정 (download +1~2주 / Linux 는 자격증명 보호 방식 결정 후)
-MVP 3: BOTH (중계 구성, RepostDownloaded)
-MVP 4: PUT 성능 개선 (Worker 1/2/4/8 Benchmark)
-MVP 5: (예비)
+MVP 1: PUT                                             ✅ 완료 (3개 기관 배포)
+MVP 2: · 세트 원자성(Set Completeness Gate)            ✅ 완료 (2026-09-10, 12절)
+       · resend — 기간·대상 지정 재전송                 미구현
+       · 경로 범용화 — HourLayout 제거 + 제한 재귀 탐색 설계 예정
+       · Linux 배포 + 테스트                            미구현 (전용 추가 보안 제외)
+       · Retention Cleanup + 경계 테스트                미구현
+MVP 3: DOWNLOAD + download_ledger
+후속:  BOTH 및 PUT 성능 개선 — MVP 번호·일정 미정
 ```
 
-MVP2 핵심 단계는 현재 운영에서 확인된 문제(세트 결손 — 도봉 DOY 250 ·
-누락 복구 · 현황 통지)를 우선 해결한다.
+MVP2는 현재 운영에서 확인된 문제(세트 결손, 수동 재전송, 기관별 경로 차이,
+Linux 배포, 실제 Retention 미작동)를 우선 해결한다. 미완성 세트 보류 리포트는
+보안 취약점 우려로 구현하지 않는다.
 
 ### 현재 MVP 1 PUT 구현 순서
 
@@ -393,7 +432,7 @@ domain                             ✅ 완료
     ↓
 pathpl                             ✅ 완료
     ↓
-ledger  db/common/lookup/put, schema_version 4 ✅ 완료
+ledger  db/common/lookup/put, schema_version 5 ✅ 완료
     ↓
 config  ini / config / load / validate  ✅ 완료
          (+ LockStaleSeconds, MaxRetries 누적 상한)
@@ -410,17 +449,18 @@ PUT 조립    Scan→Lookup→Verify→Upsert→후보→절단→PENDING
 transport   .part → size → rename → 최종 확인   ✅ 완료 (2026-08-31)
             + Transfer Verification (localfs·sftpfs 관통)
     ↓
-recovery    시작 시 IN_PROGRESS 회수 (→ FAILED,   ← 다음
-            Rename 후 사망분은 salvage 분기 검토)
+recovery    시작 시 IN_PROGRESS 회수 (→ FAILED, salvage 없음) ✅ 완료
     ↓
-Worker Pool (MaxWorkers = 4) + go test -race
+Worker Pool (MaxWorkers = 4) + go test -race              ✅ 완료
     ↓
-seed / Retention Cleanup
+seed                                                        ✅ 완료
+    ↓
+Retention Cleanup                                           ← MVP2
 ```
 
-**현재 절단면은 "단일 경로 live 전송(localfs·sftpfs) + Transfer Verification"까지다.**
-live 는 `--transport localfs | sftp` 명시가 필수다(기본값으로 전송을 시작하는
-실행 경로는 두지 않는다). IN_PROGRESS 회수 조립과 Worker Pool 이 다음 절단면이다.
+**현재 절단면은 live 전송(localfs·sftpfs), Transfer Verification,
+IN_PROGRESS 회수, Worker Pool, seed까지다.**
+live 는 `--transport` 실행 override 또는 `[GENERAL] Transport` 설정을 사용한다.
 
 **`--dry-run` 은 ledger 업무 데이터를 쓰지 않는 관측 수단이다.**
 현장 접근이 어려운 상태에서 관측소 개수·확장자 분포·경로 정합성·스캔 소요시간을
@@ -501,14 +541,14 @@ staleAfter 가 실제 최장 실행보다 짧으면 살아 있는 실행을 탈�
 - LookupCommon 의 `PutStatus` 조인으로 후보를 판정한다.
   `attempts` 가 필요한 FAILED 부분집합만 LookupPut 을 추가 호출한다.
 
-#### ④ PENDING 일괄 등록 · dry-run · live 거부
+#### ④ PENDING 일괄 등록 · dry-run · live 전송
 
 - MaxFilesPerRun 절단 **후** 대상만 한 트랜잭션으로 PENDING INSERT
   (`ON CONFLICT DO NOTHING`). 커밋 전에 Worker 를 시작하지 않는다.
 - PENDING 등록 실패 시 후보 목록을 반환하지 않는다 (Worker 출발 금지).
 - dry-run 은 common/put 업무 데이터를 쓰지 않는다. revision 표시는
   LookupCommon 의 현재 값 또는 `RevisionPending`.
-- live 는 transport 미구현 동안 `main` 이 시작을 거부한다.
+- transport 구현 전에는 live를 거부했으나, 2026-08-31 localfs·sftpfs 구현 후 해제했다.
 
 #### ⑤ 절단 정렬
 
@@ -652,10 +692,9 @@ go test -race ./...
 - Windows에서는 DPAPI를 사용할 수 있도록 `Protector` 인터페이스 뒤에 OS 종속 구현을 둔다.
 - `put`, `download`, `transport`가 DPAPI를 직접 알지 않도록 한다.
 - 암호화 대상 정보가 로그에서 평문으로 다시 노출되지 않도록 필요 시 마스킹한다.
-- Linux의 자격증명 보호 방식은 MVP 5에서 확정한다.
-- **개인키 파일 권한을 시작 시 확인한다.** Linux 는 그룹·기타 권한이 있으면 거부한다.
-  Windows 는 `os.FileMode` 가 ACL 을 반영하지 않아 판정하지 않는다.
-  그 검사는 `security` 패키지의 플랫폼별 구현에서 다룬다.
+- Linux 전용 자격증명 암호화·개인키 권한 강제 등 추가 보안 기능은 선제 구현하지 않는다.
+  공식 보안점검에서 구체적인 요구가 나온 경우에만 요구 범위에 맞춰 별도 설계·구현한다.
+  기존 SSH 공개키 인증과 `known_hosts` 검증은 SFTP 연결의 공통 기본 동작으로 유지한다.
 - **`KnownHosts` 가 비어 있으면 시작을 거부한다.** 검증을 생략하고
   "일단 붙여보는" 경로를 만들지 않는다.
 - **`AuthMethod` 는 `publickey` 만 지원한다.** 설정 파일에 평문 비밀번호를 두지 않으므로
@@ -724,15 +763,30 @@ Deep Scan 의 근거이다. 두 값의 역할이 다르므로 혼동하지 않�
 - 드라이브 세그먼트(`E:`)는 건너뛴다
 - 이미 만든 경로는 집합으로 기억하여 중복 호출하지 않는다
 
-### 9.3 Hourly Scan 은 (HH) 를 계산한다 (2026-08-28 전면 정정)
+### 9.3 Hourly Scan 의 `(HH)` 계산 — 현행 과도기 구현, MVP2에서 교체 (2026-09-15 재정리)
+
+> **현재 결론:** `HourLayout`은 장기 설계가 아니라 서울시의 `(HH)` 없는
+> 평면 Hourly 경로를 급히 지원하기 위해 2026-09-04 추가한 과도기 설정이다.
+> 지리원에도 `(HH)` 폴더가 없고 다음 Linux 설치처의 경로도 다를 가능성이 있어,
+> MVP2에서 `HourLayout`과 `(HH)` 24회 계산 의존을 제거하고 설정 루트 아래의
+> **범위 제한 재귀 탐색**으로 대체한다.
+>
+> 원격은 로컬 하위 구조를 복제하지 않는다. 발견한 파일은 RINEX 버전별 고정
+> 평면 경로(운영 예: `D:\incoming\RNX2`, `D:\incoming\RNX3`)로 전송하므로
+> 파일의 날짜·시각으로 원격 경로를 계산할 필요가 없다.
+>
+> 재귀 시작점·최대 깊이·날짜 범위 적용 방식·권한 오류·symbolic link/junction
+> 정책은 대표가 Linux OS 버전과 실제 경로를 확인한 뒤 확정한다. 이 문서에서
+> 먼저 추측하여 고정하지 않는다.
+
+아래는 과도기 구현에 이르게 된 당시 결정 기록이며, 현재 목표보다 우선하지 않는다.
 
 **이전 판은 "계산하지 않고 하위 디렉터리를 나열한다" 였다. 기각한다.**
 
 기각 근거는 현장 확인이다.
 
-> 모든 관측소가 시각까지 디렉터리를 둔다.
-> 지리원 화면에 `(HH)` 계층이 없어 보였던 것은 그 화면이 Daily 경로였기 때문이며,
-> 지리원도 시각 폴더에는 `(HH)` 가 있다.
+> 당시에는 모든 관측소가 시각까지 디렉터리를 둔다고 판단했다.
+> 2026-09-15 재확인 결과 지리원에는 `(HH)` 폴더가 없으므로 이 전제는 폐기한다.
 
 따라서 config 의 Hourly 경로는 `LocalPath` 와 `RemotePath` 양쪽 모두
 시각까지 적고, Scanner 는 날짜당 0~23 을 만들어 각각 `ReadDir` 한다.
@@ -883,7 +937,7 @@ UTC 로 둘 경우 `4` 는 KST 13시(한낮)가 되므로 값과 주석이 어�
 `config.ini` 주석에 어느 기준인지 반드시 명시한다.
 `internal/config` 의 `ScanConfig.DeepScanHour` 주석에도 같은 내용을 둔다.
 
-### 9.9 Scan 범위는 세 갈래이다
+### 9.9 자동 Scan과 운영자 재전송을 분리한다 (2026-09-15 갱신)
 
 자동으로 도는 두 갈래와 사람이 부르는 한 갈래를 나눈다.
 
@@ -892,21 +946,19 @@ UTC 로 둘 경우 `4` 는 KST 13시(한낮)가 되므로 값과 주석이 어�
   Hot Scan       최근 2일   매시간    정상 유입
   Deep Scan      최근 7일   하루 1회  며칠 늦게 유입된 자료 회수
 
-[수동 · 장애복구]
-  Recovery Scan  기간 고정 안 함
-                 운영자가 장애 기간을 지정 → 해당 구간 전체 재Scan
-                 → Ledger 가 신규/변경만 판별 → 필요한 것만 자동 PUT
+[수동 · 운영자 재전송]
+  resend         운영자가 기간·대상을 지정
+                 세트 게이트는 우회
+                 전체 강제 재전송인지 Ledger 선별 방식인지는 구현 전 결정 필요
 ```
 
 **`ScanRecentDays = 2` 인 이유** — 경로 토큰은 UTC 인데 실제 도착이 3~4시간
 이상 지연된다. 1일로 두면 UTC 하루의 마지막 몇 시간 분량이 매일 Hot Scan 을
 빠져나가고 Deep Scan 이 하루 늦게 회수한다.
 
-**Deep Scan 범위 밖에 상한을 두지 않는 이유** — 캐스터 재시작 등으로
-수동 복구가 이루어지면 자료가 관측 시각 기준 디렉터리에 놓인다.
-그것이 며칠 전인지에는 규칙이 없다. 상한을 정하면 그 밖은 못 잡고,
-숫자를 늘리는 논의가 끝나지 않는다.
-**"그건 사람이 아는 일" 로 인정하고 입력받는다.**
+Deep Scan 범위 밖의 자료는 자동 후보가 아니다. 과거 장애 기간은 운영자가
+`resend`에 명시한다. 다만 허용 기간과 보존기간 밖 요청의 경고·거부·강제 실행
+정책은 「MVP2 구현 전 결정 필요」에 따라 구현 전에 확정한다.
 
 한때 상한을 없애고 디렉터리 mtime 으로 거르는 안을 검토했으나 **기각했다.**
 디렉터리 mtime 은 파일 생성뿐 아니라 **삭제 시에도 갱신되며**,
@@ -914,9 +966,25 @@ UTC 로 둘 경우 `4` 는 KST 13시(한낮)가 되므로 값과 주석이 어�
 스캔 대상이 되어 장부에 없는 파일이 전량 재전송된다.
 `UseDirMtimeSkip = false` 를 유지하는 실질 근거가 이것이다.
 
-**`LedgerRetentionDays` 가 Recovery Scan 의 실질 상한이다.**
-장부가 기억하지 못하는 구간을 지정하면 그 구간이 전량 재전송된다.
-`config` 가 `LedgerRetentionDays > ScanDays` 를 시작 시 강제한다.
+`resend`가 Ledger 판정을 재사용하는 방식이라면 `LedgerRetentionDays`가 안전
+범위의 실질 상한이 된다. 전체 강제 재전송 방식이라면 같은 의미의 상한이 아니다.
+현재 확정된 것은 `config`가 `LedgerRetentionDays > ScanDays`를 시작 시 강제한다는
+점이며, `resend`와의 결합 규칙은 구현 전 결정한다.
+
+**2026-09-15 구현 상태:** `[LEDGER] RetentionDays = 60`과 위 불변식 검증은
+구현되어 있지만 실제 DB 행을 지우는 Retention Cleanup은 아직 구현되지 않았다.
+따라서 현재 실행파일은 60일이 지나도 `common_ledger`와 연결된 `put_ledger`
+행을 자동 삭제하지 않는다. `cmd/rinexclient/main.go`에도 Deep Scan 뒤 Cleanup이
+TODO로 남아 있다.
+
+MVP2에서 다음을 구현·검증한다.
+
+- 성공한 Deep Scan 뒤 `ingress_verified_at < now - RetentionDays`인 common 행 삭제
+- FK `ON DELETE CASCADE`에 의한 해당 put 행 삭제
+- 경계 시각의 포함/제외, 최근 행 보존, Cleanup 실패 처리
+- SQLite 파일 크기는 즉시 축소하지 않고 free page를 재사용하며 정기 VACUUM은 하지 않음
+- 재귀 Scan이 Retention 범위 밖의 오래된 파일을 다시 신규로 올려 재전송하지 않도록
+  Scan 날짜 범위와 Cleanup 정책을 함께 검증
 
 **운영 로그에 `oldest_new` 를 남긴다.**
 
@@ -999,6 +1067,8 @@ ide는 인텔리제이 얼티밋 버젼이야
 > 아래 내용은 원본 Word 문서에서 텍스트와 표 내용을 추출한 참조 원문이다.
 > 문서의 내용 자체는 임의로 수정하지 않는다.
 > 그림/도식 이미지는 MDC/Markdown에 바이너리로 직접 포함하지 않으며, 원문에 존재하는 캡션과 설명 텍스트를 유지한다.
+> 따라서 아래 원문의 과거 MVP 번호·기본값·구현 예정 표기는 현재 상태가 아니다.
+> 현재 기준은 본 문서 상단의 「MVP2 현재 실행 범위」와 5절을 우선한다.
 
 Go 기반 RINEX 통합 SFTP
 프로그램 설계안
@@ -1549,8 +1619,20 @@ Benchmark 축 — Worker 수 × 데이터셋 유형(12.2)
 
 ## 12. MVP2 세트 완성도 게이트 — 확정 설계·구현 기록 (2026-09-09 ~ 09-10)
 
+> [!CAUTION]
+> **역사 기록 봉인 — 이 절의 운영 계획과 과거 MVP 번호를 현행 기준으로 사용하지 않는다.**
+>
+> 이 절은 2026-09-10 당시 세트 원자성 결정과 구현 과정을 보존한다. 현재 범위와
+> 우선순위는 문서 상단의 「MVP2 현재 실행 범위」와 「MVP2 구현 전 결정 필요」를
+> 따른다. 아래의 게이트 활성화 운영 절차, 미완성 세트 보류 리포트, RINEX3 운영
+> 프로파일은 현재 개발 산출물에서 제외한다. 세트 원자성의 구현 의미론과 스키마
+> 결정 근거만 역사적 기술 근거로 유지한다.
+>
+> **이 봉인 아래의 본문은 역사 보존을 위해 현행화하지 않는다.**
+
 > 본 절은 `SFTPClient_MVP2_CONFIRMED_DECISIONS_v2.md` 를 본 문서로 통합한 것이다.
-> **이후 개정은 본 절이 기준이며**, 별도 파일은 통합 시점의 사본으로만 남는다.
+> 별도 파일과 이 절은 모두 통합 시점의 역사 기록이며, 이후 개정은 문서 상단의
+> 현행 범위와 각 단일 주제 문서를 기준으로 한다.
 > 본 절 내부의 "§n" 표기는 아래 통합 원문의 절 번호를 가리킨다 (본 문서의
 > 1~11절과 무관). 코드 주석의 "확정 §n" / "v2 §n" 참조도 아래를 가리킨다.
 
@@ -1839,9 +1921,12 @@ kind     (예: o / mo)
 
 ---
 
-### 15. 일일 리포트
+### 15. 일일 리포트 — 구현 제외 (2026-09-15)
 
-미완성 세트 통지는 `common_ledger`의 `set_key`, `kind`, `first_seen`으로 산출한다.
+아래 내용은 2026-09-10 당시의 설계안이다. 대표 확인 결과 보안 취약점 우려가 있어
+미완성 세트 보류 리포트는 MVP2에서 구현하지 않으며, 현재 후속 구현 대상으로도 두지 않는다.
+
+당시 구상은 `common_ledger`의 `set_key`, `kind`, `first_seen`으로 통지를 산출하는 것이었다.
 
 ```text
 DBON2500.26
@@ -1896,18 +1981,22 @@ RequiredKinds = false
 
 ---
 
-### 18. 잔여 항목 (2026-09-10 갱신)
+### 18. 잔여 항목 (2026-09-15 갱신)
 
 - ~~v5 Ledger 마이그레이션 방법~~ → **해결**: Open 시 자동 단일 스텝
   (v4→v5, 트랜잭션 ALTER+백필+버전 갱신). §19-3.
-- `resend` 인자 설계 및 게이트 우회 구현 — 비긴급 (`-deep` 이 커버)
-- 일일 리포트 형식·발송 — **게이트를 어느 기관이든 켜기 전 필수로
-  승격** (보류 관측 수단 없이 게이트 ON 금지). 대표 지시로 조기
-  활성화 가능성이 실재하므로 차기 최우선 후보.
-- 게이트 ON 절차: ① 해당 서버 원장에서 kind 분포 조회
-  (`SELECT kind, COUNT(*) ... GROUP BY kind`) ② 실측 분포로
-  RequiredKinds 작성 ③ 리포트 가동 확인
-- RINEX3 첫 운영 프로파일 / Linux 자격증명 / MaxHoldDays(1.3절 조건부)
+- **MVP2 남은 목표 1:** `resend` 인자 설계·구현 및 세트 게이트 우회.
+- **MVP2 남은 목표 2:** 서울시 긴급 대응으로 추가한 `HourLayout` 제거와
+  설정 루트 아래 범위 제한 재귀 탐색 기반 경로 범용화. 세부 정책은 Linux
+  OS·실경로 확인 후 확정하며, 원격은 RINEX 버전별 고정 평면 경로를 유지한다.
+- **MVP2 남은 목표 3:** Linux 배포 준비와 테스트. Linux 전용 추가 보안은 범위에서 제외하며,
+  공식 보안점검에서 구체적인 요구가 나온 경우에만 별도 설계·구현한다.
+- **MVP2 남은 목표 4:** Ledger Retention Cleanup 구현 및 60일 경계·FK cascade·
+  오래된 파일 재전송 방지 테스트. 현재는 설정과 불변식 검증만 있고 실제 삭제는 없다.
+- **MVP3으로 연기:** DOWNLOAD 및 `download_ledger`. BOTH의 MVP 번호는 미정이다.
+- **구현 제외:** 미완성 세트 보류 리포트(보안 취약점 우려), 게이트 활성화 운영 절차,
+  RINEX3 첫 운영 프로파일.
+- `MaxHoldDays`는 기존 조건부 미구현 결정을 유지하며 MVP2 범위에 넣지 않는다.
 
 ---
 
