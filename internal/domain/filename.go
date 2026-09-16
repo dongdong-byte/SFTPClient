@@ -77,7 +77,7 @@ func NormalizeName(pathOrName string) string {
 //
 // 어느 형식이 입력되더라도 동일한 파일명이 반환되어야 하므로
 // '/' 와 '\' 를 모두 경로 구분자로 처리한다.
-// MVP 5 의 Linux 빌드에서 Windows 경로가 그대로 들어오는 경우를 대비한다.
+// Linux 빌드에서도 Windows 경로가 그대로 들어오는 경우를 대비한다.
 func trimDir(p string) string {
 	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
 		return p[i+1:]

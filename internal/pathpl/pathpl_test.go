@@ -234,13 +234,9 @@ func TestParseTrimsSurroundingSpace(t *testing.T) {
 	}
 }
 
-// Hourly Category 의 경로에 (HH) 가 빠지면 0시부터 23시까지가 모두 같은
-// 디렉터리로 확장된다. 경로가 실제로 존재하므로 오류도 나지 않는다.
-//
-// 반대로 Daily 경로에는 시간 단위 디렉터리 자체가 존재하지 않으므로
-// (HH) 가 들어 있으면 설정 오류이다.
-//
-// 두 판정 모두 config 가 이 함수로 수행한다.
+// HasToken 은 템플릿에 토큰이 있는지만 답한다. Hourly LocalPath 의
+// (HH) 필수 여부는 과도기 HourLayout 규칙이며 config 가 판정한다
+// (GUIDELINES 9.3). Daily 경로의 (HH) 금지는 유지한다.
 func TestHasToken(t *testing.T) {
 	tests := []struct {
 		name  string

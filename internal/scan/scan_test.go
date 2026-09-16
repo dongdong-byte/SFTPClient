@@ -862,9 +862,8 @@ func TestScannerScan_InvalidInput(t *testing.T) {
 // 경로(flat 배치)에서 Scanner 가 날짜당 24회가 아니라 1회만 나열하고,
 // Batch.When 이 해당 날짜 00:00 UTC 인지 본다.
 //
-// 지리원처럼 한 디렉터리에 24시간 파일이 함께 놓이는 배치이며,
-// 시각은 파일명(세션문자 a~x)에 있으므로 디렉터리 순회는 날짜 단위면 된다.
-// 순회 횟수는 category 가 아니라 템플릿의 (HH) 유무로 결정된다.
+// 과도기 HourLayout=flat 동작이다. MVP2 재귀 탐색으로 바꾸면 이 순회
+// 방식도 교체한다. 지금은 템플릿의 (HH) 유무로 횟수를 정한다.
 //
 // When 을 단언하는 이유: 전송 단계가 RemotePath.Expand(When) 에 이 값을
 // 쓴다. flat 원격에는 (HH) 가 없어 시각이 소비되지 않지만, 규약이

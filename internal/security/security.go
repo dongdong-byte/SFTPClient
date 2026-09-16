@@ -9,6 +9,8 @@
 // config.Protector.Resolve 만 호출한다.
 //
 // Windows 구현은 DPAPI LocalMachine 스코프를 사용한다.
+// Linux 전용 추가 보호는 선제 구현하지 않으며, 공식 보안점검 요구가
+// 나온 경우에만 적용한다.
 // 상세 설계 및 기각 이력은 docs/SFTPClient_SECURITY_ENC_DESIGN.md 를 따른다.
 //
 // 이 패키지의 오류 메시지는 한국어다.

@@ -11,8 +11,9 @@ alwaysApply: true
 - Windows 우선 개발 후 Linux로 확장한다.
 - 폐쇄망 배포를 고려하고 가능하면 CGO_ENABLED=0 빌드를 유지한다.
 - SOLID를 지키되 불필요한 추상화를 만들지 않는다.
-- 실제 개발 순서는 PUT → DOWNLOAD → BOTH → PUT 성능 개선 → Linux 대응이다.
-- 문서 간 충돌이 있으면 최신 문서를 우선한다.
+- 실제 개발 순서는 **PUT(MVP1, 완료) → MVP2 보강 → DOWNLOAD(MVP3) → BOTH/성능 개선(번호 미정)**이다.
+- 문서 간 충돌이 있으면 최신 문서를 우선한다. MVP 범위가 어긋나면 `SFTPClient_PROJECT_GUIDELINES.md` 상단의 「MVP2 현재 실행 범위」가 이긴다.
+- GUIDELINES 12절과 `SFTPClient_MVP2_CONFIRMED_DECISIONS_v2.md`는 2026-09-10 역사 스냅샷이다. 현재형으로 남아 있어도 현행 지시로 읽지 않는다.
 - 설계안의 `file_id`는 구현에서 `(category, file_name)` 복합키로 개정되었다. `file_name` 단독이 식별자가 아니다.
 - 전송 성공 상태 표기는 SUCCESS가 아니라 VERIFIED로 통일한다.
 
@@ -28,16 +29,20 @@ alwaysApply: true
 - `utils`, `helper`, `common`처럼 책임이 불명확한 범용 패키지를 만들지 않는다.
 - `internal/sftp` 패키지명은 사용하지 않는다. `github.com/pkg/sftp`와 혼동을 피하기 위해 `transport`를 사용한다.
 - 기관별 차이는 Core 코드의 기관명 조건문이 아니라 `config.ini`와 Path Template으로 처리한다.
-- `HourLayout`(dir/flat)은 재귀 Scan 전의 임시 우회다. 기관이 늘 때마다 배치 값을 추가하지 않는다(특수 사례 폭증). Hourly RemotePath의 `(HH)`는 강제하지 않는다.
+- `HourLayout`(dir/flat)과 Hourly `(HH)` 00~23 계산은 서울시 긴급 대응용 **과도기**다. MVP2에서 제거하고 설정 루트 아래 **범위 제한 재귀 탐색**으로 바꾼다. Hourly `(HH)` 필수 검증을 재강화하지 말고, 기관이 늘 때마다 배치 값을 추가하지 않는다.
+- 원격은 로컬 하위 구조를 복제하지 않는다. RINEX 버전별 고정 평면 `RemotePath`로 보낸다.
 - `[PUT.SFTP]` Host/User/Port 보호는 `enc:` + DPAPI LocalMachine이다. 인터페이스는 `config.Protector`, 구현은 `internal/security`, 설치는 `secure-set`. 상세는 `docs/SFTPClient_SECURITY_ENC_DESIGN.md`.
+- Linux 배포·테스트는 MVP2 범위다. Linux 전용 추가 보안·자격증명 보호는 선제 구현하지 않는다. 공식 보안점검에서 구체적인 요구가 나온 경우에만 그 범위에 맞춰 적용한다.
 
 ## Current MVP
 
-현재는 MVP 1 PUT을 구현한다.
+MVP1 PUT은 완료다(live transport, Worker Pool, IN_PROGRESS `Recover`, seed, 세트 게이트 포함).
+지금은 **MVP2**를 구현한다.
 
 Local Scanner
 → Ingress Verification
 → Common Ledger
+→ 세트 게이트(기본 OFF)
 → PUT 후보 선정
 → (절단 후) put_ledger PENDING 일괄 등록
 → SFTP .part Upload
@@ -46,12 +51,30 @@ Local Scanner
 → 최종 파일 존재 확인
 → put_ledger VERIFIED/FAILED
 
+MVP2 남은 목표:
+
+- `resend`(기간·대상 지정 재전송, 세트 게이트 우회). Ledger 의미론·인자는 구현 전 확정. 임의로 가정하지 않는다.
+- `HourLayout` 제거와 범위 제한 재귀 탐색. 시작 루트·깊이·날짜 범위·권한 오류·symlink/junction은 Linux 실경로 확인 후 확정한다.
+- Linux 배포·테스트(전용 추가 보안 제외).
+- Retention Cleanup 구현·검증. 지금은 설정과 `RetentionDays > ScanDays` 검증만 있고 실제 삭제는 없다.
+
+MVP2에서 하지 않는다:
+
+- DOWNLOAD 및 `download_ledger`(MVP3).
+- 미완성 세트 보류 리포트, 게이트 활성화 운영 절차, RINEX3 운영 프로파일.
+- 재귀 탐색 경계를 현장 정보 없이 추측해 고정하는 것.
+
+용어:
+
+- `Recover`: 시작 시 `IN_PROGRESS`를 **FAILED**로 되돌리는 크래시 회수.
+- `resend`: 운영자가 기간·대상을 지정하는 수동 재전송. 명령 이름은 `recovery`가 아니다.
+
+운영 규칙:
+
 - **Scan은 순차, 전송은 병렬**이다. 전송 기본값은 `MaxWorkers=4`이다.
-- 현재 절단면은 조립까지다(후보·PENDING·`--dry-run`). transport·Worker·IN_PROGRESS 회수 조립은 다음이다.
-- live 전송은 transport 도입 전까지 `main`이 명시적으로 거부한다.
+- live는 `[GENERAL] Transport` 또는 `--transport` override를 사용한다.
 - 정확성, 무결성, 중복 방지, 실패 추적을 성능보다 먼저 확보한다.
-- 단일 Ledger Writer 고루틴 + 배치 커밋은 MVP 4 최적화이다 (`SetMaxOpenConns(1)`로 정합성은 이미 안전).
-- 성능 튜닝은 MVP 4에서 진행한다.
+- 단일 Ledger Writer 고루틴 + 배치 커밋은 후속 성능 최적화다 (`SetMaxOpenConns(1)`로 정합성은 이미 안전).
 - `MaxRetries`는 동일 `(category, file_name, revision)`의 **누적** 자동 시도 상한이다(기본 5). 실행 안 재시도는 없다.
 - Unchanged는 후보에서 제외하지 않는다. "장부와 같다" ≠ "이미 보냈다".
 - IN_PROGRESS 회수는 PENDING이 아니라 **FAILED**로 되돌린다.
@@ -83,10 +106,13 @@ Local Scanner
 세부 설계가 필요하면 프로젝트 내 최신 문서를 확인한다.
 
 우선순위:
-1. 최신 `SFTPClient_PROJECT_GUIDELINES*.md`
+1. 최신 `SFTPClient_PROJECT_GUIDELINES.md` 상단 범위(12절 봉인 본문보다 우선)
 2. `docs/SFTPClient_LEDGER_CONCEPT.md`
 3. `internal/ledger/schema.sql`
-4. `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx`
+4. `docs/SFTPClient_SCAN_DESIGN_DECISIONS.md`
+5. `docs/SFTPClient_SET_ATOMICITY_DESIGN.md` (게이트 요약. 상충 시 GUIDELINES 상단)
+6. `docs/SFTPClient_SECURITY_ENC_DESIGN.md`
+7. `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx`
 
 Ledger 관련 구현에서는 `schema.sql`과 Ledger Concept 문서를 최신 기준으로 사용한다.
 Rev1.6과 최신 Ledger 문서가 충돌하면 최신 Ledger 문서를 따른다.

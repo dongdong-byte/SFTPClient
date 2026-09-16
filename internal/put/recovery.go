@@ -59,7 +59,7 @@ type RecoverReport struct {
 // 재전송은 PosixRename 덮어쓰기로 안전하다.
 //
 // rename 완료를 durable 하게 표시하는 C안은 상태/컬럼 재설계가
-// 필요하므로 MVP 1 범위 밖이다.
+// 필요하므로 현재 범위 밖이다.
 //
 // attempts 는 건드리지 않는다. 크래시 시점의 BeginPut 이 이미 한 번
 // 계상했고, 재시도는 BeginPut 이 다시 올린다. MaxRetries 의미가 유지된다.

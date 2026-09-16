@@ -58,7 +58,7 @@ type GeneralConfig struct {
 	// domain.Mode 는 PUT / DOWNLOAD / BOTH 를 모두 유효한 도메인 값으로 두지만,
 	// 현재 실행파일에서 실제로 사용할 수 있는 Mode 인지는 validate.go 가 판정한다.
 	//
-	// MVP 1 에서는 PUT 만 허용한다.
+	// DOWNLOAD / BOTH 는 MVP3 이므로 현재 실행파일은 PUT 만 허용한다.
 	Mode domain.Mode
 
 	// Transport 는 실행에 사용할 전송 계층이다.
@@ -190,6 +190,9 @@ type LedgerConfig struct {
 	//
 	// 따라서 이 값은 프로그램이 과거 파일의 전송 이력을 신뢰할 수 있는
 	// 최소 보존 범위를 결정한다.
+	//
+	// 설정 로드와 ScanDays 보다 길다는 시작 검증은 있다.
+	// 실제 행 삭제는 MVP2 미구현이다.
 	RetentionDays int
 }
 
@@ -198,7 +201,7 @@ type PutConfig struct {
 	// MaxWorkers 는 PUT 전송 병렬도이다.
 	//
 	// Scan 은 항상 순차로 수행한다.
-	// 전송만 bounded Worker Pool 로 병렬 처리하며 MVP 1 기본값은 4이다.
+	// 전송만 bounded Worker Pool 로 병렬 처리하며 기본값은 4이다.
 	MaxWorkers int
 
 	// MaxRetries 는 동일 (category, file_name, revision) 에 허용하는
@@ -246,7 +249,7 @@ type PutConfig struct {
 // 향후 BOTH 모드에서 송신 서버와 수신 서버가 서로 다를 수 있기 때문이다.
 type SFTPConfig struct {
 	// AuthMethod 는 인증 방식이다.
-	// MVP 1 에서는 publickey 만 허용하며 validate.go 가 그 외를 거부한다.
+	// publickey 만 허용하며 validate.go 가 그 외를 거부한다.
 	AuthMethod string
 
 	// Host / Port / User 는 config.ini 에서 enc: 보호 값을 지원한다.
@@ -289,8 +292,9 @@ type CategoryConfig struct {
 	// 문법 오류를 Scan 도중이 아니라 프로그램 시작 시 발견하고,
 	// 실행 중에는 Parse 를 반복하지 않고 Expand 만 수행한다.
 	//
-	// Hourly Category 의 LocalPath (HH) 사용 여부는 HourLayout 이 결정한다.
-	// (재귀 Scan 전 임시. 값을 늘리지 않는다. GUIDELINES 9.3)
+	// Hourly Category 의 LocalPath (HH) 사용 여부는 과도기 HourLayout 이
+	// 결정한다. MVP2에서 재귀 탐색으로 교체하며 검증을 재강화하지 않는다
+	// (GUIDELINES 9.3).
 	//
 	//	HourLayout=dir  → LocalPath 에 (HH) 필수
 	//	HourLayout=flat → LocalPath 에 (HH) 금지
@@ -307,7 +311,7 @@ type CategoryConfig struct {
 	RemotePath *pathpl.Template
 
 	// HourLayout 은 Hourly Category 의 디렉터리 배치이다 (dir | flat).
-	// 재귀 Scan 전까지의 임시 키다. 기관별 값을 추가하지 않는다.
+	// 과도기 키다. MVP2에서 제거하며 기관별 값을 추가하지 않는다.
 	//
 	// Hourly 섹션에서만 읽는다. load 가 생략 시 DefaultHourLayout(dir) 로
 	// 채운다. Daily Category 에서는 사용하지 않으며 zero-value("") 로 남는다.
@@ -332,6 +336,7 @@ type LogConfig struct {
 
 	// RetentionDays 는 로그 파일 보존기간(일)이다.
 	// Ledger.RetentionDays 와는 별개의 값이다.
+	// 현재 저장소에는 로그 파일을 지우는 구현이 없다.
 	RetentionDays int
 }
 

@@ -7,8 +7,9 @@ import (
 
 // HourLayout 은 Hourly Category 의 물리 디렉터리 배치이다.
 //
-// 임시 우회다. 재귀 Scan 전까지 LocalPath 의 (HH) 와 선언을 맞추기 위해 둔다.
-// 기관이 늘 때마다 값을 추가하지 않는다 (특수 사례 폭증). GUIDELINES 9.3.
+// 서울시 긴급 대응용 과도기다. MVP2에서 제거하고 범위 제한 재귀 탐색으로
+// 교체한다. 이 키를 재강화하거나 기관이 늘 때마다 값을 추가하지 않는다
+// (GUIDELINES 9.3).
 //
 //	dir :  ...\(DOY)\(HH)\   시각별 하위 디렉터리
 //	flat:  ...\(DOY)\        한 날짜 폴더에 24시간 파일
@@ -49,13 +50,13 @@ const (
 	//
 	// LocalPath 에 (HH) 가 있으며 Scanner 가 이를 00~23으로 확장하여
 	// 날짜당 24개 디렉터리를 나열한다. RemotePath 의 (HH) 는 강제하지 않는다
-	// (재귀 Scan 전 임시 규칙).
+	// (과도기. GUIDELINES 9.3).
 	HourLayoutDir HourLayout = "dir"
 
 	// HourLayoutFlat 은 한 디렉터리에 24시간 파일이 함께 놓이는 배치이다.
 	//
 	// LocalPath 에 (HH) 가 없으며 Scanner 는 날짜 디렉터리를 한 번만 나열한다.
-	// RemotePath 의 (HH) 는 강제하지 않는다 (재귀 Scan 전 임시 규칙).
+	// RemotePath 의 (HH) 는 강제하지 않는다 (과도기. GUIDELINES 9.3).
 	HourLayoutFlat HourLayout = "flat"
 )
 

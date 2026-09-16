@@ -29,7 +29,8 @@ const (
 	uploadChunk = 1 << 20
 
 	// dirPerm 은 EnsureDir 이 만드는 디렉터리 권한이다.
-	// Windows 에서는 대체로 무시되며 Linux 대응(MVP 5) 때 재검토한다.
+	// Windows 에서는 대체로 무시된다. Linux 배포 시 재검토하되,
+	// 전용 권한 강제는 공식 보안점검 요구가 있을 때만 적용한다.
 	dirPerm = 0o755
 
 	// partPerm 은 UploadPart 가 만드는 .part 파일 권한이다.
@@ -244,7 +245,7 @@ func (LocalFS) Rename(
 //
 // 사용처:
 //   - 정상적으로 포착한 전송 실패의 잔여 .part cleanup
-//   - 이후 IN_PROGRESS startup recovery
+//   - 이후 IN_PROGRESS 시작 시 Recover
 //
 // 두 경로 모두 "이미 없음" 은 정상 상태이므로 오류가 아니다.
 func (LocalFS) Remove(ctx context.Context, path string) error {

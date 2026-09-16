@@ -232,7 +232,7 @@ func (r *Runner) runCategory(
 	// 여기 들어오는 FAILED 는 Unchanged 파일의 현재 revision 이다.
 	// 변경 파일은 live 에서 새 revision 이 생겨 예산이 리셋되므로
 	// 이 필터에 넣지 않는다.
-	// ── Set Completeness Gate (MVP2 확정 §13) ──────────────────
+	// ── Set Completeness Gate ──────────────────────────────────
 	// 위치: Upsert 뒤(observed 완성 뒤), PENDING 등록 앞.
 	// FAILED 재시도 대기열(failed)에도 동일 정책을 적용한다 —
 	// 미완성 세트의 FAILED 멤버만 재시도로 새어 나가면 게이트가 뚫린다.
@@ -244,8 +244,8 @@ func (r *Runner) runCategory(
 	rep.SetGate = gate.on()
 
 	if gate.on() {
-		// 보류는 조용히 일어나면 안 된다. 일일 리포트 전까지는
-		// 이 로그가 유일한 관측 수단이다. (확정 §13 로그 형식)
+		// 보류는 조용히 일어나면 안 된다. 미완성 세트 보류 리포트는
+		// 구현하지 않으므로 이 로그가 유일한 관측 수단이다.
 		for _, hs := range gate.heldSets() {
 			r.logf(
 				"[SET] category=%s held set=%s have=%s missing=%s",

@@ -6,8 +6,9 @@ import "testing"
 // 버전으로 매핑됨을 고정한다.
 //
 // 새 Category 상수를 추가하고 RinexVersion 의 switch 갈래를 빠뜨리면
-// 이 테스트가 먼저 깨진다. config 의 RinexVersion 명시 키를 대조하는
-// 기준값이므로, 매핑 누락은 시작 검증 자체를 무너뜨린다.
+// 이 테스트가 먼저 깨진다. 버전의 출처는 닫힌 열거형 하나이며
+// config 에 버전 키를 두지 않는다. 전수 매핑이 빠지면 세트 게이트와
+// 파서가 조용히 어긋난다.
 func TestRinexVersion_TotalOverCategories(t *testing.T) {
 	want := map[Category]int{
 		CategoryRINEX2Daily:  2,

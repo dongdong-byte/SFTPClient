@@ -218,7 +218,7 @@ func (s snapshot) staleThreshold(staleAfter time.Duration) time.Duration {
 //
 // 현재는 lock 나이만으로 stale 을 판정한다.
 // PID 생존 확인을 AND 조건으로 추가하면 정확도를 높일 수 있지만
-// Windows/Linux 별도 구현과 PID 재사용 문제가 남으므로 MVP1 에서는
+// Windows/Linux 별도 구현과 PID 재사용 문제가 남으므로 현재는
 // 포함하지 않는다.
 //
 // 이 판정이 너무 짧으면 살아 있는 실행을 탈취해 이중 전송이 발생할 수

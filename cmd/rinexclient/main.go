@@ -296,7 +296,7 @@ func run() error {
 				LocalPath:  cc.LocalPath,
 				RemotePath: cc.RemotePath,
 
-				// Set Completeness Gate 정책 (버전 단위, 확정 §5·§7).
+				// Set Completeness Gate 정책 (버전 단위).
 				// nil 이면 게이트 OFF — 기본 배포 상태이며 기존 동작과
 				// 완전히 동일하다. 버전의 출처는 닫힌 열거형 하나다
 				// (§5 3차 확정) — Category 는 config 가 ParseCategory 로
@@ -335,7 +335,7 @@ func run() error {
 	// → 리포트
 	// → 종료
 	//
-	// 전송과 startup recovery 는 하지 않는다.
+	// 전송과 시작 시 Recover 는 하지 않는다.
 	//
 	// 범위는 항상 ScanDays 이다.
 	// Hot 범위만 seed 하면 다음 Deep 회차에서 나머지 파일이
@@ -469,7 +469,7 @@ func run() error {
 		}
 	}
 
-	// TODO(Retention 단계): Deep 실행일이면 Retention Cleanup.
+	// TODO(MVP2 Retention Cleanup): Deep 실행일이면 Retention Cleanup.
 
 	return nil
 }

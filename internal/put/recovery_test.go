@@ -1,6 +1,6 @@
 package put
 
-// recovery.go 의 회수 계약을 심판한다 (A안 — salvage 없음).
+// Recover 의 회수 계약을 심판한다 (A안 — salvage 없음).
 //
 // Uploader 는 fake, Ledger 는 실제 SQLite 다 (transfer_test 와 동일 원칙).
 // FailPut 의 WHERE 가드나 .part 정리 순서 같은 실제 결함을 fake ledger 로
@@ -13,7 +13,7 @@ package put
 //   #R4 Remove 실제 오류          → 실행 중단, 행은 IN_PROGRESS 유지
 //   #R5 여러 건                   → 전부 FAILED, Found=Recovered
 //   #R6 두 번 실행                → 두 번째는 Found=0 (멱등)
-//   #R7 attempts 상한 상태        → Recovery 가 attempts 를 초기화하지 않음
+//   #R7 attempts 상한 상태        → Recover 가 attempts 를 초기화하지 않음
 //   #R8 원격 final 이 멀쩡해 보여도 salvage 하지 않음
 
 import (
@@ -137,7 +137,7 @@ func TestRecoverSingleWithPart(t *testing.T) {
 	}
 
 	// attempts 는 BeginPut 이 올린 1 그대로여야 한다.
-	// Recovery 자체는 시도 횟수를 소비하지 않는다.
+	// Recover 자체는 시도 횟수를 소비하지 않는다.
 	if row.attempts != 1 {
 		t.Errorf(
 			"attempts = %d, want 1 (회수는 attempts 불변)",
@@ -366,9 +366,9 @@ func TestRecoverIdempotent(t *testing.T) {
 }
 
 // #R7 — attempts 가 이미 자동 시도 상한에 도달했더라도
-// Recovery 는 그 값을 초기화하거나 감소시키지 않는다.
+// Recover 는 그 값을 초기화하거나 감소시키지 않는다.
 //
-// Recovery 의 책임은 IN_PROGRESS → FAILED 회수까지다.
+// Recover 의 책임은 IN_PROGRESS → FAILED 회수까지다.
 // 이후 exhausted 로 후보에서 제외할지는 Runner 후보 판정의 책임이다.
 func TestRecoverPreservesAttemptsAtLimit(t *testing.T) {
 	db, dbPath := xferTestDB(t)
@@ -419,7 +419,7 @@ func TestRecoverPreservesAttemptsAtLimit(t *testing.T) {
 
 	if row.attempts != maxRetries {
 		t.Errorf(
-			"attempts = %d, want %d (Recovery 는 attempts 불변)",
+			"attempts = %d, want %d (Recover 는 attempts 불변)",
 			row.attempts,
 			maxRetries,
 		)

@@ -552,7 +552,7 @@ func (r *Runner) transferOne(
 	// final Size 일치. 이 시점에만 VERIFIED 로 확정한다.
 	//
 	// 원격은 이미 맞다. 취소된 ctx 로 FinishPut 하면 IN_PROGRESS 가
-	// 남아 recovery 가 정상 파일을 실패로 오인하므로 WithoutCancel 로
+	// 남아 Recover 가 정상 파일을 실패로 오인하므로 WithoutCancel 로
 	// 격리하고 timeout 만 다시 씌운다.
 	finishCtx, finishCancel := context.WithTimeout(
 		context.WithoutCancel(ctx),
@@ -570,7 +570,7 @@ func (r *Runner) transferOne(
 	if finishErr != nil {
 		// 최종 파일은 이미 올바르게 존재한다. FinishPut 실패를 FailPut
 		// 으로 덮지 않는다. Ledger 기록 실패는 실행 중단 사유이며,
-		// 이 경우 남은 IN_PROGRESS 는 다음 startup recovery 가 다룬다.
+		// 이 경우 남은 IN_PROGRESS 는 다음 시작의 Recover 가 다룬다.
 		return fmt.Errorf("finish put %q: %w", c.Key.FileName, finishErr)
 	}
 
@@ -638,8 +638,8 @@ func (r *Runner) failOne(
 	// Rename 이전에 실패한 경우에만 .part 를 정리한다.
 	//
 	// 남기면 안 되는 이유:
-	// FAILED 파일이 이후 Scan 범위 밖으로 밀려나면 startup IN_PROGRESS
-	// recovery 대상도 아니고 재시도도 되지 않는다. 그러면 .part 가
+	// FAILED 파일이 이후 Scan 범위 밖으로 밀려나면 시작 시 Recover
+	// 대상도 아니고 재시도도 되지 않는다. 그러면 .part 가
 	// 원격 저장소에 영구 누적된다. (설계안 9.3)
 	//
 	// Rename 이후라면 partPath 는 이미 없고 최종 이름의 파일이 온전하다.

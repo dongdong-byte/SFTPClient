@@ -368,6 +368,8 @@ func TestValidate_RetentionMustExceedScanDays(t *testing.T) {
 }
 
 func TestValidate_HourToken(t *testing.T) {
+	// 과도기 HourLayout=dir 기본값과 LocalPath (HH) 의 교차 검증이다.
+	// 이 거부를 더 엄격히 만들 근거로 쓰지 않는다 (GUIDELINES 9.3).
 	tests := []struct {
 		name   string
 		mutate func(t *testing.T, cfg *Config)
@@ -413,6 +415,9 @@ func TestValidate_HourToken(t *testing.T) {
 }
 
 func TestValidate_DisabledCategoryStillChecksHourToken(t *testing.T) {
+	// 비활성 Hourly 도 기본 HourLayout=dir 이면 LocalPath (HH) 를 요구한다.
+	// 과도기 검증이며, 비활성 카테고리까지 (HH) 를 더 강하게 강제하려는
+	// 확장이 아니다.
 	cfg := validConfigForValidate(t)
 
 	// RINEX3_HOURLY

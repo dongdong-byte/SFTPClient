@@ -22,11 +22,11 @@ var ErrEnvironment = errors.New("config: environment not ready")
 
 // downloadImplemented 는 이 빌드가 DOWNLOAD 방향을 수행할 수 있는지이다.
 //
-// 현재 구현 단계는 MVP 1 PUT 이다.
+// MVP1 PUT 은 완료다. DOWNLOAD 와 BOTH 는 MVP3 이므로 현재는 false 다.
 // DOWNLOAD 가 완성되면 이 값과 Mode 별 검증 흐름을 함께 수정한다.
 //
 // Mode=both 를 그대로 허용하면 DOWNLOAD 없이 PUT 만 동작하는
-// 불완전한 실행이 될 수 있으므로 현재는 시작 시 거부한다.
+// 불완전한 실행이 될 수 있으므로 시작 시 거부한다.
 const downloadImplemented = false
 
 // Validate 는 값의 조합이 실행 가능한지 판정한다.
@@ -250,7 +250,7 @@ func (c *Config) checkSFTP(add addFunc) {
 	s := c.Put.SFTP
 
 	// 설정 파일에 평문 비밀번호를 두지 않으므로
-	// MVP 1 에서는 publickey 인증만 지원한다.
+	// 설정 파일에 평문 비밀번호를 두지 않으므로 publickey 만 지원한다.
 	//
 	// load.go 가 이 값을 소문자로 정규화하므로
 	// 여기 도달하는 값은 이미 소문자이다.
@@ -399,7 +399,8 @@ func (c *Config) checkCategories(add addFunc) {
 //	HourLayout 과 무관하게 (HH) 유무를 강제하지 않는다.
 //	서울시: 소스는 시각 폴더(dir), 목적지는 /RNX2/ 같은 flat.
 //	파일명 세션 문자(a~x)가 시각을 구분하므로 이름이 충돌하지 않는다.
-//	이 완화와 HourLayout 자체는 재귀 Scan 전의 임시 규칙이다.
+//	이 완화와 HourLayout 자체는 재귀 Scan 전의 과도기 규칙이다.
+//	Hourly (HH) 필수 검증을 재강화하지 않는다 (GUIDELINES 9.3).
 //
 // 선언과 LocalPath 가 어긋나도 파일시스템 오류 없이 일부 동작할 수 있기
 // 때문에 추측해서 보정하지 않고 시작 시 거부한다.
@@ -491,8 +492,8 @@ func (c *Config) checkLog(add addFunc) {
 // Scan 단계에서 fs.ErrNotExist 를 정상적인 빈 슬롯으로 처리한다.
 //
 // 개인키의 OS별 상세 권한 검사도 여기서 하지 않는다.
-// Windows ACL / Linux permission 정책은 security 패키지에서
-// 플랫폼별 구현으로 담당한다.
+// Linux 전용 권한 강제는 선제 구현하지 않으며, 공식 보안점검에서
+// 구체적인 요구가 나온 경우에만 적용한다.
 //
 // Log.Dir 도 검사하지 않는다. 로거가 시작 시 스스로 생성한다.
 // 생성 실패는 로거가 보고하며, 그 시점에는 아직 아무 파일도 전송하지 않았다.

@@ -17,7 +17,7 @@ import (
 // SMB 네트워크 공유도 OS 에서는 일반 파일시스템 경로로 접근하므로
 // 같은 구현을 사용한다.
 //
-// MVP 2 의 원격 SFTP 나열은 DirLister 의 별도 구현으로 교체한다.
+// 원격 SFTP 나열(DOWNLOAD)은 DirLister 의 별도 구현으로 교체한다 (MVP3).
 type LocalLister struct{}
 
 // List 는 os.ReadDir 결과를 Entry 로 옮긴다.

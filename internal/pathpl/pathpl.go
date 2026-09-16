@@ -191,14 +191,12 @@ func tokenValue(token string, when time.Time) string {
 
 // HasToken 은 템플릿에 해당 토큰이 있는지 답한다.
 //
-// config 검증에서 사용한다. Hourly Category 의 경로에 (HH) 가 빠지면
-// 0시부터 23시까지가 모두 같은 디렉터리로 확장되어 같은 곳을 24번 읽고
-// 시간별 하위 폴더는 보지 못한다. 경로가 실제로 존재하기 때문에
-// 오류도 나지 않고 파일도 일부 발견되어 아무도 알아채지 못한다.
-//
-// pathpl 은 Category 를 알지 못한다. 규칙은 config 가 세운다.
-//
-//	if cat.IsHourly() && !tpl.HasToken(pathpl.TokenHH) { 거부 }
+// pathpl 은 Category 를 알지 못한다. (HH) 필수 여부는 config 가 세운다.
+// 현재 코드는 과도기다. HourLayout=dir 인 Hourly LocalPath 에 (HH) 가
+// 빠지면 0시부터 23시까지가 같은 디렉터리로 확장되어 같은 곳을 24번
+// 읽고, 오류 없이 일부 파일만 보일 수 있다. 이 검증을 재강화하지 말고
+// MVP2에서 HourLayout 과 함께 범위 제한 재귀 탐색으로 교체한다
+// (GUIDELINES 9.3).
 func (t *Template) HasToken(token string) bool {
 	for _, seg := range t.segments {
 		if seg.token == token {

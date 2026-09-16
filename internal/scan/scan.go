@@ -9,8 +9,10 @@
 //
 // 0바이트, .part, 확장자, 파일명 규칙, Grace Time 은 여기서 검사하지 않는다.
 //
-// Hot / Deep / Recovery 도 구분하지 않는다.
-// 세 방식의 차이는 Range 뿐이며, 어떤 Range 를 사용할지는 호출자가 결정한다.
+// Hot / Deep / resend 도 구분하지 않는다.
+// 차이는 Range 뿐이며, 어떤 Range 를 사용할지는 호출자가 결정한다.
+// 운영자 재전송 명령 이름은 resend 다. Recover(시작 시 IN_PROGRESS 회수)와
+// 혼동하지 않는다.
 package scan
 
 import (
@@ -245,7 +247,8 @@ func (s *Scanner) Scan(
 	// 00~23 을 각각 나열한다. 없으면 평면(flat) 배치 또는 Daily 이므로
 	// 날짜 디렉터리를 한 번만 나열한다.
 	//
-	// 재귀 Scan 전의 임시 순회다. HourLayout 값을 여기서 늘리지 않는다.
+	// 재귀 Scan 전의 과도기 순회다. HourLayout 값을 여기서 늘리거나
+	// Hourly (HH) 필수 검증을 재강화하지 않는다 (GUIDELINES 9.3).
 	//
 	// category.IsHourly() 가 아니라 템플릿 토큰으로 결정하는 이유:
 	// 같은 Hourly 라도 배치가 dir/flat 로 갈리며, 그 차이는 (HH) 유무로

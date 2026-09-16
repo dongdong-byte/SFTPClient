@@ -19,11 +19,11 @@
 // 끝난다.
 //
 // 잔여 위험 (수용, 문서화): 로컬에서 내용이 바뀌었는데 크기가 우연히
-// 같은 파일은 원격의 옛 내용을 VERIFIED 로 신뢰한다. recovery 의
+// 같은 파일은 원격의 옛 내용을 VERIFIED 로 신뢰한다. Recover 의
 // size-only salvage 를 기각시킨 그 시나리오와 같은 부류지만, 성격이
 // 다르다 —
 //
-//	recovery: 프로그램이 매 시작 자동으로 내리는 판정. 잘못되면
+//	Recover: 프로그램이 매 시작 자동으로 내리는 판정. 잘못되면
 //	  조용한 누락이 상시 경로에 생긴다.
 //	seed: 운영자가 "기존 전송분을 초기 신뢰 기준으로 받아들인다" 고
 //
@@ -84,7 +84,7 @@ type SeedReport struct {
 // 오류 방침: 원격의 예상 밖 오류(권한·통신)는 실행을 중단한다.
 // 원격 상태를 확인할 수 없는데 장부를 쓰는 것은 추측이다. seed 는
 // 멱등하므로(이미 등록된 행은 Run 이 후보에서 제외하고, SeedVerified
-// 는 DO NOTHING) 중단 후 재실행에 비용이 없다 — recovery 와 같은 방침.
+// 는 DO NOTHING) 중단 후 재실행에 비용이 없다 — Recover 와 같은 방침.
 func (r *Runner) Seed(
 	ctx context.Context,
 	up Uploader,

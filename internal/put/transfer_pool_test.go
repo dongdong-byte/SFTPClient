@@ -666,7 +666,7 @@ func TestTransferPreCancelledStopsAll(t *testing.T) {
 //	failOne → FAILED
 //
 // 최종적으로 정상 cancel 경로에서는 IN_PROGRESS 가 하나도 남지 않아야 한다.
-// Startup recovery 는 이 정상 취소 경로를 대신하는 수단이 아니라
+// Startup Recover 는 이 정상 취소 경로를 대신하는 수단이 아니라
 // 비정상 종료를 위한 최후 방어선이다.
 func TestTransferWorkerFatalCancelsPool(t *testing.T) {
 	db, dbPath := xferTestDB(t)

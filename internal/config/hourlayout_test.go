@@ -8,6 +8,10 @@ import (
 
 // TestValidate_HourLayout 은 HourLayout 과 (HH) 토큰의 교차 검증을 본다.
 //
+// 현재 코드의 과도기 동작이다. MVP2에서 HourLayout 을 제거하면
+// 이 교차 검증도 함께 교체한다. 이 테스트가 있다고 해서 Hourly (HH)
+// 필수 검증을 재강화하지 않는다 (GUIDELINES 9.3).
+//
 // 기준 config 의 RINEX3_HOURLY(인덱스 3)를 변형하여 각 조합을 만든다.
 // validConfigForValidate 는 hourly 항목을 dir + (HH) 경로로 채워 둔다.
 func TestValidate_HourLayout(t *testing.T) {

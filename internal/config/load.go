@@ -397,7 +397,7 @@ func (l *loader) template(s *iniSection, key string) *pathpl.Template {
 
 // hourLayout 은 HourLayout 값을 읽는다. Hourly 섹션에서만 호출한다.
 //
-// 재귀 Scan 전의 임시 키다. 선택 키이며 누락 시 absent 를 호출하지 않고
+// 과도기 키다. MVP2에서 제거한다. 선택 키이며 누락 시 absent 를 호출하지 않고
 // DefaultHourLayout(dir) 을 반환한다. 기존 동작(시각 24회 순회)을 유지한다.
 //
 // 이 리더는 l.value 를 거치지 않는다. 키 부재가 정상인 선택값이므로

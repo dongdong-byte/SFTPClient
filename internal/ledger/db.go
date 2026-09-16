@@ -101,12 +101,12 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// SQLite 쓰기를 하나의 connection 으로 직렬화하기 위해
 	// MaxOpenConns / MaxIdleConns 를 1로 제한한다.
 	//
-	// MVP 1 의 전송 Worker 는 기본 4개지만 Ledger 접근은
+	// 전송 Worker 는 기본 4개지만 Ledger 접근은
 	// database/sql 을 통해 직렬화된다.
 	//
 	// 별도의 Ledger Writer goroutine + batch commit 은
 	// 정합성 요건이 아니라 처리량 최적화이며,
-	// 실제 병목이 확인될 경우 MVP 4 에서 검토한다.
+	// 실제 병목이 확인될 경우 후속 성능 개선에서 검토한다.
 	//
 	// ★ 교착 주의 — 트랜잭션을 도입할 때 반드시 지킬 것
 	//

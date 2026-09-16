@@ -272,7 +272,7 @@ CREATE TABLE IF NOT EXISTS common_ledger (
     --
     -- COMPLETE/HELD 같은 판정 결과는 저장하지 않는다. 세트 완성
     -- 여부는 현재 정책(RequiredKinds)과 현재 파일 상태로 매 스캔
-    -- 재계산한다. Ledger 는 사실만 기록한다. (MVP2 확정 §13~§14)
+    -- 재계산한다. Ledger 는 사실만 기록한다.
 
     kind        TEXT    NOT NULL DEFAULT ''
     CHECK (kind = lower(kind)),
@@ -509,7 +509,7 @@ CREATE INDEX IF NOT EXISTS idx_put_status
 --    최신 Ingress 검증 시각을 보존해야 하기 때문이다.
 --
 --  구현할 정리 순서:
---    시작 시 IN_PROGRESS 복구 → Scan/전송 → Deep Scan 실행일이면 Retention Cleanup.
+--    시작 시 IN_PROGRESS Recover → Scan/전송 → Deep Scan 실행일이면 Retention Cleanup.
 --
 --  VACUUM 은 정기 실행하지 않는다.
 --  DELETE 로 생긴 free page 는 이후 INSERT 에 재사용하며,

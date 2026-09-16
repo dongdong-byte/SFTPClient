@@ -253,7 +253,7 @@ type CategoryReport struct {
 
 	// SetHeld 는 필수 종 미완성으로 이번 회차 후보에서 보류된
 	// 파일 수다 (재시도 대기열 포함). put_ledger 에는 아무것도
-	// 기록되지 않으며 다음 스캔이 재계산한다. (§13)
+	// 기록되지 않으며 다음 스캔이 재계산한다.
 	SetHeld int
 
 	// SetUnparsed 는 게이트가 켜진 카테고리에서 세트 소속을 확정할
