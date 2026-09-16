@@ -8,6 +8,8 @@
 > DOWNLOAD는 MVP3으로 연기했으며 Ledger Retention Cleanup을 MVP2에 추가했다.
 > 개정 2026-09-16 — Linux 전용 보안은 공식 보안점검 요구가 나온 뒤에만 적용.
 > 수동 복구 표기를 `resend`로 통일.
+> 개정 2026-09-16 — 서울시·측위원 현장 운영값을 근거로 Ledger Retention을
+> 60일에서 30일로 변경. 1개월은 달력 월이 아니라 고정 30일로 계산한다.
 >
 > 이 문서는 `SFTPClient_PROJECT_GUIDELINES.md` 및 `SFTPClient_LEDGER_CONCEPT.md` 의
 > 보조 문서다. 스캔 범위·주기·복구 전략을 정하는 과정에서 제기된 문제와
@@ -19,7 +21,7 @@
 
 ---
 
-## 0. 요약 — 2026-09-15 현재 기준
+## 0. 요약 — 2026-09-16 현재 기준
 
 ```ini
 [GENERAL]
@@ -34,10 +36,10 @@ UseDirMtimeSkip = false
 GraceSeconds    = 60
 
 [LEDGER]
-RetentionDays   = 60     ; Ledger 재발견 안전 기준. resend 의미론은 구현 전 결정 필요
+RetentionDays   = 30     ; Ledger 재발견 안전 기준. 서울시·측위원 현장 운영값
 
 [LOG]
-RetentionDays   = 30     ; 로그 보존기간. Ledger 60일과 별개
+RetentionDays   = 30     ; 로그 보존기간. 값은 같지만 Ledger 보존과 별개
 ```
 
 **현재 경로 방향** — 로컬은 설정 루트 아래를 범위 제한 재귀 탐색하고,
@@ -396,7 +398,7 @@ type WriteDetector interface {
 | | 30일안 | 3갈래안 |
 |---|---|---|
 | Deep Scan 파일 대조 | 매일 18만 | **매일 4.2만** |
-| 장부 보존 | 120일 (440MB) | **60일 (220MB)** |
+| 장부 보존 | 120일 (440MB) | **30일 (110MB, 당시 추정 기준)** |
 | 30일 초과 백필 | 못 잡음 | **잡음** |
 
 과거에는 `scan` 패키지에 Hot / Deep / Recovery 날짜 범위만 다르게 넣는 구조를
@@ -447,23 +449,20 @@ resend --from 2026-02-01 --to 2026-02-28   # 잠정 예시
 강제로 다시 보내는 명령이라면 Ledger 보존기간은 후보 판정의 상한이 아니다.
 두 방식 중 무엇을 채택할지는 MVP2 `resend` 구현 전에 결정한다.
 
-값은 **60일**로 확정한다. 근거는 운영 경험이다.
-
-> 1달만 넘어가도 난리가 나는 경우가 대부분이고, 2달까지 가지 않을 확률이 높다.
-> **2달이나 방치했다는 것은 사실상 포기했다는 뜻이다.**
-
-임의의 숫자가 아니라 운영 현실에서 나온 기준이므로 채택한다.
+초기 설계에서는 60일을 채택했으나, 2026-09-16에 **30일**로 변경한다.
+서울시·측위원 현장 배포에서 실제로 1개월 보존을 적용한 운영 경험이 근거다.
+설정은 달력 월이 아니라 고정 일수이므로 `RetentionDays = 30`으로 표현한다.
 
 | `RetentionDays` | 행 수 | 용량 |
 |---|---|---|
 | 180일 | 약 108만 | 약 660MB |
-| **60일** | **약 36만** | **약 220MB** |
+| **30일** | **약 18만** | **약 110MB** |
 
 행당 약 620B 로 계산했다 (`common_ledger` 본체+인덱스 315B,
 `put_ledger` 본체+인덱스 230B, 페이지 여유 포함).
 
 **주의 — `DELETE` 로는 파일 크기가 줄지 않는다.** SQLite 는 free page 를
-재사용할 뿐 OS 에 반환하지 않는다. 220MB 에서 평형을 이룬다.
+재사용할 뿐 OS 에 반환하지 않는다. 위 추정 조건에서는 약 110MB에서 평형을 이룬다.
 줄이려면 `VACUUM` 이 필요하고 그동안 DB 전체가 잠긴다.
 
 ### 검토한 안전장치 — 미확정
@@ -471,7 +470,7 @@ resend --from 2026-02-01 --to 2026-02-28   # 잠정 예시
 ```
 $ RINEXClient.exe resend --from 2026-02-01   # 잠정 예시
 
-거부: 지정 구간이 장부 보존범위(60일) 밖입니다.
+거부: 지정 구간이 장부 보존범위(30일) 밖입니다.
       장부 최초 기록: 2026-06-29
       이 구간을 실행하면 약 42,000개가 재전송될 수 있습니다.
       의도한 것이라면 --force 를 붙이십시오.
@@ -490,24 +489,24 @@ LedgerRetentionDays > ScanDays     ; 깨지면 시작 시 거부
 중복 전송이 정확히 이 경로로 돌아온다.
 
 > **미확인** — 3형태(`.rnx` / `.crx` / `.crx.gz`) 유입이 확인되면
-> 60일이어도 약 670MB 가 된다. `--dry-run` 결과로 확인 후 재검토한다.
+> 30일이어도 파일 형태 수에 따라 추정 용량이 크게 달라진다. `--dry-run` 결과로 확인 후 재검토한다.
 
-### 2026-09-15 구현 상태 — 설정만 있고 실제 삭제는 없다
+### 2026-09-16 구현 상태 — 설정만 있고 실제 삭제는 없다
 
-`[LEDGER] RetentionDays = 60`과 `RetentionDays > ScanDays` 시작 검증은 구현됐다.
+`[LEDGER] RetentionDays = 30`과 `RetentionDays > ScanDays` 시작 검증은 구현됐다.
 그러나 `cmd/rinexclient/main.go`에는 Deep Scan 뒤 Cleanup이 TODO로 남아 있어,
-현재 실행파일은 60일이 지나도 `common_ledger`와 연결된 `put_ledger` 행을
+현재 실행파일은 30일이 지나도 `common_ledger`와 연결된 `put_ledger` 행을
 자동 삭제하지 않는다.
 
 `[LOG] RetentionDays = 30`은 로그 보존 설정이며 DB 행 삭제와 무관하다.
 현재 저장소에는 로그 보존 정리를 수행하는 `internal/logging` 구현도 없다.
-이 절의 DB 검증 대상은 `[LEDGER] RetentionDays = 60`이다.
+이 절의 DB 검증 대상은 `[LEDGER] RetentionDays = 30`이다.
 
 MVP2에서 다음을 구현·검증한다.
 
 - 성공한 Deep Scan 뒤 `ingress_verified_at < now - RetentionDays`인 common 행 삭제
 - FK `ON DELETE CASCADE`에 의한 관련 put 행 삭제
-- 정확한 60일 경계의 포함/제외와 최근 행 보존
+- 정확한 30일 경계의 포함/제외와 최근 행 보존
 - Cleanup 실패 처리
 - SQLite free page 재사용 유지, 정기 `VACUUM` 미실행
 - 재귀 Scan이 보존기간 밖의 오래된 파일을 신규로 되살려 재전송하지 않는지 검증
@@ -831,7 +830,7 @@ size 대조로 대부분 걸러지며, 이는 정상 전송의 Transfer Verifica
 여기서 추정만 하던 것들이 한 번에 확정된다.
 
 - 관측소 실제 개수 (120 이 맞는지)
-- **`.rnx` / `.crx` / `.gz` 중 무엇이 실제로 있는지 → 장부 용량 220MB 냐 670MB 냐**
+- **`.rnx` / `.crx` / `.gz` 중 무엇이 실제로 있는지 → 30일 장부의 실제 용량**
 - 경로 템플릿이 맞는지 (`files=0` 이면 틀림)
 - 스캔 실소요 시간
 - 수신기가 임시명 후 rename 하는지 (3절 미확인 항목)
@@ -1056,10 +1055,10 @@ GUIDELINES 의 **"Scan 은 병렬화 대상이 아니다. 항상 순차로 수�
 | 1형태 | 약 4,250 |
 | **3형태** | **약 12,700** |
 
-| 60일 | 행 수 | 용량 |
+| 30일 | 행 수 | 용량 |
 |---|---|---|
-| 1형태 | 약 26만 | 약 130MB |
-| **3형태** | **약 76만** | **약 400~450MB** |
+| 1형태 | 약 13만 | 약 65MB |
+| **3형태** | **약 38만** | **약 200~225MB** |
 
 항법자료가 더해지면 상승하나 여유가 있다.
 `DELETE` 로는 파일이 줄지 않으므로 해당 지점에서 평형을 이룬다.
@@ -1202,7 +1201,7 @@ Windows 에서는 `ReadDir` 이 크기·시각을 함께 반환하므로 디렉�
 최후  revision                  ← 어디서나
 ```
 
-**보존 10년 vs 장부 60일** — 이 격차가 `LedgerRetentionDays > ScanDays` 조건을
+**보존 10년 vs 장부 30일** — 이 격차가 `LedgerRetentionDays > ScanDays` 조건을
 절대 조건으로 만든다. 장부에서만 지워진 파일이 Scan 범위에 들어오면
 전량 재전송된다. config 검증에서 강제한다.
 
@@ -1237,7 +1236,7 @@ DOWNLOAD 는 "타 기관 소유라 설치가 불가한 서버"가 나타날 때�
 | `SFTPClient_LEDGER_CONCEPT.md` 4.4 | Grace Time 무용론 철회. 전송 구조에서는 작동함 |
 | `SFTPClient_PROJECT_GUIDELINES.md` 4절 | `scan` 패키지 위치 확정 (미정 → `internal/scan`) |
 | `SFTPClient_PROJECT_GUIDELINES.md` 9.8 | Deep Scan 7일 + `resend` 분리 구조 반영 |
-| `config.example.ini` | `ScanDays` 7, `RetentionDays` 60, `resend`·재귀 Scan 정책 반영 필요 |
+| `config.example.ini` | `ScanDays` 7, `RetentionDays` 30, `resend`·재귀 Scan 정책 반영 필요 |
 | **`internal/ledger/schema.sql`** | **`local_path` 삭제 반영 완료. 현재 설계 v8 / DB schema_version 5** |
 | **`internal/ledger/common.go`** | **UPSERT 에서 `local_path` 제거 (작성 완료분 수정)** |
 | `SFTPClient_LEDGER_CONCEPT.md` | 후보 선정을 스캔 주도로 서술 변경 |
@@ -1468,7 +1467,7 @@ MVP2 미구현:
 - Linux 배포·권한·경로·스케줄러·SFTPGo 연동과 테스트.
   Linux 전용 추가 보안·자격증명 보호는 선제 구현하지 않는다.
   공식 보안점검에서 구체적인 요구가 나온 경우에만 그 요구 범위에 맞춰 적용한다.
-- Ledger Retention Cleanup과 60일 경계·FK cascade·재전송 방지 테스트
+- Ledger Retention Cleanup과 30일 경계·FK cascade·재전송 방지 테스트
 
 MVP3으로 연기:
 

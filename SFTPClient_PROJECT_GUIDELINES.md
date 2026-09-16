@@ -51,6 +51,7 @@
 | **2026-09-10** | **세트 게이트 구현 완료 (커밋 5개).** §5 3차 확정(버전 출처=닫힌 열거형, ini 키 기각), 의미론 2건(미완성 세트 선택 종 포함 전체 보류 / 파싱 유보 개별 통과+관측), **스키마 v8·`schema_version` '5'** — `common_ledger` 에 `set_key`·`kind`(NOT NULL DEFAULT ''), 최초의 운영 DB 보존 전환을 Open 자동 마이그레이션으로 수행(서브커맨드 기각), 파생의 주인은 `UpsertCommon` 내부 `domain.SetKeyKind`, MaxFilesPerRun 세트 경계 절단. 12절 참조 |
 | **2026-09-15** | **MVP2 실행 범위 재확정.** ① 세트 원자성(완료) ② `resend` 명령 신설 ③ 서울시 긴급 대응으로 추가한 `HourLayout` 제거와 범위 제한 재귀 탐색 기반 경로 범용화 ④ Linux 배포·테스트 ⑤ Retention Cleanup 구현·검증. DOWNLOAD는 MVP3으로 연기. 보류 리포트는 보안 취약점 우려로 제외. 게이트 활성화 운영 절차와 RINEX3 운영 프로파일도 이번 범위에서 제외. Linux 전용 추가 보안은 선제 구현하지 않고 공식 보안점검 요구가 있을 때만 별도 진행. |
 | **2026-09-16** | **문서 정합.** 9.3을 현재 결론/하지 말 것/과도기 코드/역사 기록으로 분리. 12절 봉인 문구 강화(15·18만 안내 덧붙임, 본문 전체 현행화 아님). 수동 복구 표기를 `resend`로 통일. |
+| **2026-09-16** | **Ledger Retention 운영값 현행화.** 서울시·측위원 현장 배포에서 적용한 1개월 보존을 기준으로 `[LEDGER] RetentionDays = 30` 확정. 달력 월이 아니라 30일로 계산하며, `[LOG] RetentionDays = 30`과 값은 같지만 책임은 별개다. |
 
 ### MVP2 현재 실행 범위 (2026-09-15 확정)
 
@@ -60,7 +61,7 @@
 | 2 | `resend` 명령 신설 | **미구현.** 기간·대상 지정 재전송이며 세트 게이트를 우회한다. |
 | 3 | 경로 범용화 | **설계 예정.** 서울시 평면 Hourly 경로를 급히 지원하려고 추가한 `HourLayout`을 제거하고, 설정 루트 아래의 범위 제한 재귀 탐색으로 전환한다. 로컬 하위 구조는 원격에 복제하지 않고 RINEX 버전별 고정 평면 `RemotePath`로 전송한다. 상세 탐색 경계는 Linux OS·실경로 확인 후 확정한다. |
 | 4 | Linux 배포·테스트 | **미구현.** Linux 빌드, 실행환경·경로·스케줄러·SFTPGo 연동과 통합 테스트를 포함한다. Linux 전용 추가 보안은 포함하지 않으며 공식 보안점검에서 요구가 나온 경우에만 별도 진행한다. |
-| 5 | Retention Cleanup | **미구현.** Ledger 60일 보존 설정이 실제 DB 행 삭제로 이어지도록 구현하고 경계·FK cascade·재전송 방지 테스트를 수행한다. |
+| 5 | Retention Cleanup | **미구현.** Ledger 30일 보존 설정이 실제 DB 행 삭제로 이어지도록 구현하고 경계·FK cascade·재전송 방지 테스트를 수행한다. |
 
 이번 MVP2에서 명시적으로 제외하는 항목:
 
@@ -82,11 +83,11 @@
 - **제한 재귀 탐색의 경계:** 시작 루트, 최대 깊이, 날짜 범위 적용 방식,
   권한 오류 처리, symbolic link/junction 추적 여부는 다음 Linux 설치처의
   OS 버전과 실제 경로를 받은 뒤 결정한다.
-- **Retention과 재탐색/`resend`의 결합 규칙:** 60일이 지나 삭제된 Ledger 행의
+- **Retention과 재탐색/`resend`의 결합 규칙:** 30일이 지나 삭제된 Ledger 행의
   로컬 파일이 자동 탐색에서 신규로 재등록·재전송되지 않도록 경계를 확정하고,
   보존기간 밖 `resend`의 경고·거부·강제 실행 정책을 결정한다.
 
-이미 확정된 사항은 Ledger 보존기간 60일, 성공한 Deep Scan 뒤 Cleanup 수행,
+이미 확정된 사항은 Ledger 보존기간 30일, 성공한 Deep Scan 뒤 Cleanup 수행,
 `common_ledger` 삭제 시 `put_ledger` FK cascade, 원격의 RINEX 버전별 고정 평면
 경로다. 위 미결 항목을 정할 때 이 결정을 임의로 변경하지 않는다.
 
@@ -989,9 +990,9 @@ Deep Scan 범위 밖의 자료는 자동 후보가 아니다. 과거 장애 기�
 현재 확정된 것은 `config`가 `LedgerRetentionDays > ScanDays`를 시작 시 강제한다는
 점이며, `resend`와의 결합 규칙은 구현 전 결정한다.
 
-**2026-09-15 구현 상태:** `[LEDGER] RetentionDays = 60`과 위 불변식 검증은
+**2026-09-16 구현 상태:** `[LEDGER] RetentionDays = 30`과 위 불변식 검증은
 구현되어 있지만 실제 DB 행을 지우는 Retention Cleanup은 아직 구현되지 않았다.
-따라서 현재 실행파일은 60일이 지나도 `common_ledger`와 연결된 `put_ledger`
+따라서 현재 실행파일은 30일이 지나도 `common_ledger`와 연결된 `put_ledger`
 행을 자동 삭제하지 않는다. `cmd/rinexclient/main.go`에도 Deep Scan 뒤 Cleanup이
 TODO로 남아 있다.
 
@@ -2024,7 +2025,7 @@ RequiredKinds = false
   OS·실경로 확인 후 확정하며, 원격은 RINEX 버전별 고정 평면 경로를 유지한다.
 - **MVP2 남은 목표 3:** Linux 배포 준비와 테스트. Linux 전용 추가 보안은 범위에서 제외하며,
   공식 보안점검에서 구체적인 요구가 나온 경우에만 별도 설계·구현한다.
-- **MVP2 남은 목표 4:** Ledger Retention Cleanup 구현 및 60일 경계·FK cascade·
+- **MVP2 남은 목표 4:** Ledger Retention Cleanup 구현 및 30일 경계·FK cascade·
   오래된 파일 재전송 방지 테스트. 현재는 설정과 불변식 검증만 있고 실제 삭제는 없다.
 - **MVP3으로 연기:** DOWNLOAD 및 `download_ledger`. BOTH의 MVP 번호는 미정이다.
 - **구현 제외:** 미완성 세트 보류 리포트(보안 취약점 우려), 게이트 활성화 운영 절차,

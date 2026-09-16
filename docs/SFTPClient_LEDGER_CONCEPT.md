@@ -10,6 +10,9 @@
 > 둘의 숫자가 같다고 가정하지 않는다. (현재: 개정 v8 ↔ `schema_version` `'5'`)
 > 현재 구현 상태(2026-09-15): PUT과 v4→v5 자동 마이그레이션, 세트 원자성은 완료.
 > Retention Cleanup은 설정·불변식 검증만 있고 실제 삭제는 미구현이며, DOWNLOAD는 MVP3 예정이다.
+> 현재 Ledger 보존 정책(2026-09-16): 서울시·측위원 현장 배포에서 적용한
+> 1개월을 **30일**로 고정하여 `[LEDGER] RetentionDays = 30`을 사용한다.
+> `[LOG] RetentionDays = 30`과 값은 같지만 DB 행 보존과 로그 파일 보존은 별개 책임이다.
 >
 > **2026-09-10 (v8 / `schema_version` '5')**: `common_ledger` 에 `set_key`·`kind`
 > 추가 (MVP2 세트 게이트, NOT NULL DEFAULT '' — ''=세트 소속 유보).
@@ -30,6 +33,7 @@
 | **2026-08-30** | **PUT 조립·Retry·회수·Unchanged 확정.** GUIDELINES 5절과 동기. 아래 「운영 확정」 |
 | **2026-09-10** | **스키마 개정 v8, `schema_version` 4 → 5. `set_key`·`kind` 추가 및 운영 DB 자동 마이그레이션 구현** |
 | **2026-09-15** | **MVP1 종료 시점 현행화. DOWNLOAD→MVP3, `resend` 용어 분리, Retention 미구현 상태 반영** |
+| **2026-09-16** | **서울시·측위원 현장 운영값을 반영하여 Ledger Retention 60일 → 30일로 변경. 1개월은 달력 월이 아닌 30일로 계산** |
 
 **v7 에서 바뀐 것 (2026-08-30, 복합키 전환)**
 
