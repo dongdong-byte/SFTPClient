@@ -151,6 +151,58 @@ ALTER TABLE common_ledger ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''
   주체가 자기 자신뿐이므로, 재조회가 성공한다면 그것이 곧 코드 결함의
   증거다. 결함 위에서 진행하지 않는다.
 
+#### 결정 사항 — revision 증가, 가드, 실패 처리
+
+**질문:** `TouchCommonMTime`이 revision을 올리지 않는다면, 전송 중단이나
+부분 파일의 완성처럼 정당하게 revision이 증가해야 하는 경우까지 막는가?
+
+**결정:** 막지 않는다. `TouchCommonMTime`은 `size 동일 + mtime 상이 +
+기존 지문 존재 + 새 안정 해시가 기존 지문과 동일`인
+`MetadataChangedOnly`에만 사용한다. 내용이 달라진 파일과 크기가 변한 파일은
+기존 `UpsertCommon` 경로가 소유하며 revision을 올린다. 원격 SFTP 전송 실패는
+파일 내용의 revision 사건이 아니라 같은 revision의 `put_ledger` 상태와
+`attempts`가 소유한다. 로컬 유입이 중간에 끊겼다가 완성되어 size가 변한
+경우에는 `UpsertCommon`이 정상적으로 revision을 증가시킨다.
+
+**질문:** optimistic guard가 빈약하거나, 해시가 없는 행에도 mtime 기준선만
+옮겨 실제 변경을 놓칠 수 있는가?
+
+**결정:** 두 API는 판정에 사용한 `category·file_name·revision·size·mtime`을
+모두 WHERE에 둔다. `TouchCommonMTime`은 기존 `content_hash`까지 일치해야
+하며, **기존 지문이 빈 문자열이면 입력 오류로 거부한다.** 해시 없는 행은
+동일 내용이라는 증명이 없으므로 Touch 대상이 아니다. `SetContentHash`는
+반대로 `content_hash=''`인 행에만 최초 지문을 채운다. 가드 중 하나라도
+관측 이후 바뀌면 쓰지 않고 `applied=false`를 반환한다.
+
+**질문:** 조용한 무시와 실행 중단을 모두 기각했는데 가드 불일치가 실제로
+발생하면 어떻게 처리하는가?
+
+**결정:** `applied=false, err=nil`은 SQL 실패가 아니라 판정 시점과 쓰기
+시점 사이에 행이 달라졌다는 사실이다. WARN을 남기고 해당 파일만 candidate와
+observed에서 제외해 이번 회차를 보류하며, 다음 회차에 새 사실로 다시
+판정한다. 반복 발생하면 동시 실행 또는 Runner 순서 오류를 조사할 운영
+신호로 본다. 반면 SQL 오류, DB 오류, context 취소, `RowsAffected` 오류 및
+입력 계약 위반은 실제 오류로 반환한다. “전체 실행 중단 기각”은 0행 가드
+불일치에만 적용하며, DB 신뢰성을 확인할 수 없는 오류를 무시한다는 뜻이
+아니다.
+
+**질문:** 지문 없는 행의 mtime 드리프트를 `TouchCommonMTime`에 넘기면
+어떻게 되는가?
+
+**결정:** 넘기지 않는다. 빈 지문 Touch는 입력 오류(`ErrInvalidRefreshInput`)이며
+0행 보류가 아니다. size 같고 mtime만 다른데 지문이 없으면 같은 크기 보정
+파일을 Unchanged로 고정할 수 있으므로, 그 행은 `UpsertCommon`으로 1회
+보수 재전송한다. 배포 직후 운영 DB는 거의 전 행이 `content_hash=''`이다.
+커밋 4 호출부가 `mtime≠`이면 무조건 Touch를 치면 이 오류가 회차 전체를
+중단시켜, 해시 방어가 켜지기 전에 매시 전송이 멈춘다.
+
+커밋 4 분기:
+- size 같고 mtime 다르고 **지문 있음 + 새 해시 같음** → `TouchCommonMTime`
+- size 같고 mtime 다르고 **지문 없음** → `UpsertCommon` (1회 재전송)
+- `SetContentHash`는 **이미 Unchanged이고 지문이 빈 행만**
+- `applied=false`만 해당 파일 보류. `ErrInvalidRefreshInput`은 호출하지
+  않음으로써 막는다. 이 오류를 한 파일 스킵으로 삼키지 않는다.
+
 ### 2.3 연속 마이그레이션 `[v2 — 교차검증 ③ + 실물 확인]`
 
 ```go
@@ -205,6 +257,55 @@ v1 은 "Unchanged + 지문 없음 = 전부 백필 예산 대상"으로 읽혔다
 "키 없음 = 백필 끔"이 되어 **기존 현장 전부에서 백필이 조용히 꺼진다.**
 반드시 `value()` 의 ok 플래그로 부재/0 을 분리한다 (HourLayout 전례).
 `knownKeys` 갱신, config.example.ini 에 4치 의미 주석.
+
+#### 결정 사항 — optionalIntVal, 오류 단계, 테스트 범위
+
+**질문:** `optionalIntVal` 신설이 불필요한 기능을 늘려 기존 config 동작을
+해칠 수 있는가?
+
+**결정:** 유지한다. 이 키는 `키 부재 → 500`과 `명시적 0 → 백필 끔`을
+구분해야 하므로 기존 필수 정수용 `intVal`로 표현할 수 없다. `intVal`의
+기존 의미를 바꾸지 않고 `MaxHashBackfillPerRun` 한 곳에서만
+`optionalIntVal`을 사용하는 것이 파급이 가장 작다. 보호 값 해석 대상도
+아니므로 정수 파싱 외의 기능은 추가하지 않는다.
+
+**질문:** 음수·비정수와 설정 오타가 기본값으로 조용히 접힐 수 있는가?
+
+**결정:** 접히지 않는다. 키가 실제로 없을 때만 500을 적용한다. 명시된
+음수는 map 이후 `Config.Validate`가 시작을 거부하고, 비정수·빈 값·정수
+범위 초과는 `strconv.Atoi` 실패를 `ErrBadValue`로 반환한다. `Load`와
+`LoadFrom`은 모두 map 이후 Validate를 반드시 호출한다. 잘못된 섹션이나
+철자 오류는 `knownKeys` 검사에서 `ErrUnknownKey`, 대소문자를 달리한 중복
+키·섹션은 parser 단계 오류가 되므로 기본값으로 우회하지 않는다.
+
+**질문:** H14의 다섯 케이스가 실제 설정 경로를 충분히 검증하는가?
+
+**결정:** 부재→500, 명시 0, 양수 보존, 음수 Validate 거부, 비정수
+`ErrBadValue`가 실제 parse·map·validate 구성요소를 통해 검증되므로 현재
+계약에는 충분하다. 공개 `LoadFrom`을 다섯 번 호출하는 E2E 테스트는 강화
+가능하지만 동일 경로를 반복하는 수준이라 필수로 두지 않는다.
+
+**적용 범위:** 기본값 500은 INI를 읽는 `Load`/`LoadFrom` 경로에서 적용된다.
+코드가 `Config` 구조체를 직접 만들면 Go의 0값은 의도대로 “백필 끔”이며,
+직접 생성한 호출자가 필요한 값을 명시하고 `Validate`를 호출할 책임이 있다.
+`Validate`는 키 부재를 알지 못한다. 음수 거부만 하고, 0은 백필 끔으로 통과한다.
+`config.ini`와 `config.example.ini`에는 같은 값과 4치 설명을 유지한다.
+
+**질문:** `optionalIntVal`이 비정수일 때 `def`를 반환하면 기본값 500으로
+조용히 접히는가?
+
+**결정:** 접히지 않는다. `def`는 오류를 누적하는 동안의 자리값일 뿐이고,
+`addf(ErrBadValue)`가 있으므로 `mapConfig`/`Load`는 실패한다. 빈 값(`=` 만
+있고 숫자 없음)도 키가 있는 것으로 보아 부재(500)가 아니라 `ErrBadValue`다.
+이 키는 `value()`/`Protector`를 거치지 않는다. `enc:` 값은 정수가 아니므로
+역시 거부된다 — 정수 키는 암호화 대상이 아니다.
+
+**질문:** 매우 큰 양수(한 회차에 전량 백필)를 validate가 상한으로 막아야
+하는가?
+
+**결정:** 막지 않는다. `MaxFilesPerRun`과 같이 양수의 상한은 운영 값이다.
+코드가 강제하는 것은 `0=끔`과 `음수=거부`뿐이다. 전량 읽기 폭주는 계측
+로그와 lock 겹침(`ErrHeld` 정상 종료)으로 드러낸다.
 
 ## 4. dry-run 과 seed `[v2 — 교차검증 ⑧]`
 

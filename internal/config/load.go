@@ -219,8 +219,8 @@ func settingID(section, key string) string {
 // 호출 리더는 기본값만 반환하므로 복호화 오류 뒤에
 // "not an integer" 같은 2차 오류가 중복으로 쌓이지 않는다.
 //
-// hourLayout 은 선택 키이므로 이 통로를 사용하지 않는다.
-// 키 부재가 정상이며 DefaultHourLayout 을 사용해야 하기 때문이다.
+// hourLayout 과 optionalIntVal 은 선택 키이므로 이 통로를 사용하지 않는다.
+// 키 부재가 정상이며 각각 Default 를 사용해야 하기 때문이다.
 // 현재 보안 요구 대상인 Host/User/Port에는 영향을 주지 않는다.
 func (l *loader) value(s *iniSection, key string) (string, bool) {
 	v, ok := s.get(key)
@@ -434,6 +434,42 @@ func (l *loader) hourLayout(s *iniSection, key string) HourLayout {
 	return h
 }
 
+// optionalIntVal 은 선택 정수 키를 읽는다. 키 부재가 정상인 값 전용이며
+// 누락 시 absent 를 호출하지 않고 def 를 반환한다 (hourLayout 전례).
+//
+// intVal 을 쓰면 안 되는 이유: intVal 은 필수 키용이라 부재를 오류로
+// 기록하고 0 을 돌려준다. 부재를 기본값으로 살려야 하는 키에 intVal 을
+// 쓰면 "키 없음 = 0" 오독이 조용히 성립한다 (UNIT2 설계 v3 §3.1 함정).
+//
+// 보호 값 해석(l.prot)은 거치지 않는다 — 정수 키는 암호화 대상이 아니다
+// (hourLayout 과 같은 근거).
+//
+// 키가 있는데 정수가 아니면 ErrBadValue 를 남기고 def 를 반환한다.
+// 그 def 는 오류 누적 중의 자리값일 뿐이며, mapConfig 가 오류를
+// 반환하므로 호출자는 기본값으로 접힌 Config 를 받지 않는다.
+func (l *loader) optionalIntVal(s *iniSection, key string, def int) int {
+	v, ok := s.get(key)
+	if !ok {
+		return def
+	}
+
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		l.addf(
+			"%w: line %d: [%s] %s = %q is not an integer",
+			ErrBadValue,
+			s.lineOf(key),
+			s.name,
+			key,
+			v,
+		)
+
+		return def
+	}
+
+	return n
+}
+
 // resolvePath 는 config.ini 에 적힌 일반 파일시스템 경로를 확정한다.
 //
 // 절대 경로는 그대로 사용하고,
@@ -513,6 +549,11 @@ func mapConfig(f *iniFile, path string, p Protector) (*Config, error) {
 	cfg.Put.MaxWorkers = l.intVal(put, "MaxWorkers")
 	cfg.Put.MaxRetries = l.intVal(put, "MaxRetries")
 	cfg.Put.MaxFilesPerRun = l.intVal(put, "MaxFilesPerRun")
+	cfg.Put.MaxHashBackfillPerRun = l.optionalIntVal(
+		put,
+		"MaxHashBackfillPerRun",
+		DefaultMaxHashBackfillPerRun,
+	)
 
 	sftp := l.section("PUT.SFTP")
 
@@ -758,6 +799,7 @@ func knownKeys() (map[string][]string, error) {
 			"MaxWorkers",
 			"MaxRetries",
 			"MaxFilesPerRun",
+			"MaxHashBackfillPerRun",
 		},
 		"PUT.SFTP": {
 			"AuthMethod",

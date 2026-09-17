@@ -110,9 +110,10 @@ func validConfigForValidate(t *testing.T) *Config {
 		},
 
 		Put: PutConfig{
-			MaxWorkers:     4,
-			MaxRetries:     5,
-			MaxFilesPerRun: 2000,
+			MaxWorkers:            4,
+			MaxRetries:            5,
+			MaxFilesPerRun:        2000,
+			MaxHashBackfillPerRun: DefaultMaxHashBackfillPerRun,
 
 			SFTP: SFTPConfig{
 				AuthMethod: "publickey",

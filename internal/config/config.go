@@ -196,6 +196,12 @@ type LedgerConfig struct {
 	RetentionDays int
 }
 
+// DefaultMaxHashBackfillPerRun 은 [PUT] MaxHashBackfillPerRun 키가
+// 없을 때의 기본 예산이다. 근거(UNIT2 설계 v3 §3): 측위원 규모
+// (common_ledger 11만 행)에서 매시 실행 × 500 이면 약 9~10일에 전량
+// 백필이 닫히고, 회당 로컬 읽기가 수백 MB 수준에 머문다.
+const DefaultMaxHashBackfillPerRun = 500
+
 // PutConfig 는 [PUT] 과 그 하위 섹션의 설정이다.
 type PutConfig struct {
 	// MaxWorkers 는 PUT 전송 병렬도이다.
@@ -229,6 +235,27 @@ type PutConfig struct {
 	// 예상보다 많은 파일이 한 번에 전송 대상으로 선정될 경우
 	// 회선과 대상 서버를 보호하기 위한 최후 방어선이다.
 	MaxFilesPerRun int
+
+	// MaxHashBackfillPerRun 은 한 번의 실행에서 자연 백필로 지문을
+	// 계산할 최대 파일 수이다. (UNIT2 설계 v3 §3, §3.1)
+	//
+	// 값의 의미 4가지 — 이 구분이 이 키의 핵심이다:
+	//
+	//	키 부재  → DefaultMaxHashBackfillPerRun (500).
+	//	          실행파일만 교체한 기존 현장 config 에서 백필이
+	//	          즉시 작동해야 한다. 이 키는 이 프로그램의 유일한
+	//	          "부재가 기본값인" 정수 키이므로 loader 는 intVal 이
+	//	          아니라 optionalIntVal 을 쓴다 — intVal 은 부재를
+	//	          0 으로 돌려주어 "키 없음 = 백필 끔"이 되는 함정이
+	//	          있다 (설계 §3.1 함정 명시).
+	//	0        → 백필 끔.
+	//	양수     → 해당 상한.
+	//	음수     → validate 거부.
+	//
+	// 이 예산은 백필(비후보 행의 지문 채우기)에만 적용된다.
+	// 판정 해시(size=·mtime≠)와 신규·변경·후보 필수 해시는 방어의
+	// 본체이므로 예산과 무관하다 (설계 §3).
+	MaxHashBackfillPerRun int
 
 	// SFTP 는 [PUT.SFTP] 접속 설정이다.
 	SFTP SFTPConfig

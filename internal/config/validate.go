@@ -240,6 +240,16 @@ func (c *Config) checkPut(add addFunc) {
 			c.Put.MaxFilesPerRun,
 		)
 	}
+
+	// 부재는 loader 가 이미 기본값(500)으로 접었으므로 여기 도달하는
+	// 음수는 명시적 오기입이다. (UNIT2 설계 v3 §3.1: 음수 → 거부)
+	if c.Put.MaxHashBackfillPerRun < 0 {
+		add(
+			"[PUT] MaxHashBackfillPerRun = %d must not be negative "+
+				"(use 0 to disable backfill)",
+			c.Put.MaxHashBackfillPerRun,
+		)
+	}
 }
 
 // checkSFTP 는 [PUT.SFTP] 값 자체를 검사한다.
