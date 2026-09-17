@@ -100,9 +100,10 @@ func newV4Fixture(t *testing.T) string {
 	return path
 }
 
-// TestMigrateV4ToV5 는 v4 DB 가 Open 만으로 v5 로 전환되고
-// 기존 행이 domain 파서로 백필됨을 고정한다. (2026-09-10 계약)
-func TestMigrateV4ToV5(t *testing.T) {
+// TestMigrateV4ToLatest 는 v4 DB 가 Open 만으로 최신 세대까지 순차
+// 전환되고(v4→v5→v6), 기존 행이 domain 파서로 백필됨을 고정한다.
+// (2026-09-10 계약, 2026-09-17 순차 연쇄로 확장 — UNIT2 설계 v3 §2.3)
+func TestMigrateV4ToLatest(t *testing.T) {
 	ctx := context.Background()
 	path := newV4Fixture(t)
 
@@ -112,14 +113,28 @@ func TestMigrateV4ToV5(t *testing.T) {
 	}
 	defer db.Close()
 
-	// 세대가 올라갔다.
+	// 세대가 최신까지 올라갔다. schemaVersion 상수를 직접 쓰지 않고
+	// 리터럴로 고정한다 — 상수만 올리고 연쇄를 안 늘린 회귀를 잡는다.
 	got, err := db.SchemaMeta(ctx, "schema_version")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if got != "5" {
-		t.Fatalf("schema_version = %q, want \"5\"", got)
+	if got != "6" {
+		t.Fatalf("schema_version = %q, want \"6\" (v4→v5→v6 연쇄)", got)
+	}
+
+	// v6 컬럼이 존재하고 기존 행은 지문 없음('')이다.
+	var noHash int
+	if err := db.conn.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM common_ledger WHERE content_hash = '';`,
+	).Scan(&noHash); err != nil {
+		t.Fatalf("content_hash 컬럼 조회 실패 — v5→v6 미수행: %v", err)
+	}
+
+	if noHash != 5 {
+		t.Errorf("지문 없음 행 = %d, want 5 (백필은 마이그레이션 몫이 아님)", noHash)
 	}
 
 	// identity_rule 은 건드리지 않는다.
@@ -161,9 +176,9 @@ func TestMigrateV4ToV5(t *testing.T) {
 	}
 }
 
-// TestMigrateV4ToV5_Idempotent 는 전환된 DB 를 다시 열어도
+// TestMigrateV4ToLatest_Idempotent 는 전환된 DB 를 다시 열어도
 // 마이그레이션이 재실행되지 않고 정상 동작함을 고정한다.
-func TestMigrateV4ToV5_Idempotent(t *testing.T) {
+func TestMigrateV4ToLatest_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	path := newV4Fixture(t)
 
@@ -173,7 +188,7 @@ func TestMigrateV4ToV5_Idempotent(t *testing.T) {
 	}
 	db.Close()
 
-	// 두 번째 Open — v5 상태에서 migrateIfNeeded 는 아무것도 안 한다.
+	// 두 번째 Open — v6 상태에서 migrateIfNeeded 는 아무것도 안 한다.
 	db2, err := Open(ctx, path)
 	if err != nil {
 		t.Fatalf("전환된 DB 재Open 실패: %v", err)
@@ -190,9 +205,9 @@ func TestMigrateV4ToV5_Idempotent(t *testing.T) {
 	}
 }
 
-// TestMigrate_UnsupportedGenerationStillRejected 는 v4→v5 밖의
+// TestMigrate_UnsupportedGenerationStillRejected 는 지원 연쇄 밖의
 // 세대(예: '3')가 종전대로 시작 중단됨을 고정한다.
-// 자동 마이그레이션은 알려진 단일 스텝만 수행한다.
+// 자동 마이그레이션은 명시 구현된 스텝의 연쇄만 수행한다.
 func TestMigrate_UnsupportedGenerationStillRejected(t *testing.T) {
 	ctx := context.Background()
 	path := newV4Fixture(t)
@@ -218,6 +233,6 @@ func TestMigrate_UnsupportedGenerationStillRejected(t *testing.T) {
 
 	if _, err := Open(ctx, path); err == nil {
 		t.Fatal("지원 밖 세대('3')가 Open 을 통과했다 — " +
-			"단일 스텝 원칙 위반")
+			"명시 스텝 원칙 위반")
 	}
 }

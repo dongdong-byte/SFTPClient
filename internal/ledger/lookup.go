@@ -65,8 +65,15 @@ type Known struct {
 	// 호출자가 디스크 실측치와 대조하여 변경 여부를 판정한다.
 	Size int64
 
-	// MTime 은 장부가 기억하는 최근 관측 수정시각이다. Unix 초, UTC.
+	// MTime 은 변경 판정 기준선이다. Unix 초, UTC.
+	// (v9 의미 재정의 — schema.sql mtime 주석 참조)
 	MTime int64
+
+	// ContentHash 는 이 revision 으로 최근 안정 관측한 파일 전체
+	// 바이트의 SHA-256 지문(hex 소문자 64자)이다.
+	// '' 는 지문 없음 — v9 이전 행 / 백필 미도달 / 해시 실패.
+	// size 가 같고 mtime 만 다른 관측에서만 대조한다. (UNIT2 설계 v3)
+	ContentHash string
 
 	// Origin 은 최초 유입 경로이다.
 	// PUT 후보 선정에서 DOWNLOAD 를 기본 제외하는
@@ -118,6 +125,7 @@ SELECT c.file_name,
        c.mtime,
        c.origin,
        c.state,
+       c.content_hash,
        COALESCE(p.status, '')
   FROM common_ledger c
   LEFT JOIN put_ledger p
@@ -268,6 +276,7 @@ func (db *DB) lookupChunk(
 			&k.MTime,
 			&origin,
 			&state,
+			&k.ContentHash,
 			&putStatus,
 		); err != nil {
 			return fmt.Errorf(

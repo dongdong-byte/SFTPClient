@@ -46,6 +46,10 @@ const (
 	// 추가하면서 배포 DB 구조 세대를 4 → 5 로 올렸다.
 	// 4 → 5 는 최초의 운영 DB 보존 전환이며, Open 이 단일 스텝
 	// 자동 마이그레이션(migrateIfNeeded)으로 수행한다.
+	// schema v9 에서 common_ledger 에 content_hash 를 추가하면서
+	// 배포 DB 구조 세대를 5 → 6 으로 올렸다 (해시 기반 변경 판정,
+	// UNIT2 설계 v3). migrateIfNeeded 는 이때 순차 실행으로
+	// 일반화되었다 — v4 DB 도 v4→v5→v6 으로 한 번에 올라온다.
 	//
 	// domain 이 아니라 ledger 에 두는 이유는 이 값이
 	// 파일 식별 규칙이 아니라 DB 스키마의 성질이기 때문이다.
@@ -53,14 +57,14 @@ const (
 	//
 	// ★ 이 값은 schema.sql 에도 같은 리터럴로 들어 있다.
 	//
-	//	INSERT OR IGNORE INTO schema_meta ... ('schema_version', '5', ...)
+	//	INSERT OR IGNORE INTO schema_meta ... ('schema_version', '6', ...)
 	//
 	// 한쪽만 올리면 새로 만든 DB 가 곧바로 열리지 않는다.
 	// 스크립트가 넣은 값과 실행파일이 기대하는 값이 달라
 	// verifySchemaVersion 이 첫 Open 에서 실패하기 때문이다.
 	// 반드시 두 곳을 함께 올린다.
 	// db_test.go 의 TestSchemaVersionMatchesSchemaSQL 이 이를 고정한다.
-	schemaVersion = "5"
+	schemaVersion = "6"
 )
 
 var (
@@ -165,12 +169,13 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		return nil, err
 	}
 
-	// 알려진 단일 스텝(v4 → v5)만 자동 마이그레이션한다.
+	// 명시적으로 구현·검증된 스텝(v4→v5, v5→v6)만 순차 자동
+	// 마이그레이션한다.
 	//
-	// (2026-09-10 확정) "암묵적 migration 을 시도하지 않는다"는 기존
-	// 규칙을 좁힌다: 명시적으로 구현·검증된 스텝만 자동이고, 그 외
-	// 불일치(더 오래된 DB, DB 가 실행파일보다 새로운 역방향)는 종전대로
-	// 아래 verifySchemaVersion 이 양방향 모두 즉시 중단한다.
+	// (2026-09-10 확정, 2026-09-17 순차로 일반화) "암묵적 migration 을
+	// 시도하지 않는다"는 기존 규칙을 좁힌다: 명시 스텝의 연쇄만 자동이고,
+	// 그 외 불일치(더 오래된 DB, DB 가 실행파일보다 새로운 역방향)는
+	// 종전대로 아래 verifySchemaVersion 이 양방향 모두 즉시 중단한다.
 	//
 	// 자동으로 하는 이유: 배포는 관리자 1인이 각 기관 서버에 현장
 	// 방문하여 실행파일을 이식하는 방식이다. 별도 migrate 명령은
@@ -195,7 +200,15 @@ func Open(ctx context.Context, path string) (*DB, error) {
 }
 
 // migrateIfNeeded 는 명시적으로 지원하는 버전 전환만 자동 수행한다.
-// 현재 지원 범위는 v4 → v5 하나다.
+// 현재 지원 스텝은 v4→v5, v5→v6 이며 순차 연쇄로 실행된다 —
+// v4 DB 는 한 번의 Open 으로 v6 까지 올라온다.
+//
+// 순차인 이유(2026-09-17, UNIT2 설계 v3 §2.3): schemaVersion 상수만
+// 올리고 분기를 남겨두지 않으면 기존 v4 경로가 조건 불성립으로 소리
+// 없이 죽고, 운영 v5 DB 는 아무 분기도 못 타 verifySchemaVersion 이
+// 정상 DB 를 거부한다. 각 스텝은 자체 트랜잭션이므로 중간 실패 시
+// 그 스텝 이전 세대로 온전히 남고, 다음 실행이 이어서 재시도한다.
+//
 // 그 외 불일치는 손대지 않고 verifySchemaVersion 이 거부하게 둔다.
 func (db *DB) migrateIfNeeded(ctx context.Context) error {
 	got, err := db.SchemaMeta(ctx, "schema_version")
@@ -203,8 +216,16 @@ func (db *DB) migrateIfNeeded(ctx context.Context) error {
 		return err
 	}
 
-	if got == "4" && schemaVersion == "5" {
-		return db.migrateV4toV5(ctx)
+	if got == "4" {
+		if err := db.migrateV4toV5(ctx); err != nil {
+			return err
+		}
+
+		got = "5"
+	}
+
+	if got == "5" && schemaVersion == "6" {
+		return db.migrateV5toV6(ctx)
 	}
 
 	return nil
@@ -360,6 +381,61 @@ func (db *DB) migrateV4toV5(ctx context.Context) error {
 		backfilled,
 		unresolved,
 	)
+
+	return nil
+}
+
+// migrateV5toV6 는 common_ledger 에 content_hash 컬럼을 추가하고
+// schema_version 을 올리는 전환을 하나의 트랜잭션으로 수행한다.
+// 어느 단계에서 실패하든 롤백되어 DB 는 온전한 v5 로 남고,
+// 다음 실행이 처음부터 재시도한다. (UNIT2 설계 v3 §2.1·§2.3)
+//
+// 행 백필은 없다 — 지문은 파일 바이트를 읽어야 얻는 값이라 DB
+// 트랜잭션의 일이 아니다. 기존 행은 DEFAULT ” (지문 없음)로 남고,
+// put 의 자연 백필(MaxHashBackfillPerRun)이 회차 분할로 채운다.
+//
+// ALTER 의 CHECK 는 schema.sql 의 CREATE 정의와 동일 리터럴이다.
+// SQLite 는 ADD COLUMN 의 CHECK 를 지원한다. 프로젝트가 사용하는
+// modernc.org/sqlite v1.57.0 내장 엔진에서 이 경로를 도는 migrate
+// 테스트로 실제 동작을 검증한다.
+func (db *DB) migrateV5toV6(ctx context.Context) error {
+	tx, err := db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("ledger: begin v5->v6 migration: %w", err)
+	}
+
+	defer func() {
+		// Commit 이후의 Rollback 은 no-op 이다.
+		_ = tx.Rollback()
+	}()
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`ALTER TABLE common_ledger
+		   ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''
+		 CHECK (content_hash = ''
+		     OR (length(content_hash) = 64
+		         AND content_hash NOT GLOB '*[^0-9a-f]*'));`,
+	); err != nil {
+		return fmt.Errorf("ledger: v5->v6 add content_hash: %w", err)
+	}
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE schema_meta
+		    SET value = '6', updated_at = strftime('%s', 'now')
+		  WHERE key = 'schema_version';`,
+	); err != nil {
+		return fmt.Errorf("ledger: v5->v6 bump version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("ledger: v5->v6 commit: %w", err)
+	}
+
+	// v4→v5 와 같은 이유의 완료 로그 — 실행파일 교체 직후 수동 1회
+	// 실행으로 전환 완료를 눈으로 확인하는 절차가 이 로그에 의존한다.
+	log.Printf("[LEDGER] schema v5 -> v6 migrated: content_hash added")
 
 	return nil
 }

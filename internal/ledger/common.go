@@ -62,6 +62,15 @@ type CommonInput struct {
 	// 갱신되므로, 오래전에 처음 발견된 파일이 최근 다시 갱신된 경우에도
 	// 최신 검증 시각이 보존된다. (SCAN DESIGN 5절 Retention Cleanup)
 	IngressVerifiedAt int64
+
+	// ContentHash 는 이 관측의 파일 전체 바이트 SHA-256 지문
+	// (hex 소문자 64자)이다. (v9, UNIT2 설계 v3)
+	//
+	// '' 를 허용한다 — 해시 계산 실패 시 판정 주체(put)가 '' 를
+	// 전달하며, 그 경우 기존 지문이 있었더라도 '' 로 덮인다.
+	// 옛 지문은 더 이상 현재 내용을 설명하지 않으므로 이것이 맞다.
+	// 다음 안정 관측(자연 백필 또는 다음 변경)이 다시 채운다.
+	ContentHash string
 }
 
 // ErrInvalidInput 은 CommonInput 이 Ledger 에 기록될 수 없는 값일 때 반환된다.
@@ -128,6 +137,15 @@ func (in CommonInput) Validate() error {
 			ErrInvalidInput,
 			in.IngressVerifiedAt,
 		)
+
+	case !validContentHash(in.ContentHash):
+		// schema.sql 의 CHECK 와 같은 규칙이다. DB 에 도달하기 전에
+		// 구체적 원인과 함께 거부한다 (기존 Validate 원칙).
+		return fmt.Errorf(
+			"%w: content_hash %q must be empty or 64 lowercase hex chars",
+			ErrInvalidInput,
+			in.ContentHash,
+		)
 	}
 
 	// Category 는 domain 에 정의된 정확한 값이어야 한다.
@@ -145,6 +163,27 @@ func (in CommonInput) Validate() error {
 	}
 
 	return nil
+}
+
+// validContentHash 는 content_hash 저장 규약(” 또는 hex 소문자 64자)을
+// 검사한다. schema.sql v9 의 CHECK 와 같은 규칙이다.
+func validContentHash(h string) bool {
+	if h == "" {
+		return true
+	}
+
+	if len(h) != 64 {
+		return false
+	}
+
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Result 는 UpsertCommon 이 common_ledger 에 실제로 수행한 작업을 나타낸다.
@@ -234,13 +273,18 @@ func (r Result) String() string {
 // v8 변경: set_key·kind 컬럼이 추가되었다. 이 두 값은 CommonInput 이 아니라
 // (category, file_name) 에서 domain.SetKeyKind 로 도출한다(파일명 파생의 단일
 // 주인 — 호출자가 값을 구성하는 경로를 만들지 않는다).
-// 파라미터는 총 12개이다 — VALUES 바인딩 11개 + DO UPDATE 의 state 1개.
+// v9 변경: content_hash 컬럼이 추가되었다 (UNIT2 설계 v3). 값은 판정
+// 주체(put)가 CommonInput 으로 전달한다 — 신규는 최초 지문, 변경은 새
+// 지문, 해시 실패는 ”. DO UPDATE 에도 넣으므로 변경 시 옛 지문이
+// 반드시 갈린다(내용이 바뀌었는데 옛 내용의 지문이 남는 경로를 닫는다).
 //
 // set_key·kind 는 DO UPDATE 에도 넣는다. 같은 (category, file_name) 이면 값이
 // 동일하므로 사실상 불변 재기록이지만, 파서가 나중에 확장되어 과거 유보(”)
 // 이름을 읽게 되는 경우 size·mtime 변경 시점에 자연히 채워지는 이점이 있다.
-// 파라미터는 총 10개이다.
-// VALUES 절의 바인딩 9개 + DO UPDATE 의 state 1개이다.
+//
+// 파라미터는 총 13개이다 — VALUES 바인딩 12개 + DO UPDATE 의 state 1개.
+// (v8 개정 당시 이 주석에 옛 개수 서술이 혼재했던 것을 v9 에서 정리했다.
+// 이 숫자는 독자용 안내이며, 정합성 자체는 컴파일·실행이 검증한다.)
 //
 // WHERE 조건은 size 와 mtime 을 OR 로 본다.
 // size 가 같고 mtime 만 달라도 revision 을 올린다.
@@ -275,8 +319,9 @@ INSERT INTO common_ledger (
     first_seen,
     ingress_verified_at,
     set_key,
-    kind
-) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+    kind,
+    content_hash
+) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (category, file_name) DO UPDATE SET
     base_name           = excluded.base_name,
     size                = excluded.size,
@@ -285,7 +330,8 @@ ON CONFLICT (category, file_name) DO UPDATE SET
     state               = ?,
     ingress_verified_at = excluded.ingress_verified_at,
     set_key             = excluded.set_key,
-    kind                = excluded.kind
+    kind                = excluded.kind,
+    content_hash        = excluded.content_hash
 WHERE common_ledger.size  <> excluded.size
    OR common_ledger.mtime <> excluded.mtime
 RETURNING revision;
@@ -368,6 +414,7 @@ func (db *DB) UpsertCommon(
 		in.IngressVerifiedAt,
 		setKey,
 		kind,
+		in.ContentHash,
 		string(domain.StateChanged),
 	).Scan(&revision)
 

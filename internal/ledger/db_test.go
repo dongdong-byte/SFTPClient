@@ -595,7 +595,7 @@ func TestCommonLedgerHasNoLocalPath(t *testing.T) {
 		)
 	}
 
-	// schema v5 common_ledger:
+	// schema v6 common_ledger:
 	//
 	//	file_name
 	//	base_name
@@ -607,11 +607,12 @@ func TestCommonLedgerHasNoLocalPath(t *testing.T) {
 	//	state
 	//	first_seen
 	//	ingress_verified_at
-	//	set_key   (v4→v5, MVP2 세트 게이트)
-	//	kind      (v4→v5, MVP2 세트 게이트)
-	if len(columns) != 12 {
+	//	set_key       (v4→v5, MVP2 세트 게이트)
+	//	kind          (v4→v5, MVP2 세트 게이트)
+	//	content_hash  (v5→v6, 해시 기반 변경 판정 — UNIT2 설계 v3)
+	if len(columns) != 13 {
 		t.Errorf(
-			"common_ledger 컬럼 수 = %d, want 12: %v\n"+
+			"common_ledger 컬럼 수 = %d, want 13: %v\n"+
 				"의도한 스키마 변경이라면 이 숫자와 위 주석의 목록을 함께 고친다",
 			len(columns),
 			columns,

@@ -80,6 +80,10 @@
 --    v8  2026-09-10  common_ledger 에 set_key·kind 추가 (MVP2 세트 원자성).
 --        schema_version 4 → 5. 최초의 운영 DB 보존 전환 —
 --        기존 DB 는 ledger.Open 이 자동 마이그레이션한다 (아래 절 참조).
+--    v9  2026-09-17  common_ledger 에 content_hash 추가 (해시 기반 변경
+--        판정 — INCIDENT_MTIME_RETRANSMIT 후속, UNIT2 설계 v3).
+--        mtime 의 의미를 "변경 판정 기준선"으로 재정의 (mtime 컬럼 주석).
+--        schema_version 5 → 6. v4/v5 DB 는 Open 이 순차 자동 마이그레이션.
 --
 --  적용 범위
 --    [현재] common_ledger, put_ledger, schema_meta
@@ -165,9 +169,17 @@ CREATE TABLE IF NOT EXISTS common_ledger (
     -- revision 증가 여부를 판정한다. 아래 후보 선정 주석 참조.
 
     mtime       INTEGER NOT NULL,
-    -- 최종 수정시각 (Unix epoch 초, UTC).
-    -- Ingress Verification 의 Grace Time 판정에 사용한다. (7)
+    -- 변경 판정 기준선 (Unix epoch 초, UTC). (v9 에서 의미 재정의)
     -- TEXT 가 아닌 INTEGER 로 두어 타임존 문제와 비교 비용을 피한다.
+    --
+    -- v8 까지는 "최근 관측된 최종 수정시각"이었다. v9 부터 이 컬럼의
+    -- 주인은 변경 판정이다: size 가 같고 mtime 만 다른 관측에서 아래
+    -- content_hash 가 일치하면(내용 동일 = MetadataChangedOnly) revision
+    -- 을 올리지 않고 이 값만 현재 관측치로 옮긴다. 옮기지 않으면 같은
+    -- 파일을 매 회차 다시 해시한다. 따라서 이 값은 "파일이 마지막으로
+    -- 수정된 시각"이 아니라 "이 내용에 대해 마지막으로 확인한 mtime"
+    -- 이다. mtime 은 신뢰할 수 없는 외부 메타데이터라는 것이 2026-09-16
+    -- 인시던트의 교훈이다 (INCIDENT_MTIME_RETRANSMIT).
 
     origin      TEXT    NOT NULL
     CHECK (origin IN ('LOCAL', 'DOWNLOAD')),
@@ -285,6 +297,25 @@ CREATE TABLE IF NOT EXISTS common_ledger (
     -- lower CHECK 를 두는 이유는 file_name 과 같다 — 게이트가 이 값으로
     -- 그룹핑하므로 대소문자 누출은 세트 분열이라는 조용한 오류가 된다.
     -- 코드 규율에만 맡기지 않는다.
+
+    content_hash TEXT   NOT NULL DEFAULT ''
+    CHECK (content_hash = ''
+           OR (length(content_hash) = 64
+    AND content_hash NOT GLOB '*[^0-9a-f]*')),
+    -- 이 revision 으로 최근 안정적으로 관측한 로컬 파일 전체 바이트의
+    -- SHA-256 지문 (hex 소문자 64자). (v9, UNIT2 설계 v3 §2.1)
+    --
+    -- '' 는 "지문 없음"이다 — v9 이전 행 / 자연 백필 미도달 / 해시 실패.
+    -- NOT NULL DEFAULT '' 는 set_key·kind 와 같은 결정이다 (nullable 기각,
+    -- 2026-09-10 근거 동일: NULL 과 '' 두 부재 표현을 만들지 않는다).
+    --
+    -- 용도: size 가 같고 mtime 만 다른 관측에서만 대조한다. 일치하면
+    -- 내용 동일(재복사·mtime 드리프트)로 보고 revision 을 올리지 않는다.
+    -- 전송 완료 여부는 이 컬럼의 사실이 아니다 — put_ledger 의 VERIFIED
+    -- 가 소유한다 (하나의 사실에 하나의 주인).
+    --
+    -- 운영자용 VIEW 를 만들 때 이 컬럼은 기본 미노출한다
+    -- (FOLLOWUP_PLAN 확정 — 내부 판정 재료이지 운영 사실이 아니다).
 
     PRIMARY KEY (category, file_name)
     -- RINEX3/RINEX4 동일 file_name 공존을 허용하면서
@@ -535,6 +566,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 -- schema_version 은 파일명의 v 번호와 별개로 증가시켜 온 값이다.
 --   v4 파일 '1' → v5 '2' (local_path 삭제) → v6 '3' (category CHECK 확장)
 --   → v7 '4' (식별자 복합키 전환) → v8 '5' (set_key/kind 추가 — MVP2 세트 게이트)
+--   → v9 '6' (content_hash 추가 — 해시 기반 변경 판정)
 --   ※ 두 계열이 헷갈릴 소지가 있다. 파일명과 일치시키려면 설계 개정 번호와
 --     같게 두어야 하나, 그러면 기존 DB 와 건너뛰는 구간이 생긴다.
 --     현 단계에서는 증분을 택했다. 다르게 가려면 여기만 고치면 된다.
@@ -557,10 +589,11 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 -- 아래 INSERT 는 OR IGNORE 이므로 기존 DB 의 값을 덮어쓰지 않는다.
 -- 즉 기존 DB 에 이 스크립트를 적용해도 schema_version 은 원래 값으로 남는다.
 -- 스크립트가 조용히 버전만 올려놓고 데이터는 옛 구조로 두는 사고를 막는다.
--- 버전 갱신은 Open 의 자동 마이그레이션(db.go migrateV4toV5)의 UPDATE 로만
--- 수행하며, 그 값('4')이 곧 마이그레이션 발동 조건이다.
+-- 버전 갱신은 Open 의 자동 마이그레이션(db.go migrateIfNeeded)이 명시적으로
+-- 지원하는 단계별 UPDATE 로만 수행한다. 현재 시작 가능 세대는 '4'와 '5'이고,
+-- 각각 v4→v5→v6 연쇄 또는 v5→v6 단일 전환을 거쳐 최신 '6'이 된다.
 INSERT OR IGNORE INTO schema_meta (key, value, updated_at) VALUES
-    ('schema_version', '5',           strftime('%s', 'now')),
+    ('schema_version', '6',           strftime('%s', 'now')),
     ('identity_rule',  'FILENAME_V1', strftime('%s', 'now')),
     ('mvp_stage',      'MVP1_PUT',    strftime('%s', 'now'));
 
@@ -575,8 +608,12 @@ INSERT OR IGNORE INTO schema_meta (key, value, updated_at) VALUES
 --   운영 이력이 없던 개발 단계의 것이었다.)
 --
 --  자동 마이그레이션의 범위 (db.go migrateIfNeeded):
---    - DB 가 실행파일보다 정확히 한 세대 낮은 '4' → '5' 전환만 자동 수행한다.
---    - 그 외 방향·간격의 불일치(DB > 실행파일 등)는 자동 보정하지 않고
+--    - schema_version '4'이면 v4→v5를 수행한 뒤 같은 Open 안에서
+--      v5→v6을 이어서 수행한다.
+--    - schema_version '5'이면 v5→v6만 수행한다.
+--    - 각 단계는 독립 트랜잭션이다. 따라서 v4→v5 성공 후 v5→v6이 실패하면
+--      DB는 온전한 v5로 남고, 다음 실행이 v5→v6부터 재시도한다.
+--    - 지원하지 않는 세대와 역방향 불일치(DB > 실행파일 등)는 자동 보정하지 않고
 --      verifySchemaVersion 이 시작을 중단시킨다. (폐쇄망 배포 오류 방어)
 --
 --  v4 → v5 (set_key·kind 추가, db.go migrateV4toV5):
@@ -594,13 +631,24 @@ INSERT OR IGNORE INTO schema_meta (key, value, updated_at) VALUES
 --    3) UPDATE schema_meta SET value='5' WHERE key='schema_version'
 --    완료 시 [LEDGER] 로그로 행 수·백필 수·유보 수를 남긴다.
 --
+--  v5 → v6 (content_hash 추가, db.go migrateV5toV6):
+--    별도의 단일 트랜잭션으로 수행한다. 중단 시 이 단계가 전부 롤백되어
+--    온전한 v5로 남는다.
+--    1) ALTER TABLE common_ledger ADD COLUMN content_hash
+--       (NOT NULL DEFAULT '' + 64자 소문자 hex CHECK — 위 CREATE 정의와 동일)
+--    2) 기존 행은 DEFAULT ''(지문 없음)로 둔다. 파일 바이트를 읽어야 하는
+--       해시 백필은 DB 마이그레이션이 아니라 put의 자연 백필이 담당한다.
+--    3) UPDATE schema_meta SET value='6' WHERE key='schema_version'
+--    완료 시 [LEDGER] 로그로 content_hash 추가 사실을 남긴다.
+--
 --  set_key·kind 조회 인덱스(예: (category, set_key))는 지금 두지 않는다.
 --  현재 세트 게이트는 메모리에서 판정하므로 필요하지 않다. 구체적인 조회
 --  요구와 측정된 병목이 생길 때만 추가한다. (선제 구현 금지)
 --
 --  주의:
 --    CREATE TABLE IF NOT EXISTS 는 기존 테이블에 컬럼을 추가하지 않는다.
---    따라서 이 스크립트 재실행만으로는 v4 DB 에 set_key·kind 가 생기지 않으며,
---    실제 컬럼 추가는 위 migrateV4toV5 가 수행한다. v4 에서 전환된 DB 의
---    sqlite_master 원문에는 위 CREATE 의 컬럼 주석이 없지만 구조는 동일하다.
+--    따라서 이 스크립트 재실행만으로는 기존 DB에 set_key·kind 또는
+--    content_hash가 생기지 않는다. 실제 컬럼 추가는 위 두 마이그레이션이
+--    수행한다. 전환된 DB의 sqlite_master 원문에는 위 CREATE의 컬럼 주석이
+--    없지만 구조와 제약조건은 동일하다.
 -- =============================================================================
