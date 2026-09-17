@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	"SFTPClient/internal/domain"
 	"SFTPClient/internal/ledger"
 	"SFTPClient/internal/lock"
+	"SFTPClient/internal/logging"
 	"SFTPClient/internal/put"
 	"SFTPClient/internal/scan"
 	"SFTPClient/internal/security"
@@ -109,6 +111,22 @@ func run() error {
 	cfg, err := config.Load(*configPath, security.New())
 	if err != nil {
 		return err
+	}
+
+	// File logging is best-effort: an observability failure must not become a
+	// data-transfer outage. stderr stays first so every line is still visible
+	// when the file writer later degrades.
+	logWriter, logErr := logging.NewRotatingWriter(
+		cfg.Log.Dir,
+		cfg.Log.RetentionDays,
+	)
+	if logErr != nil {
+		log.Printf(
+			"[LOG][WARN] file logging disabled; continuing with stderr only: %v",
+			logErr,
+		)
+	} else {
+		log.SetOutput(io.MultiWriter(os.Stderr, logWriter))
 	}
 
 	// 평문 자격증명 경고 출력.
