@@ -218,7 +218,7 @@ SFTPClient/
 │   │                           설정 루트 아래 범위 제한 재귀 탐색으로 개편한다.
 │   │
 │   ├─ verify/         [완료]   판정 로직 전담. 전송도 기록도 하지 않고 "정상인가"만 답한다.
-│   │                           Ingress  — size>0, IsPartFile(.part 제외), mtime grace (설계안 7)
+│   │                           Ingress  — size>0, IsPartFile(.part / .filepart 제외), mtime grace (설계안 7)
 │   │                           Transfer — 원본/목적지 Size 대조, 최종 파일 존재 확인 (설계안 8)
 │   │                           Ingress와 Transfer 모두 구현·테스트 완료.
 │   │

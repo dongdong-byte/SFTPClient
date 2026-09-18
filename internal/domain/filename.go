@@ -19,12 +19,30 @@ import "strings"
 // 프로젝트에서 변경 비용이 가장 큰 항목이다. (CONCEPT 4.1, 7)
 const IdentityRule = "FILENAME_V1"
 
-// partSuffix 는 전송·수신 중인 파일에 사용하는 임시 접미사이다.
+// partSuffix 는 이 프로그램이 전송 중 사용하는 임시 접미사이다.
 //
-// 이 프로그램이 업로드 시 사용하는 접미사이며, 다른 프로세스가
-// 다른 접미사(.tmp 등)를 사용한다면 이 값만으로는 걸러지지 않는다.
-// 그 경우 tempSuffixes 형태의 목록으로 확장하고 IdentityRule 을 올린다.
+// NormalizeName 이 제거하는 접미사는 이것 하나뿐이다. 식별자 규칙의
+// 일부이므로 바꾸면 IdentityRule 을 올려야 한다.
 const partSuffix = ".part"
+
+// tempSuffixes 는 IsPartFile 이 "아직 완성되지 않은 파일" 로 보는
+// 임시 접미사 목록이다. 소문자로 적는다.
+//
+//	.part      이 프로그램 자신
+//	.filepart  WinSCP 계열 (상류 도구가 감시 폴더에 넣는 중)
+//
+// 상류 도구는 전송을 마치면 임시 이름을 최종 이름으로 바꾼다.
+// 그 이름 변경이 완료 신호이며, 그 전까지는 크기·나이와 무관하게
+// 후보에서 제외한다. 끊긴 전송의 임시 파일도 완성본처럼 크고 오래될
+// 수 있기 때문이다. 제외만 하고 삭제·이름 변경은 하지 않는다 —
+// 상류 도구가 이어 전송할 수 있다.
+//
+// 이 목록을 늘려도 IdentityRule 은 올리지 않는다 (UNIT5 설계 §2).
+// 임시 파일은 NormalizeName 에 도달하기 전에 Ingress 에서 제외되므로
+// 장부 file_name 의 의미가 바뀌지 않는다. NormalizeName 까지 확장하면
+// 식별자 규칙이 바뀌어 운영 DB 전부가 ErrIdentityRuleMismatch 로
+// 시작을 거부하고, 이미 등록된 *.filepart 행이 이름 가드에 걸린다.
+var tempSuffixes = []string{partSuffix, ".filepart"}
 
 // compressExts 는 BaseName 이 제거할 압축 확장자이다.
 // NormalizeName 은 이 확장자를 유지한다.
@@ -51,8 +69,9 @@ var compressExts = []string{".gz", ".z", ".zip"}
 // 동일 파일명은 동일한 file_name 을 갖는다.
 // 이 성질은 BOTH 모드에서 동일 파일을 식별하는 기반이 된다.
 //
-// 주의: 이 함수는 .part 를 제거하므로 작성 중인 파일도 최종 파일명으로 보인다.
-// scan 은 .part 를 거르지 않는다. 호출 전 IsPartFile 로 제외하는 것은
+// 주의: 이 함수는 .part 만 제거하므로 작성 중인 .part 도 최종 파일명으로
+// 보인다. .filepart 는 떼지 않는다(UNIT5 — IdentityRule 유지).
+// scan 은 임시 파일을 거르지 않는다. 호출 전 IsPartFile 로 제외하는 것은
 // verify(Ingress) 의 책임이다.
 func NormalizeName(pathOrName string) string {
 	name := trimDir(pathOrName)
@@ -113,19 +132,27 @@ func BaseName(pathOrName string) string {
 	return name
 }
 
-// IsPartFile 은 파일명이 .part 임시 접미사로 끝나는지 답한다.
+// IsPartFile 은 파일명이 임시 접미사(tempSuffixes)로 끝나는지 답한다.
 //
-// scan 은 관측 사실만 올리고 .part 를 거르지 않는다.
+// scan 은 관측 사실만 올리고 임시 파일을 거르지 않는다.
 // 후보에서 제외하는 것은 verify(Ingress) 의 책임이다.
 //
-// .part 를 먼저 제외하지 않고 NormalizeName 하면 임시 접미사가 제거되어
-// 작성 중인 파일이 최종 파일명처럼 보일 수 있다.
+// .part 를 먼저 제외하지 않고 NormalizeName 하면 접미사가 제거되어
+// 작성 중인 파일이 최종 파일명처럼 보일 수 있다. .filepart 는
+// 정규화해도 접미사가 남지만, 미완성이므로 크기·나이와 무관하게
+// 여기서 걸러 장부에 올리지 않는다.
 //
 // 대부분의 경우 Grace Time 이 작성 중 파일을 막지만,
-// .part 자체를 Ingress 단계에서 제외하여 불필요한 후보가
+// 임시 접미사 자체를 Ingress 단계에서 제외하여 불필요한 후보가
 // Ledger 로 전달되지 않도록 한다. (설계안 7, PROJECT_GUIDELINES)
 func IsPartFile(pathOrName string) bool {
-	name := trimDir(pathOrName)
+	name := strings.ToLower(trimDir(pathOrName))
 
-	return strings.HasSuffix(strings.ToLower(name), partSuffix)
+	for _, suffix := range tempSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+
+	return false
 }

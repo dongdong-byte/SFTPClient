@@ -331,6 +331,29 @@ func TestLookupCommonRejectsUnnormalizedNames(t *testing.T) {
 	}
 }
 
+// TestLookupCommonAcceptsNormalizedFilepart 는 UNIT5 가드 비대칭을 고정한다.
+//
+// .part 는 NormalizeName 이 접미사를 떼므로 Lookup 가드가 거부한다.
+// .filepart 는 정규화 불변이라 가드가 통과한다. 후보 제외는 IsPartFile
+// 게이트에만 의존한다.
+func TestLookupCommonAcceptsNormalizedFilepart(t *testing.T) {
+	db := lookupTestDB(t)
+
+	const name = "a001.rnx.gz.filepart"
+
+	got, err := db.LookupCommon(
+		context.Background(),
+		domain.CategoryRINEX3Hourly,
+		[]string{name},
+	)
+	if err != nil {
+		t.Fatalf("LookupCommon(%q) = %v, want 빈 결과", name, err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("미등록 .filepart 조회 결과 = %+v, want 없음", got)
+	}
+}
+
 func TestLookupCommonEmptyInput(t *testing.T) {
 	db := lookupTestDB(t)
 

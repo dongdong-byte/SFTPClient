@@ -22,8 +22,9 @@
 // ledger 접근, 후보 판정, config import, 로그 출력.
 //
 // 판정 규칙의 주인은 여기가 아니다. 파일명 ↔ Category 대조 규칙은
-// domain.MatchesName 이, .part 판정은 domain.IsPartFile 이 소유하며
-// 이 패키지는 호출만 한다. 파일시스템도 시계도 직접 보지 않으므로
+// domain.MatchesName 이, 임시 접미사(.part / .filepart) 판정은
+// domain.IsPartFile 이 소유하며 이 패키지는 호출만 한다.
+// 파일시스템도 시계도 직접 보지 않으므로
 // (Now 주입) 실제 파일 없이 표 기반 테스트가 성립한다.
 package verify
 
@@ -84,13 +85,15 @@ const (
 	// ReasonIsDir — 디렉터리는 전송 대상이 아니다.
 	ReasonIsDir
 
-	// ReasonPartFile — .part 임시 접미사가 붙어 있다.
+	// ReasonPartFile — 임시 접미사(.part / .filepart)가 붙어 있다.
+	// 목록의 주인은 domain.IsPartFile 이다.
 	//
 	// 주 방어선은 put 이 Batch Lookup 목록을 만들 때의 사전 제외다.
-	// .part 는 정규화하면 최종 파일명과 같은 키가 되어 IN 조회에서
-	// 충돌하므로 lookup 앞에서 빠져야 한다. 여기의 검사는 Verify 를
-	// 직접 호출하는 경로를 위한 2차 방어이며, 정상 흐름에서
-	// part= 집계는 항상 0 이다. (VERIFY DESIGN 5절)
+	// 그 경로도 Verifier 를 호출하므로 정상 흐름의 part= 집계는
+	// 임시 파일을 건너뛴 건수다. .part 는 정규화하면 최종 파일명과
+	// 같은 키가 되어 IN 조회에서 충돌하므로 lookup 앞에서 빠져야
+	// 한다. .filepart 는 정규화 불변이라 장부 이름 가드가 거부하지
+	// 않는다. 미완성 입력 제외는 이 게이트가 전부다.
 	ReasonPartFile
 
 	// ReasonFutureMTime — mtime 이 현재보다 Grace 를 넘게 미래다.

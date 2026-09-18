@@ -211,10 +211,14 @@ type CategoryReport struct {
 	// SkippedDirs 는 Entries 중 IsDir 라 제외한 수다.
 	SkippedDirs int
 
-	// SkippedPart 는 .part 라 Ledger Lookup 전에 제외한 수다.
+	// SkippedPart 는 임시 접미사(.part / .filepart)라 Ledger Lookup 전에
+	// 제외한 수다. 매 회차 0 이 아니면 상류 전송이 진행 중이거나 끊겨
+	// 남은 임시 파일이 있다는 뜻이다. 실제 reject reason 의 판정은
+	// verify 가 담당한다.
 	//
-	// NormalizeName 전에 제거하지 않으면 최종 파일과 같은 식별자로
-	// 합쳐질 수 있다. 실제 reject reason 의 판정은 verify 가 담당한다.
+	// .part 는 NormalizeName 이 접미사를 떼므로 Lookup 전에 빼지 않으면
+	// 최종 파일과 같은 식별자로 합쳐진다. .filepart 는 정규화 불변이라
+	// 키가 합쳐지지 않는다. 그쪽 방어는 IsPartFile 게이트가 전부다.
 	SkippedPart int
 
 	// SkippedDuplicate 는 카테고리 안에서 정규화 이름이 중복 관측되어

@@ -423,8 +423,9 @@ func (r *Runner) visitBatch(
 	byName := make(map[string]scan.Entry, len(b.Entries))
 
 	for _, e := range b.Entries {
-		// NormalizeName 은 .part 를 제거하므로 .part 를 그대로 Lookup 하면
-		// 최종 파일과 같은 식별자로 합쳐질 수 있다.
+		// .part 는 NormalizeName 이 접미사를 떼므로 Lookup 하면 최종
+		// 파일과 같은 식별자로 합쳐질 수 있다. .filepart 는 정규화
+		// 불변이라 키가 합쳐지지 않지만, 미완성 파일이므로 같이 뺀다.
 		//
 		// 실제 제외 판정의 주인은 verify 이므로 Verifier 의 결과를 기록한다.
 		if e.IsDir || domain.IsPartFile(e.Name) {

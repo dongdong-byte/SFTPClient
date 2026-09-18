@@ -17,10 +17,12 @@ import (
 const (
 	// putPartSuffix 는 PUT 전송 중 사용하는 임시 파일 접미어다.
 	//
-	// 현재 domain.IsPartFile 도 동일한 ".part" 규칙을 판정한다.
-	// domain 에 공개된 접미어 상수가 생기면 그 값을 공유하는 편이 좋지만,
-	// IsPartFile 내부 구현을 역으로 참조할 수는 없으므로 이 단계에서는
-	// 전송 경로 생성 지점을 여기 한 곳으로 제한한다.
+	// 원격 임시 이름은 이 프로그램이 붙이는 .part 뿐이다.
+	// domain.IsPartFile 은 입력 제외용으로 .part 와 .filepart 를 함께
+	// 본다. 전송 프로토콜과 입력 판별을 한 상수로 묶지 않는다.
+	// domain 에 공개된 접미어 상수가 생기면 .part 생성 지점만 공유하는
+	// 편이 좋지만, IsPartFile 내부 구현을 역으로 참조할 수는 없으므로
+	// 전송 경로 생성은 여기 한 곳으로 제한한다.
 	putPartSuffix = ".part"
 
 	// cleanupTimeout 은 실패 정리의 원격 작업(.part 삭제) 상한이다.

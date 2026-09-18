@@ -261,6 +261,36 @@ func TestIsPartFile(t *testing.T) {
 			in:   "partial.rnx",
 			want: false,
 		},
+		{
+			name: "WinSCP filepart",
+			in:   "SONP00KOR_R_20260010300_01H_01S_MS.rnx.gz.filepart",
+			want: true,
+		},
+		{
+			name: "대문자 FILEPART",
+			in:   "SONP00KOR_R_20260010300_01H_01S_MS.RNX.GZ.FILEPART",
+			want: true,
+		},
+		{
+			name: "Windows 경로의 filepart",
+			in:   `D:\RINEX3\dbon0010.26o.gz.filepart`,
+			want: true,
+		},
+		{
+			name: "POSIX 경로의 filepart",
+			in:   "/rinex/dbon0010.26o.gz.filepart",
+			want: true,
+		},
+		{
+			name: "점 없이 filepart 로 끝나면 임시 파일이 아니다",
+			in:   "sonpfilepart",
+			want: false,
+		},
+		{
+			name: "filepart 가 중간에 있으면 임시 파일이 아니다",
+			in:   "a.filepart.rnx.gz",
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -274,5 +304,23 @@ func TestIsPartFile(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// TestNormalizeNameKeepsFilepart 는 UNIT5 의 IdentityRule 유지 결정을 고정한다.
+//
+// .filepart 는 IsPartFile 로 Ingress 에서 제외할 뿐 식별자 규칙에는 들어가지
+// 않는다. NormalizeName 이 이것까지 떼어내기 시작하면 file_name 의미가 바뀌어
+// IdentityRule 을 올려야 하고, 운영 DB 가 시작을 거부한다.
+func TestNormalizeNameKeepsFilepart(t *testing.T) {
+	const in = "DBON0010.26O.gz.filepart"
+	const want = "dbon0010.26o.gz.filepart"
+
+	if got := NormalizeName(in); got != want {
+		t.Errorf("NormalizeName(%q) = %q, want %q", in, got, want)
+	}
+
+	if IdentityRule != "FILENAME_V1" {
+		t.Errorf("IdentityRule = %q — 임시 접미사 목록 변경은 식별자 규칙 변경이 아니다", IdentityRule)
 	}
 }
