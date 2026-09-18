@@ -337,12 +337,13 @@ func run() error {
 		DB:       db,
 		Verifier: verify.Verifier{Grace: cfg.Ingress.Grace},
 		Opts: put.RunOptions{
-			DryRun:           *dryRun,
-			MaxRetries:       cfg.Put.MaxRetries,
-			MaxFilesPerRun:   cfg.Put.MaxFilesPerRun,
-			MaxWorkers:       cfg.Put.MaxWorkers,
-			RepostDownloaded: cfg.General.RepostDownloaded,
-			SeedMode:         *seed,
+			DryRun:                *dryRun,
+			MaxRetries:            cfg.Put.MaxRetries,
+			MaxFilesPerRun:        cfg.Put.MaxFilesPerRun,
+			MaxHashBackfillPerRun: cfg.Put.MaxHashBackfillPerRun,
+			MaxWorkers:            cfg.Put.MaxWorkers,
+			RepostDownloaded:      cfg.General.RepostDownloaded,
+			SeedMode:              *seed,
 		},
 	}
 

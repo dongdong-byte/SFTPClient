@@ -198,7 +198,7 @@ func (rr RunReport) Print(l *log.Logger) {
 	for _, c := range rr.Categories {
 		l.Printf(
 			"%s category=%s dirs=%d missing=%d listed=%d errs=%d "+
-				"unchanged=%d new=%d changed=%d",
+				"unchanged=%d new=%d changed=%d metadata_only=%d",
 			tag,
 			c.Category,
 			c.Scan.Dirs,
@@ -208,7 +208,30 @@ func (rr RunReport) Print(l *log.Logger) {
 			c.Unchanged,
 			c.New,
 			c.Changed,
+			c.MetadataOnly,
 		)
+
+		// 해시 계측은 활동이 있었을 때만 한 줄로 남긴다 (설계 v3 §6).
+		// 성공 로그는 집계 중심이라는 로그 정책(설계안 14)을 따른다.
+		if hashed := c.HashNew.Files + c.HashChanged.Files +
+			c.HashDrift.Files + c.HashBackfill.Files; hashed > 0 ||
+			c.HashFailed > 0 || c.HashUnstable > 0 ||
+			c.BackfillDeferred > 0 {
+			l.Printf(
+				"%s   hash new=%d/%dB changed=%d/%dB drift=%d/%dB "+
+					"backfill=%d/%dB ms=%d failed=%d unstable=%d deferred=%d",
+				tag,
+				c.HashNew.Files, c.HashNew.Bytes,
+				c.HashChanged.Files, c.HashChanged.Bytes,
+				c.HashDrift.Files, c.HashDrift.Bytes,
+				c.HashBackfill.Files, c.HashBackfill.Bytes,
+				c.HashNew.Millis+c.HashChanged.Millis+
+					c.HashDrift.Millis+c.HashBackfill.Millis,
+				c.HashFailed,
+				c.HashUnstable,
+				c.BackfillDeferred,
+			)
+		}
 
 		if len(c.Rejected) > 0 {
 			l.Printf(

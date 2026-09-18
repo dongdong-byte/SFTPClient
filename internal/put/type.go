@@ -141,6 +141,11 @@ type RunOptions struct {
 	// (2026-09-01: 동일 로직 이중 유지보수).
 	SeedMode bool
 
+	// MaxHashBackfillPerRun 은 한 실행에서 자연 백필(비후보 행의
+	// 지문 채우기)로 해시할 최대 파일 수다 (config, UNIT2 설계 v3 §3).
+	// 0 이면 백필을 끈다. 판정·필수 해시는 이 예산과 무관하다.
+	MaxHashBackfillPerRun int
+
 	// RepostDownloaded 가 false 면 Origin=DOWNLOAD 인 파일을 후보에서
 	// 제외한다 (Ping-Pong 방지, 설계안 9.1).
 	RepostDownloaded bool
@@ -186,6 +191,13 @@ type CurrentPutObservation struct {
 //
 // 필드 대부분이 dry-run 체크포인트(GUIDELINES 1차 목표: 관측소 수,
 // 확장자 분포, 경로 정합, 소요시간)의 답이 되도록 구성했다.
+// HashStats 는 해시 계측 묶음이다 (건수·바이트·소요 ms).
+type HashStats struct {
+	Files  int64
+	Bytes  int64
+	Millis int64
+}
+
 type CategoryReport struct {
 	Category domain.Category
 
@@ -212,6 +224,25 @@ type CategoryReport struct {
 	Unchanged int
 	New       int
 	Changed   int
+
+	// MetadataOnly 는 size 같음 · mtime 다름 · 지문 일치로 판정되어
+	// revision 을 올리지 않고 기준선(mtime)만 옮긴 수다.
+	// (UNIT2 설계 v3 §1 — 억제된 mtime 드리프트. 순서 4 경보의 토대)
+	MetadataOnly int
+
+	// Hash* 는 해시 원인 4분류별 계측이다 (설계 v3 §6).
+	HashNew      HashStats // 신규 최초 지문
+	HashChanged  HashStats // 변경(size≠ 또는 지문 상이)의 새 지문
+	HashDrift    HashStats // size=·mtime≠ 판정 해시
+	HashBackfill HashStats // 자연 백필
+
+	// HashFailed 는 읽기 실패(보수 진행), HashUnstable 은 계산
+	// 전후·스캔 대비 불안정 관측(회차 보류) 수다 (설계 v3 §1.4).
+	HashFailed   int
+	HashUnstable int
+
+	// BackfillDeferred 는 예산 소진으로 다음 회차로 미룬 백필 수다.
+	BackfillDeferred int
 
 	// Rejected 는 Ingress 거부의 사유별 건수다 (verify.Reason.String 키).
 	Rejected map[string]int

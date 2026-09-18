@@ -45,6 +45,17 @@ type Runner struct {
 	DB       *ledger.DB
 	Verifier verify.Verifier
 	Opts     RunOptions
+
+	// Hasher 는 내용 지문 계산기다. nil 이면 defaultHasher(SHA-256).
+	// (UNIT2 설계 v3 — RunOptions.Logger 의 nil 기본값 관행과 동일한
+	// 소비자 측 주입점. 값이 아니라 협력자이므로 Opts 가 아니라
+	// Runner 에 둔다 — Scanner/DB/Verifier 와 같은 줄.)
+	Hasher Hasher
+
+	// backfillRemaining 은 이번 Run 의 백필 잔여 예산이다.
+	// Run 시작 시 Opts.MaxHashBackfillPerRun 으로 초기화한다.
+	// 스캔 단계는 단일 고루틴이므로 잠금 없이 감산한다.
+	backfillRemaining int
 }
 
 // failedRef 는 FAILED 로 관측되어 attempts 확인이 필요한 후보 예비다.
@@ -76,6 +87,9 @@ func (r *Runner) Run(
 	}
 
 	started := r.now()
+
+	// 백필 예산은 Run 단위다 — 카테고리·배치를 가로질러 공유한다.
+	r.backfillRemaining = r.Opts.MaxHashBackfillPerRun
 
 	var all []Candidate
 
@@ -529,18 +543,163 @@ func (r *Runner) visitBatch(
 			continue
 		}
 
-		// ── Unchanged ───────────────────────────────────────────────
-		if exists && k.Size == e.Size && k.MTime == mtime {
-			rep.Unchanged++
+		// ── 판정 3분화: Unchanged / MetadataChangedOnly / ContentChanged ──
+		// (UNIT2 설계 v3 §1 판정표. mtime 은 신뢰할 수 없는 외부
+		// 메타데이터라는 것이 INCIDENT_MTIME_RETRANSMIT 의 교훈이다.)
+		sameSize := exists && k.Size == e.Size
+		metadataOnly := false
+		driftHash := ""        // 드리프트 판정에서 이미 계산한 새 지문 (재계산 방지)
+		driftHashLost := false // 판정 해시 읽기 실패 → ContentChanged 간주, 지문 ''
 
-			// 이전 회차에 Ingress 를 통과한 실재 파일이다. VERIFIED 로
-			// 후보에서 빠지는 멤버도 완성도에는 존재로 센다 — "G 는
-			// 이미 보냈고 L·N·O 가 오늘 도착" 한 세트가 영구 보류되지
-			// 않아야 한다 (setGate 의 observed 계약).
-			*observed = append(*observed, n)
+		// size 같음 · mtime 다름 · 장부에 지문 있음 → 내용 대조.
+		// dry-run 도 수행한다(분류가 live 와 같아야 예고가 성립, §4).
+		// seed 는 지문 일체를 생략한다(§4 — 표 4행의 보수 경로로 자연 귀결).
+		if sameSize && k.MTime != mtime && k.ContentHash != "" && !r.Opts.SeedMode {
+			hr, herr := r.hashFile(ctx, proto.LocalPath, &rep.HashDrift)
+			switch {
+			case herr != nil:
+				// 판별 불가 → 보수적으로 변경 간주 (누락 > 헛전송, §1.4).
+				// 진짜 I/O 장애면 전송 단계가 FAILED 로 드러낸다.
+				rep.HashFailed++
+				r.logf(
+					"[HASH][WARN] drift judge read failed "+
+						"category=%s file=%s: %v — treated as ContentChanged",
+					job.Category, n, herr,
+				)
+
+				driftHashLost = true
+
+			case !hashStable(hr, e.Size, mtime):
+				// 관측이 stale — 작성 중 파일 보류와 동일 의미론 (§1.4).
+				// observed 미포함이 맞다: 미완성 멤버를 근거로 세트를
+				// 내보내지 않는다 (setGate 계약).
+				rep.HashUnstable++
+				rep.addRejected("hash unstable", e.Name)
+
+				continue
+
+			case hr.Hash == k.ContentHash:
+				metadataOnly = true
+
+			default:
+				driftHash = hr.Hash
+			}
+		}
+
+		if (sameSize && k.MTime == mtime) || metadataOnly {
+			if metadataOnly {
+				rep.MetadataOnly++
+
+				// 기준선(mtime)만 현재 관측치로 옮긴다. 옮기지 않으면
+				// 같은 파일을 매 회차 다시 해시한다 (§1.1).
+				if !r.Opts.DryRun {
+					applied, terr := r.DB.TouchCommonMTime(
+						ctx, job.Category, k, mtime,
+					)
+					if terr != nil {
+						return fmt.Errorf("touch mtime %q: %w", n, terr)
+					}
+
+					if !applied {
+						// 판정 근거와 행 불일치 — 단일 실행 lock 아래
+						// 에서는 코드 불변식 이상 신호다. 조용히 넘기지
+						// 않되 회차를 죽이지도 않는다 (§2.2 0행 정책).
+						r.logf(
+							"[HASH][WARN] touch mtime matched 0 rows "+
+								"category=%s file=%s rev=%d — held this run",
+							job.Category, n, k.Revision,
+						)
+
+						continue
+					}
+				}
+			} else {
+				rep.Unchanged++
+			}
 
 			proto.Key.Revision = k.Revision
 			// 현재 Ledger 의 실제 revision 이므로 RevisionPending=false.
+
+			// 지문 없는 행의 이원화 (설계 v3 §3):
+			//   후보(이력 없음·PENDING·FAILED) → 필수 해시, 예산 무관.
+			//     지금 보낼 바이트의 기준 지문을 남기지 않으면 전송
+			//     직후의 드리프트(이번 인시던트의 7일 롤링이 정확히
+			//     이 패턴)가 방금 보낸 파일을 재전송시킨다.
+			//   비후보(VERIFIED) → 자연 백필, 예산 적용.
+			// dry-run 은 쓰기가 없으므로, seed 는 §4 확정으로 생략.
+			if k.ContentHash == "" && !r.Opts.DryRun && !r.Opts.SeedMode {
+				mandatory := k.PutStatus == "" ||
+					k.PutStatus == domain.StatusPending ||
+					k.PutStatus == domain.StatusFailed
+				backfill := k.PutStatus == domain.StatusVerified &&
+					r.Opts.MaxHashBackfillPerRun > 0
+
+				if backfill && r.backfillRemaining <= 0 {
+					rep.BackfillDeferred++
+					backfill = false
+				}
+
+				if mandatory || backfill {
+					stats := &rep.HashBackfill
+					if mandatory {
+						stats = &rep.HashDrift // 후보 필수 해시는 방어 본체 계열로 계측
+					}
+
+					hr, herr := r.hashFile(ctx, proto.LocalPath, stats)
+
+					if backfill {
+						// 성패 무관 소비 — 실패한 시도도 읽기 비용을
+						// 냈다. 다음 회차에 자연 재시도된다 (§3 정정).
+						r.backfillRemaining--
+					}
+
+					switch {
+					case herr != nil:
+						// 해시 실패는 전송을 막지 않는다 (§1.4).
+						rep.HashFailed++
+						r.logf(
+							"[HASH][WARN] fingerprint read failed "+
+								"category=%s file=%s: %v — proceeding without",
+							job.Category, n, herr,
+						)
+
+					case !hashStable(hr, e.Size, mtime):
+						rep.HashUnstable++
+						rep.addRejected("hash unstable", e.Name)
+
+						continue
+
+					default:
+						applied, serr := r.DB.SetContentHash(
+							ctx, job.Category, k, hr.Hash,
+						)
+						if serr != nil {
+							return fmt.Errorf(
+								"set content hash %q: %w", n, serr,
+							)
+						}
+
+						if !applied {
+							// 판정에 쓴 행이 달라졌다. 필수/자연 백필 모두
+							// candidate 와 observed 에서 제외하고 다음 회차에
+							// 새 사실로 재판정한다 (§2.2 0행 정책).
+							r.logf(
+								"[HASH][WARN] set hash matched 0 rows "+
+									"category=%s file=%s rev=%d — held this run",
+								job.Category, n, k.Revision,
+							)
+
+							continue
+						}
+					}
+				}
+			}
+
+			// Unchanged / MetadataChangedOnly 는 후보가 아니어도
+			// 세트 완성도의 실재 파일이다. 지문 채우기 블록 안에만
+			// append 하면 이미 지문이 있는 VERIFIED 형제가 빠져
+			// 게이트 ON 에서 세트가 영구 보류된다.
+			*observed = append(*observed, n)
 
 			switch k.PutStatus {
 			case "":
@@ -600,12 +759,6 @@ func (r *Runner) visitBatch(
 			rep.New++
 		}
 
-		// Ingress 를 통과한 신규·변경 파일. 거부된 파일(0바이트,
-		// Grace 미경과)은 여기 도달하지 않으므로 존재로 세지 않는다.
-		// DryRun 과 live 가 같은 지점에서 기록되어 두 모드의 게이트
-		// 판정이 동일하다.
-		*observed = append(*observed, n)
-
 		if r.Opts.DryRun {
 			// dry-run 은 미래 revision 을 산술로 만들어내지 않는다.
 			//
@@ -640,9 +793,47 @@ func (r *Runner) visitBatch(
 				proto.Key.Revision = 0
 			}
 
+			// 신규/변경은 쓰지 않되 set gate 관측에는 포함한다.
+			*observed = append(*observed, n)
 			*cands = append(*cands, proto)
 			continue
 		}
+
+		// 신규·변경의 지문 (설계 v3 §1 표). dry-run 은 여기 도달하지
+		// 않고(위 continue), seed 는 지문 일체 생략(§4). 드리프트 판정이
+		// 이미 계산한 새 지문(driftHash)은 재사용한다.
+		contentHash := driftHash
+		if contentHash == "" && !driftHashLost && !r.Opts.SeedMode {
+			stats := &rep.HashNew
+			if exists {
+				stats = &rep.HashChanged
+			}
+
+			hr, herr := r.hashFile(ctx, proto.LocalPath, stats)
+			switch {
+			case herr != nil:
+				// 지문 없이 진행 — 전송을 막지 않는다 (§1.4).
+				rep.HashFailed++
+				r.logf(
+					"[HASH][WARN] fingerprint read failed "+
+						"category=%s file=%s: %v — proceeding without",
+					job.Category, n, herr,
+				)
+
+			case !hashStable(hr, e.Size, mtime):
+				rep.HashUnstable++
+				rep.addRejected("hash unstable", e.Name)
+
+				continue
+
+			default:
+				contentHash = hr.Hash
+			}
+		}
+
+		// 해시가 불안정하면 위에서 continue 하므로 observed 에 들어오지
+		// 않는다. 안정 관측 또는 허용된 읽기 실패만 set gate 근거가 된다.
+		*observed = append(*observed, n)
 
 		res, err := r.DB.UpsertCommon(ctx, ledger.CommonInput{
 			FileName:          n,
@@ -652,6 +843,7 @@ func (r *Runner) visitBatch(
 			MTime:             mtime,
 			Origin:            domain.OriginLocal,
 			IngressVerifiedAt: r.now().UTC().Unix(),
+			ContentHash:       contentHash,
 		})
 		if err != nil {
 			return fmt.Errorf("upsert %q: %w", n, err)
