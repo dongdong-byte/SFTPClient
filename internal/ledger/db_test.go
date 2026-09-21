@@ -523,7 +523,9 @@ func TestOpenIsIdempotent(t *testing.T) {
 		)
 	}
 
-	// schema.sql 의 INSERT OR IGNORE 는 3개 키를 넣는다.
+	// schema.sql 의 INSERT OR IGNORE 가 3개 키를 넣는다.
+	// 빈 장부이므로 ensureOperationOrigin 은 operation_origin 을 쓰지
+	// 않는다 (origin.go — 빈 Open 은 운영 시작이 아니다).
 	// 반복 실행으로 늘어나면 안 된다.
 	if count != 3 {
 		t.Errorf(

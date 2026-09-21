@@ -586,6 +586,21 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 --                   현재 값 MVP1_PUT 은 DB 최초 생성 단계의 역사적 표기이며
 --                   현재 로드맵이나 기능 완료 상태를 판정하는 값이 아니다.
 --
+--   operation_origin 이 장부가 처음 운영을 시작한 UTC 날짜 (YYYY-MM-DD).
+--                   자동 resend 창의 하한이다 (resend 설계 v4 §3.5).
+--                   Open 및 조회 시 UTC 날짜 형식을 검증한다. 손상된 값은
+--                   기본값으로 대체하지 않고 오류로 중단한다.
+--                   아래 INSERT 목록에 넣지 않는다. 기존 DB 의 백필 값은
+--                   MIN(common_ledger.first_seen) 이라 정적 VALUES 로 표현할
+--                   수 없고, schema.sql 은 세대 검증 전에 실행되므로 여기서
+--                   쓰면 지원하지 않는 DB 에까지 값을 남긴다. 기록은 Open 이
+--                   모든 검증을 통과한 뒤 ledger.ensureOperationOrigin
+--                   (origin.go) 이 수행한다. 한 번 기록하면 불변이며
+--                   schema_version 은 올리지 않는다.
+--                   빈 장부(행 없음)에서는 기록하지 않는다 — dry-run 이
+--                   만든 빈 DB 의 날짜가 origin 으로 굳지 않게 한다.
+--                   첫 행이 생긴 뒤의 Open 이 MIN(first_seen) 으로 기록한다.
+--
 -- 아래 INSERT 는 OR IGNORE 이므로 기존 DB 의 값을 덮어쓰지 않는다.
 -- 즉 기존 DB 에 이 스크립트를 적용해도 schema_version 은 원래 값으로 남는다.
 -- 스크립트가 조용히 버전만 올려놓고 데이터는 옛 구조로 두는 사고를 막는다.

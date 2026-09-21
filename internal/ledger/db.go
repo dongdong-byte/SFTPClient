@@ -88,6 +88,7 @@ type DB struct {
 //	→ schema.sql 실행
 //	→ schema_version 검사
 //	→ identity_rule 검사
+//	→ operation_origin 백필(행이 있을 때만, schema_version 불변)
 func Open(ctx context.Context, path string) (*DB, error) {
 	dataSourceName, err := dsn(path)
 	if err != nil {
@@ -192,6 +193,13 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	// 마이그레이션까지 끝난 뒤에도 세대가 다르면 즉시 중단한다.
 	// v4 → v5 밖의 모든 불일치가 여기서 잡힌다.
 	if err := db.verifySchemaVersion(ctx); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
+
+	// 운영 시작일(resend §3.5)을 보장한다. 값이 있으면 그대로 둔다.
+	// 모든 검증을 통과한 DB 에만 쓴다 — 위치의 근거는 origin.go 참조.
+	if err := db.ensureOperationOrigin(ctx); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}
