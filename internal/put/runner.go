@@ -178,6 +178,20 @@ func (r *Runner) checkInput(jobs []CategoryJob) error {
 		)
 	}
 
+	// resend 조합 가드 (v4 §4.3·§5). 잘못 배선된 조합은 조용히
+	// 동작이 뒤틀리는 대신 입구에서 죽는다.
+	if r.Opts.RearmExhausted && !r.Opts.Resend {
+		return fmt.Errorf(
+			"put: RearmExhausted requires Resend (재무장은 수동 resend 전용, v4 §4.3)",
+		)
+	}
+
+	if r.Opts.Resend && r.Opts.SeedMode {
+		return fmt.Errorf(
+			"put: Resend and SeedMode are mutually exclusive (seed 는 PENDING 을 등록하지 않는다)",
+		)
+	}
+
 	seen := map[domain.Category]struct{}{}
 
 	for _, job := range jobs {
@@ -279,14 +293,42 @@ func (r *Runner) runCategory(
 	// 위치: Upsert 뒤(observed 완성 뒤), PENDING 등록 앞.
 	// FAILED 재시도 대기열(failed)에도 동일 정책을 적용한다 —
 	// 미완성 세트의 FAILED 멤버만 재시도로 새어 나가면 게이트가 뚫린다.
-	gate, err := newSetGate(job.Category, job.RequiredKinds, observed)
+	//
+	// resend(v4 §5)에서는 보류 판정과 세트 정체성을 분리한다.
+	//   보류 판정(gate)     — ResendMinKinds. nil 이면 무조건 우회(§5.3).
+	//   세트 정체성(keyGate) — RequiredKinds. SetKey 새김·경계 절단·
+	//                          우회 관측의 기준. 보류 게이트가 우회여도
+	//                          절단이 세트를 쪼개면 안 된다(§5.5).
+	// 평소 실행에서는 둘이 같은 게이트다.
+	//
+	// 평소 게이트가 OFF(RequiredKinds 없음)면 resend 도 OFF 다 — 우회할
+	// 게이트가 없기 때문이다(§5.4 "게이트를 켠 기관에서만 의미가 있다").
+	// 이 조건이 없으면 방향이 뒤집힌다: 게이트 OFF 기관에 ResendMinKinds
+	// 가 남아 있을 때 resend 가 **없던 보류를 새로 만들어** 최소 종이
+	// 없는 파일이 오류 한 번 없이 전송되지 않는다. config 는 이 조합을
+	// 시작 오류로 막지만(커밋 2 §5.3), put 은 job 조립을 재검증하지
+	// 않으므로 여기서 한 번 더 닫는다.
+	holdKinds := job.RequiredKinds
+	if r.Opts.Resend && len(job.RequiredKinds) > 0 {
+		holdKinds = job.ResendMinKinds
+	}
+
+	gate, err := newSetGate(job.Category, holdKinds, observed)
 	if err != nil {
 		return nil, rep, fmt.Errorf("build set gate: %w", err)
 	}
 
+	keyGate := gate
+	if r.Opts.Resend {
+		keyGate, err = newSetGate(job.Category, job.RequiredKinds, observed)
+		if err != nil {
+			return nil, rep, fmt.Errorf("build set key gate: %w", err)
+		}
+	}
+
 	rep.SetGate = gate.on()
 
-	if gate.on() {
+	if gate.on() || keyGate.on() {
 		// 보류는 조용히 일어나면 안 된다. 미완성 세트 보류 리포트는
 		// 구현하지 않으므로 이 로그가 유일한 관측 수단이다.
 		for _, hs := range gate.heldSets() {
@@ -332,7 +374,8 @@ func (r *Runner) runCategory(
 		}
 
 		// 일반 후보와 재시도 대기열에 같은 필터를 적용한다.
-		// 통과 후보에는 경계 절단용 SetKey 를 새긴다 (plan.go 가 사용).
+		// 보류는 gate(resend 면 ResendMinKinds), 경계 절단용 SetKey 는
+		// keyGate(RequiredKinds)가 판정한다 — §5.5.
 		filter := func(c Candidate) (Candidate, bool, error) {
 			held, err := gate.holds(c.Key.FileName)
 			if err != nil {
@@ -344,7 +387,7 @@ func (r *Runner) runCategory(
 				return c, false, nil
 			}
 
-			setKey, err := gate.setKeyOf(c.Key.FileName)
+			setKey, err := keyGate.setKeyOf(c.Key.FileName)
 			if err != nil {
 				return c, false, err
 			}
@@ -402,6 +445,16 @@ func (r *Runner) runCategory(
 		&cands,
 	); err != nil {
 		return nil, rep, err
+	}
+
+	// resend 우회 관측 (v4 §5.5) — RequiredKinds 기준 미완성인데
+	// 이번 후보에 멤버가 포함된 세트를 로그로 남긴다. 보고 리포트가
+	// 아니라 heldSets 요약을 재사용한 로그 한 줄이다. 재시도 후보도
+	// 포함해야 하므로 resolveFailed 뒤에서 관측한다.
+	if r.Opts.Resend && keyGate.on() {
+		if err := r.logResendBypass(job.Category, keyGate, cands); err != nil {
+			return nil, rep, err
+		}
 	}
 
 	// dry-run 변경 파일의 현재 revision 관측.
@@ -967,6 +1020,55 @@ func (r *Runner) visitBatch(
 	return nil
 }
 
+// logResendBypass 는 RequiredKinds 기준 미완성이지만 resend 게이트를
+// 통과해 이번 후보에 멤버가 있는 세트를 [SET][RESEND] 로 남긴다
+// (v4 §5.5). ResendMinKinds 가 nil(전면 우회)이든 부분집합이든, 여기
+// 잡히는 세트는 "목적지에 부분 세트가 생기는 것을 운영자가 지시로
+// 감수한" 전송이므로 어느 세트가 무엇이 빠진 채 갔는지가 기록에
+// 남아야 한다.
+//
+// 후보 멤버가 없는 미완성 세트(전부 VERIFIED 등)는 이번 전송과
+// 무관하므로 남기지 않는다 — 매 resend 마다 과거 전체가 로그를
+// 채우는 소음을 막는다.
+func (r *Runner) logResendBypass(
+	cat domain.Category,
+	keyGate *setGate,
+	cands []Candidate,
+) error {
+	candSets := map[string]struct{}{}
+
+	for _, c := range cands {
+		setKey, err := keyGate.setKeyOf(c.Key.FileName)
+		if err != nil {
+			return fmt.Errorf(
+				"resend bypass observe %q: %w",
+				c.Key.FileName,
+				err,
+			)
+		}
+
+		if setKey != "" {
+			candSets[setKey] = struct{}{}
+		}
+	}
+
+	for _, hs := range keyGate.heldSets() {
+		if _, ok := candSets[hs.SetKey]; !ok {
+			continue
+		}
+
+		r.logf(
+			"[SET][RESEND] category=%s bypass set=%s have=%s missing=%s",
+			cat,
+			hs.SetKey,
+			strings.Join(hs.Have, ","),
+			strings.Join(hs.Missing, ","),
+		)
+	}
+
+	return nil
+}
+
 // resolveFailed 는 FAILED 예비들의 attempts 를 LookupPut 으로 읽어
 // 재시도 가능 여부를 판정한다.
 //
@@ -1019,6 +1121,21 @@ func (r *Runner) resolveFailed(
 			c := f.cand
 			c.IsRetry = true
 			rep.Retries++
+			*cands = append(*cands, c)
+			continue
+		}
+
+		// 소진 재무장 (v4 §4.3 — 수동 resend 전용, checkInput 이
+		// Resend 전제를 강제한다). attempts 는 되돌리지 않고, BeginPut
+		// 의 `attempts < ?` 가드를 이번 실행 한 번만 통과하도록
+		// "현재 attempts + 1" 을 후보에 싣는다(§10 구현 주의).
+		// 다음 수동 실행은 그때의 attempts 로 다시 재무장한다.
+		if r.Opts.RearmExhausted {
+			c := f.cand
+			c.IsRetry = true
+			c.RetryCeiling = st.Attempts + 1
+			rep.Retries++
+			rep.Rearmed++
 			*cands = append(*cands, c)
 			continue
 		}

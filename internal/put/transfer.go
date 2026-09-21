@@ -496,13 +496,23 @@ func (r *Runner) transferOne(
 	// ------------------------------------------------------------
 	// 실제 PUT 착수 — 여기서부터 attempts 를 소모한다.
 	// ------------------------------------------------------------
+	//
+	// 상한은 기본 Opts.MaxRetries 다. 수동 재무장 후보(v4 §4.3)만
+	// RetryCeiling("당시 attempts + 1")을 실어 소진 행의 `attempts < ?`
+	// 가드를 이번 실행 한 번 통과한다. ledger 의 BeginPut 계약은
+	// 바꾸지 않는다 — 판정 입력만 후보별로 달라진다.
+	retryBound := r.Opts.MaxRetries
+	if c.RetryCeiling > 0 {
+		retryBound = int(c.RetryCeiling)
+	}
+
 	if beginErr := r.DB.BeginPut(
 		ctx,
 		c.Key,
 		finalPath,
 		partPath,
 		c.Size,
-		r.Opts.MaxRetries,
+		retryBound,
 	); beginErr != nil {
 		if errors.Is(beginErr, ledger.ErrNotCandidate) {
 			// 후보 재확인 시점과 BeginPut 사이에 상태가 바뀌거나

@@ -75,6 +75,17 @@ type Candidate struct {
 	// 빈 문자열은 게이트 OFF 카테고리 또는 세트 소속 유보 파일이며,
 	// 두 경우 모두 기존과 같은 파일 단위 절단을 따른다.
 	SetKey string
+
+	// RetryCeiling 은 이 후보 하나에만 적용하는 BeginPut maxRetries
+	// 대체값이다. 0 이면 Opts.MaxRetries 를 그대로 쓴다 (기존 동작).
+	//
+	// 수동 재무장(v4 §4.3)이 소진 행에 "현재 attempts + 1" 을 실어
+	// BeginPut 의 `attempts < ?` 가드를 이번 실행 한 번만 통과시킨다.
+	// attempts 자체는 되돌리지 않는다 — ledger 는 바꾸지 않고 판정
+	// 입력만 바꾼다(§10 구현 주의). RetryCeiling > 0 인 후보는 항상
+	// IsRetry=true 다 (FAILED 행 후보는 IsRetry 뿐이라는 transfer.go
+	// 불변식의 부분집합).
+	RetryCeiling int64
 }
 
 // CategoryJob 은 카테고리 하나의 스캔 입력 조립이다.
@@ -91,6 +102,14 @@ type CategoryJob struct {
 	// (config [SET.RINEXx], 소문자 정규화 완료 값). nil/빈 목록이면
 	// 이 카테고리의 게이트는 OFF 이며 기존 동작과 완전히 동일하다.
 	RequiredKinds []string
+
+	// ResendMinKinds 는 resend 단계의 세트 게이트 최소 종이다
+	// (config [SET.RINEXx] ResendMinKinds — v4 §5, 커밋 2).
+	//
+	// Opts.Resend 일 때만 쓰인다. nil 이면 resend 게이트 무조건
+	// 우회(§5.3). 값 문법·RequiredKinds 부분집합·게이트 OFF 조합
+	// 거부는 config 가 이미 검증했다 — put 은 재검증하지 않는다.
+	ResendMinKinds []string
 }
 
 // RunOptions 는 실행 방식이다.
@@ -169,6 +188,30 @@ type RunOptions struct {
 	// 구분, 파싱 오류 시 요청 전체 거부는 CLI 몫이다 — 오류를 무시하고
 	// 빈 목록을 넘기면 잘못된 요청이 전체 선택으로 확대된다.
 	Sites []string
+
+	// Resend 는 resend 단계(자동·수동 공통) 실행이다 (resend 설계 v4 §5).
+	//
+	// 세트 게이트의 보류 판정이 RequiredKinds 대신 CategoryJob 의
+	// ResendMinKinds 를 쓴다 — nil 이면 무조건 우회(§5.3). 세트
+	// 정체성(SetKey 새김·경계 절단·우회 관측)은 계속 RequiredKinds
+	// 기준이다(§5.5 — 우회로 통과한 세트도 절단선에서 쪼개지 않는다).
+	//
+	// 배선은 커밋 7(자동)·커밋 8(수동)이 한다. SeedMode 와 조합할 수
+	// 없다 — seed 는 PENDING 을 등록하지 않으므로 resend 의 목적
+	// (재전송 목록 생성)과 모순된다. checkInput 이 거부한다.
+	Resend bool
+
+	// RearmExhausted 는 소진 파일 재무장이다 (v4 §4.3 — 수동 resend 전용).
+	//
+	// FAILED && attempts >= MaxRetries 인 현재 revision 을 이번 실행
+	// 한 번만 재시도 후보로 올린다. attempts 는 0 으로 되돌리지 않는다
+	// (누적값은 장애 분석 기록) — 후보에 RetryCeiling = attempts+1 을
+	// 실어 BeginPut 의 WHERE 가드를 딱 한 번 통과시킨다(§10 구현 주의).
+	//
+	// 자동 resend 에서 켜면 영구 실패 파일이 Retention 한계까지 매시간
+	// 재시도되어 MaxRetries 상한이 사실상 사라진다 — Resend=true 전제를
+	// checkInput 이 강제하고, 자동 배선(커밋 7)은 이 필드를 켜지 않는다.
+	RearmExhausted bool
 
 	// Logger 는 요약·경고 출력에 쓴다. nil 이면 log.Default().
 	Logger *log.Logger
@@ -332,6 +375,11 @@ type CategoryReport struct {
 
 	// Retries 는 그중 기존 FAILED revision 을 재시도하는 후보 수다.
 	Retries int
+
+	// Rearmed 는 Retries 중 소진(attempts >= MaxRetries) 상태에서
+	// 수동 재무장(v4 §4.3)으로 올라온 후보 수다 (Rearmed ⊆ Retries).
+	// RearmExhausted 가 꺼져 있으면 항상 0 이다.
+	Rearmed int
 
 	// ExtCount 는 스캔에서 관측한 원본 파일명의 마지막 확장자 분포다.
 	// 대소문자를 그대로 보존하므로 .Z 와 .z 는 별도로 집계될 수 있다.
