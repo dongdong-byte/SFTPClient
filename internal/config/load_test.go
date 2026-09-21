@@ -523,6 +523,10 @@ func TestMapConfig_SetAbsentIsOff(t *testing.T) {
 		if p.RequiredKinds != nil {
 			t.Errorf("버전 %d: 섹션 부재인데 kinds=%v", v, p.RequiredKinds)
 		}
+
+		if p.ResendMinKinds != nil {
+			t.Errorf("버전 %d: 섹션 부재인데 ResendMinKinds=%v", v, p.ResendMinKinds)
+		}
 	}
 }
 
@@ -558,13 +562,25 @@ RequiredKinds = false
 		}
 	}
 
-	// false 명시와 섹션 부재는 같은 OFF 다.
-	if cfg.Set.Policy(3).Enabled {
-		t.Error("버전 3: false 명시인데 Enabled")
+	if p2.ResendMinKinds != nil {
+		t.Errorf("버전 2: 키 부재인데 ResendMinKinds=%v", p2.ResendMinKinds)
 	}
 
-	if cfg.Set.Policy(4).Enabled {
+	// false 명시와 섹션 부재는 같은 OFF 다.
+	p3 := cfg.Set.Policy(3)
+	if p3.Enabled {
+		t.Error("버전 3: false 명시인데 Enabled")
+	}
+	if p3.ResendMinKinds != nil {
+		t.Errorf("버전 3: 게이트 OFF 인데 ResendMinKinds=%v", p3.ResendMinKinds)
+	}
+
+	p4 := cfg.Set.Policy(4)
+	if p4.Enabled {
 		t.Error("버전 4: 섹션 부재인데 Enabled")
+	}
+	if p4.ResendMinKinds != nil {
+		t.Errorf("버전 4: 섹션 부재인데 ResendMinKinds=%v", p4.ResendMinKinds)
 	}
 }
 

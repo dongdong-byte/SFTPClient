@@ -77,6 +77,62 @@ func TestSetGate_PresenceIsObservationNotCandidacy(t *testing.T) {
 	}
 }
 
+// TestSetGate_SeoulSetAtomicityOn 은 서울시 운영값(G,L,N,O)으로
+// 게이트를 켜도 구성이 실패하지 않고, Daily·Hourly 모두 같은
+// 의미론으로 판정함을 고정한다. S 는 선택 종이라 필수 목록에 없다.
+func TestSetGate_SeoulSetAtomicityOn(t *testing.T) {
+	required := []string{"g", "l", "n", "o"}
+
+	t.Run("daily", func(t *testing.T) {
+		g, err := newSetGate(domain.CategoryRINEX2Daily, required, gateNames())
+		if err != nil {
+			t.Fatalf("서울시 Daily 게이트 구성 실패: %v", err)
+		}
+
+		if !g.on() {
+			t.Fatal("RequiredKinds 가 있는데 게이트가 꺼졌다")
+		}
+
+		held, err := g.holds("dbon2500.26o.gz")
+		if err != nil || !held {
+			t.Errorf("도봉 미완성: held=%v err=%v, want held", held, err)
+		}
+
+		held, err = g.holds("suwn2500.26o.gz")
+		if err != nil || held {
+			t.Errorf("수원 완성: held=%v err=%v, want pass", held, err)
+		}
+
+		held, err = g.holds("suwn2500.26s.gz")
+		if err != nil || held {
+			t.Errorf("완성 세트의 S(선택 종): held=%v err=%v, want pass", held, err)
+		}
+	})
+
+	t.Run("hourly", func(t *testing.T) {
+		names := []string{
+			"dbon250a.26o.gz", "dbon250a.26s.gz",
+			"suwn250a.26g.gz", "suwn250a.26l.gz",
+			"suwn250a.26n.gz", "suwn250a.26o.gz", "suwn250a.26s.gz",
+		}
+
+		g, err := newSetGate(domain.CategoryRINEX2Hourly, required, names)
+		if err != nil {
+			t.Fatalf("서울시 Hourly 게이트 구성 실패: %v", err)
+		}
+
+		held, err := g.holds("dbon250a.26o.gz")
+		if err != nil || !held {
+			t.Errorf("도봉 Hourly 미완성: held=%v err=%v, want held", held, err)
+		}
+
+		held, err = g.holds("suwn250a.26s.gz")
+		if err != nil || held {
+			t.Errorf("수원 Hourly 완성: held=%v err=%v, want pass", held, err)
+		}
+	})
+}
+
 // TestSetGate_OffIsInert 는 게이트 OFF 가 완전한 무간섭임을 고정한다.
 func TestSetGate_OffIsInert(t *testing.T) {
 	g := mustGate(t, nil)
