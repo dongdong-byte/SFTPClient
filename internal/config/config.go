@@ -202,6 +202,15 @@ type LedgerConfig struct {
 // 백필이 닫히고, 회당 로컬 읽기가 수백 MB 수준에 머문다.
 const DefaultMaxHashBackfillPerRun = 500
 
+// DefaultStallTimeoutSeconds 는 [PUT.SFTP] StallTimeoutSeconds 키가
+// 없을 때의 기본값(초)이다.
+//
+// 근거 (UNIT3 v3 §3.3): 후보 범위 30~60초 중 하한을 기본으로 둔다.
+// 실측(3기관 5,000파일/45분)은 평균 처리량이지 개별 왕복의 증거가
+// 아니므로, 30초를 강한 근거로 포장하지 않는다 — 현장 재현(DROP)
+// 검증 전까지의 출발값이며 조정은 config 로 연다.
+const DefaultStallTimeoutSeconds = 30
+
 // PutConfig 는 [PUT] 과 그 하위 섹션의 설정이다.
 type PutConfig struct {
 	// MaxWorkers 는 PUT 전송 병렬도이다.
@@ -291,6 +300,20 @@ type SFTPConfig struct {
 	//
 	// LedgerPath 와 같이 load.go 에서 해석이 끝난 절대 경로가 담긴다.
 	PrivateKey string
+
+	// StallTimeout 은 원격 무진행 감시(UNIT3)의 문턱이다.
+	// 진행 중인 원격 작업이 있는데 이 시간 동안 아무 진전(청크 쓰기,
+	// 원격 호출 완료)이 없으면 회차를 중단하고 SSH 연결을 닫는다.
+	//
+	// config.ini 에서는 StallTimeoutSeconds 라는 초 단위 정수로
+	// 입력한다 (LockStaleSeconds·GraceSeconds 와 같은 경과시간 계열,
+	// 단위 규약 동일). 키 부재 시 DefaultStallTimeoutSeconds 다.
+	//
+	// validate 가 5초~600초 범위를 강제한다. 감시를 끄는 스위치는
+	// 두지 않는다 — 사실상의 비활성이 필요하면 상한으로 키운다.
+	// 600초는 대기 설정 상한이다. lock 나이는 회차 시작부터 측정하므로
+	// 이 범위만으로 stale 탈취 이전 종료를 보장하지 않는다.
+	StallTimeout time.Duration
 
 	// KnownHosts 는 SSH host key 검증 파일 경로이다.
 	//

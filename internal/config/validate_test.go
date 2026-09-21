@@ -116,12 +116,13 @@ func validConfigForValidate(t *testing.T) *Config {
 			MaxHashBackfillPerRun: DefaultMaxHashBackfillPerRun,
 
 			SFTP: SFTPConfig{
-				AuthMethod: "publickey",
-				Host:       "192.168.0.1",
-				Port:       22,
-				User:       "rinexclient",
-				PrivateKey: "keys/id_ed25519",
-				KnownHosts: "keys/known_hosts",
+				AuthMethod:   "publickey",
+				Host:         "192.168.0.1",
+				Port:         22,
+				User:         "rinexclient",
+				PrivateKey:   "keys/id_ed25519",
+				KnownHosts:   "keys/known_hosts",
+				StallTimeout: DefaultStallTimeoutSeconds * time.Second,
 			},
 
 			Categories: []CategoryConfig{

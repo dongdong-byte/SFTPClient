@@ -10,6 +10,8 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -83,6 +85,17 @@ type SFTPDialOptions struct {
 type SFTPFS struct {
 	client *sftp.Client
 	conn   *ssh.Client
+
+	// prog 는 원격 작업의 진전 계측이다 (UNIT3 — 무진행 감시).
+	// 모든 원격 메서드가 enter/exit 로 감싸고, UploadPart 는 청크
+	// 성공마다 beat 한다. 감시·판정은 이 타입이 아니라 WatchStall
+	// (progress.go)과 main 의 배선이 한다 — transport 는 계측만 안다.
+	prog progress
+
+	// abortOnce 는 Abort 의 멱등성이다. watchdog 발화와 감시
+	// goroutine 의 defer Abort 가 겹쳐도 ssh 를 두 번 닫지 않는다.
+	abortOnce sync.Once
+	aborted   atomic.Bool
 }
 
 // DialSFTP 는 SFTP 서버에 접속해 SFTPFS 를 만든다.
@@ -148,7 +161,7 @@ func DialSFTP(opts SFTPDialOptions) (*SFTPFS, error) {
 
 	addr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 
-	conn, err := dialSSH(addr, sshCfg)
+	conn, tcpConn, err := dialSSH(addr, sshCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +210,16 @@ func DialSFTP(opts SFTPDialOptions) (*SFTPFS, error) {
 		}
 	}
 
+	// ★ deadline 해제는 필수이며, 위치는 handshake 직후가 아니라
+	// SFTP 초기화(NewClient)·posix-rename 탐침까지 마친 뒤다
+	// (UNIT3 v3 §2-5). 남겨두면 접속 시작 10초 뒤부터 정상적인
+	// 파일 읽기·쓰기도 i/o timeout 으로 실패한다.
+	if err := tcpConn.SetDeadline(time.Time{}); err != nil {
+		_ = client.Close()
+		_ = conn.Close()
+		return nil, fmt.Errorf("sftp: clear handshake deadline: %w", err)
+	}
+
 	return &SFTPFS{client: client, conn: conn}, nil
 }
 
@@ -210,39 +233,34 @@ func DialSFTP(opts SFTPDialOptions) (*SFTPFS, error) {
 // 배치 프로그램에서 handshake 가 무기한 매달리는 것은 단순히
 // 느린 문제가 아니다. 프로세스가 lock 을 쥔 채 살아 있으면 이후
 // 회차가 ErrHeld 로 종료될 수 있으므로 접속 단계에 명확한 상한을 둔다.
-func dialSSH(addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+// 반환된 net.Conn 에는 dialTimeout deadline 이 걸린 채다. 해제는
+// 호출자(DialSFTP)가 SFTP 초기화·탐침까지 마친 뒤 수행한다 —
+// NewClient 와 posix-rename 탐침도 원격 왕복이므로 접속 예산 안에
+// 있어야 한다 (UNIT3 v3 §2-5: 이 구간은 종래 dialTimeout 밖이었다).
+func dialSSH(addr string, cfg *ssh.ClientConfig) (*ssh.Client, net.Conn, error) {
 	// TCP 연결과 SSH handshake 가 공유할 절대 deadline 을
 	// TCP 연결을 시작하기 전에 계산한다.
 	deadline := time.Now().Add(dialTimeout)
 
 	tcpConn, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("sftp: dial %s: %w", addr, err)
+		return nil, nil, fmt.Errorf("sftp: dial %s: %w", addr, err)
 	}
 
 	// TCP 연결에 이미 사용한 시간을 포함하여 남은 시간만
 	// SSH handshake 에 사용할 수 있다.
 	if err := tcpConn.SetDeadline(deadline); err != nil {
 		_ = tcpConn.Close()
-		return nil, fmt.Errorf("sftp: set handshake deadline: %w", err)
+		return nil, nil, fmt.Errorf("sftp: set handshake deadline: %w", err)
 	}
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, addr, cfg)
 	if err != nil {
 		_ = tcpConn.Close()
-		return nil, fmt.Errorf("sftp: handshake %s: %w", addr, err)
+		return nil, nil, fmt.Errorf("sftp: handshake %s: %w", addr, err)
 	}
 
-	// ★ deadline 해제는 필수다.
-	//
-	// 접속용 deadline 을 남겨두면 접속 시작 10초 뒤부터
-	// 정상적인 파일 읽기·쓰기도 i/o timeout 으로 실패한다.
-	if err := tcpConn.SetDeadline(time.Time{}); err != nil {
-		_ = sshConn.Close()
-		return nil, fmt.Errorf("sftp: clear handshake deadline: %w", err)
-	}
-
-	return ssh.NewClient(sshConn, chans, reqs), nil
+	return ssh.NewClient(sshConn, chans, reqs), tcpConn, nil
 }
 
 // Close 는 SFTP 세션과 SSH 연결을 닫는다. sftp → ssh 순서다.
@@ -255,10 +273,40 @@ func dialSSH(addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
 // 오류의 구성원 중 하나만 맞아도 true 이므로, 합친 뒤에 거르면
 // client 쪽 EOF 가 conn 쪽의 실제 오류까지 함께 삼킨다.
 func (s *SFTPFS) Close() error {
+	// Abort 가 이미 ssh 를 닫았으면 sftp.Client.Close 의 드레인을
+	// 기다리지 않는다. 스톨 상태에서 그 대기는 끝나지 않을 수 있고,
+	// 그러면 main defer 가 lock 을 쥔 채 멈춘다.
+	if s.aborted.Load() {
+		return nil
+	}
+
 	return errors.Join(
 		ignoreBenignClose(s.client.Close()),
 		ignoreBenignClose(s.conn.Close()),
 	)
+}
+
+// Abort 는 스톨 탈출 전용 강제 종료다 (UNIT3 v3 §3.2).
+//
+// 평소 Close(sftp → ssh 순)와 분리하는 이유: sftp.Client.Close 가
+// 진행 중 요청의 드레인을 기다리면 스톨 상태에서는 그 대기 자체가
+// 끝나지 않을 수 있다 (v3 §2-3). Abort 는 ssh 연결을 즉시 닫아
+// 그 위의 모든 대기 중 호출(Write/Stat/Rename/Remove)을 에러로
+// 깨운다. 깨어난 워커는 기존 실패 경로(failOne → failPending)를 탄다.
+//
+// 멱등이다. Abort 이후 main defer 의 Close 는 aborted 를 보고
+// sftp 드레인을 건너뛴다.
+func (s *SFTPFS) Abort() {
+	s.abortOnce.Do(func() {
+		s.aborted.Store(true)
+		_ = s.conn.Close()
+	})
+}
+
+// Progress 는 무진행 감시(WatchStall)가 읽는 계측이다.
+// ProgressSource 를 만족한다.
+func (s *SFTPFS) Progress() (inFlight int64, idle time.Duration) {
+	return s.prog.snapshot()
 }
 
 // ignoreBenignClose 는 정상 종료의 다른 모습(io.EOF, 이미 닫힌 연결)을
@@ -279,6 +327,9 @@ func (s *SFTPFS) EnsureDir(ctx context.Context, dir string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	s.prog.enter()
+	defer s.prog.exit()
 
 	if err := s.client.MkdirAll(dir); err != nil {
 		// MkdirAll 은 Stat → Mkdir 순서라 그 사이에 창이 있다.
@@ -328,6 +379,16 @@ func (s *SFTPFS) UploadPart(
 		_ = src.Close()
 	}()
 
+	// 원격 구간(.part 열기 ~ 닫기)을 진행 중 작업으로 계측한다.
+	//
+	// exit 의 defer 를 dst.Close 의 defer 보다 먼저 등록해 마지막
+	// (원격) Close 까지 창 안에 둔다. 청크 사이의 로컬 src.Read 도
+	// 이 창 안에 있으므로, 로컬 읽기가 NAS 에서 블록되면 발화는
+	// 하되 ssh close 로 풀리지는 않는다 — 알려진 잔여이며 이 유닛의
+	// 범위 밖이다 (UNIT3 v3 §3.4 분리, §6-5).
+	s.prog.enter()
+	defer s.prog.exit()
+
 	dst, err := s.client.OpenFile(
 		partPath,
 		os.O_WRONLY|os.O_CREATE|os.O_TRUNC,
@@ -363,6 +424,11 @@ func (s *SFTPFS) UploadPart(
 
 				written += m
 			}
+
+			// 청크가 실제로 쓰였다 = 진전. 큰 파일이 오래 걸려도
+			// 청크가 이어지는 한 스톨이 아니다 (파일당 총시간
+			// 제한을 기각한 결정의 구현체, UNIT3 v3 §3.3).
+			s.prog.beat()
 		}
 
 		if errors.Is(readErr, io.EOF) {
@@ -380,6 +446,9 @@ func (s *SFTPFS) Size(ctx context.Context, p string) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+
+	s.prog.enter()
+	defer s.prog.exit()
 
 	fi, err := s.client.Stat(p)
 	if err != nil {
@@ -407,6 +476,9 @@ func (s *SFTPFS) Rename(
 		return err
 	}
 
+	s.prog.enter()
+	defer s.prog.exit()
+
 	if err := s.client.PosixRename(oldPath, newPath); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
@@ -419,6 +491,9 @@ func (s *SFTPFS) Remove(ctx context.Context, p string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	s.prog.enter()
+	defer s.prog.exit()
 
 	fi, err := s.client.Lstat(p)
 	if err != nil {

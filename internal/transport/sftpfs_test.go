@@ -40,6 +40,19 @@ func TestSFTPFSJoinUsesSlash(t *testing.T) {
 	}
 }
 
+// Abort 이후 Close 는 nil client/conn 을 건드리지 않는다.
+// 스톨 경로에서 sftp.Client.Close 드레인을 타면 종료가 다시 멈춘다.
+func TestCloseAfterAbortSkipsSFTPDrain(t *testing.T) {
+	t.Parallel()
+
+	s := &SFTPFS{}
+	s.aborted.Store(true)
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close after Abort = %v, want nil", err)
+	}
+}
+
 func TestIgnoreBenignClose(t *testing.T) {
 	t.Parallel()
 

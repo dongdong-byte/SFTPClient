@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"SFTPClient/internal/config"
@@ -220,6 +221,17 @@ func run() error {
 
 	var uploader put.Uploader
 
+	// runCtx 는 이번 회차(Recover·Run·Transfer)의 수명이다.
+	// 기본은 시그널 ctx 그대로이며, live SFTP 에서만 스톨 watchdog 이
+	// 이를 취소할 수 있다 (UNIT3 v3 §3.2 — 신규 착수 차단이 연결
+	// 종료보다 먼저다).
+	runCtx := ctx
+
+	// stalled 는 이번 회차가 무진행으로 중단되었는지의 표식이다.
+	// watchdog goroutine 이 세우고, run 의 종료부가 읽어 회차를
+	// 비정상 종료 코드로 마감한다 (v3 §3.7 — 스톨 회차의 가시화).
+	var stalled atomic.Bool
+
 	switch {
 	case !needsTransport:
 		// dry-run 은 전송 계층을 만들지 않는다.
@@ -250,6 +262,57 @@ func run() error {
 		}()
 
 		uploader = sf
+
+		// 무진행 감시 배선 (UNIT3 v3 §3.1~§3.3).
+		//
+		// Dial 직후·Recover 이전에 시작한다 — Recover 의 원격
+		// .part Remove 도 같은 감시 아래 있어야 한다 (v3 §3.2:
+		// "전송 시작 후에만 켜면 그 앞이 구멍이다").
+		//
+		// 발화 시 순서가 계약이다 (v3 §3.2):
+		//   ① cancelRun — 신규 착수(BeginPut) 차단. 이것이 없으면
+		//      깨어난 워커가 "파일 실패 후 다음 파일"(transfer 의
+		//      기존 동작)로 죽은 세션에 착수를 이어가 attempts 만
+		//      깎는다.
+		//   ② Abort — ssh 를 닫아 블록된 호출을 에러로 깨운다.
+		//      정리(Remove)보다 먼저다. 죽은 연결로 cleanup 을
+		//      먼저 돌리면 종료가 cleanupTimeout × 건수로 늘어난다.
+		//
+		// 이후는 전부 기존 경로다: 깨어난 워커 → failOne/failPending
+		// (WithoutCancel 이라 취소된 회차에서도 기록됨) → Transfer
+		// 반환 → main defer 의 lock Release → 다음 정시 Recover.
+		// 성공 조건은 "이번 회차의 기록 완결"이 아니라 "프로세스가
+		// 기존 반환 경로로 끝나는 것"이다 (v3 §3.1 성공 조건).
+		var cancelRun context.CancelFunc
+		runCtx, cancelRun = context.WithCancel(ctx)
+		watchDone := make(chan struct{})
+		defer func() {
+			cancelRun()
+			<-watchDone
+		}()
+
+		go func() {
+			defer close(watchDone)
+			// 일반 취소에서도 감시만 멈추고 SFTP 대기를 남기지 않는다.
+			defer sf.Abort()
+			transport.WatchStall(
+				runCtx,
+				sf,
+				cfg.Put.SFTP.StallTimeout,
+				func(inFlight int64, idle time.Duration) {
+					stalled.Store(true)
+					log.Printf(
+						"[STALL] 원격 무진행 %s (진행 중 작업 %d개, 문턱 %s) — "+
+							"신규 착수를 차단하고 SSH 연결을 닫는다",
+						idle.Truncate(time.Second),
+						inFlight,
+						cfg.Put.SFTP.StallTimeout,
+					)
+					cancelRun()
+					sf.Abort()
+				},
+			)
+		}()
 
 	default:
 		// config 경로는 Validate 가 sftp/localfs 만 허용한다.
@@ -371,24 +434,39 @@ func run() error {
 			To: now,
 		}
 
+		// seed 도 live SFTP 연결을 쓰므로 watchdog 아래에 있다.
+		// runCtx 를 넘겨 발화 시 신규 원격 대조 착수가 끊기게 한다
+		// (UNIT3 v3 §3.2 — 취소가 연결 종료보다 먼저).
 		kept, report, err := runner.Run(
-			ctx,
+			runCtx,
 			jobs,
 			seedRng,
 		)
 		if err != nil {
+			if stalled.Load() {
+				return fmt.Errorf("stall: 회차가 무진행으로 중단됨 (seed Run): %w", err)
+			}
 			return err
 		}
 
 		report.Print(nil)
 
 		if _, err := runner.Seed(
-			ctx,
+			runCtx,
 			uploader,
 			jobs,
 			kept,
 		); err != nil {
+			if stalled.Load() {
+				return fmt.Errorf("stall: 회차가 무진행으로 중단됨 (Seed): %w", err)
+			}
 			return err
+		}
+
+		// 마지막 대조 직후에 발화하면 오류 없이 여기 도달할 수 있다.
+		// live 회차와 같은 이유로 성공으로 위장하지 않는다 (v3 §3.7).
+		if stalled.Load() {
+			return errors.New("stall: 회차가 무진행으로 중단됨 (seed)")
 		}
 
 		return nil
@@ -459,19 +537,25 @@ func run() error {
 	// salvage 는 하지 않는다.
 	if live {
 		if _, err := runner.Recover(
-			ctx,
+			runCtx,
 			uploader,
 		); err != nil {
+			if stalled.Load() {
+				return fmt.Errorf("stall: 회차가 무진행으로 중단됨 (Recover): %w", err)
+			}
 			return err
 		}
 	}
 
 	kept, report, err := runner.Run(
-		ctx,
+		runCtx,
 		jobs,
 		rng,
 	)
 	if err != nil {
+		if stalled.Load() {
+			return fmt.Errorf("stall: 회차가 무진행으로 중단됨 (Run): %w", err)
+		}
 		return err
 	}
 
@@ -479,13 +563,24 @@ func run() error {
 
 	if live {
 		if _, err := runner.Transfer(
-			ctx,
+			runCtx,
 			uploader,
 			jobs,
 			kept,
 		); err != nil {
+			if stalled.Load() {
+				return fmt.Errorf("stall: 회차가 무진행으로 중단됨 (Transfer): %w", err)
+			}
 			return err
 		}
+	}
+
+	// 스톨 발화 후에도 오류 없이 여기 도달할 수 있다 (발화 시점이
+	// 마지막 작업 직후라 취소가 아무것도 끊지 못한 경우 등).
+	// 회차를 성공으로 위장하지 않는다 — [STALL] 로그와 비정상 종료
+	// 코드가 짝이어야 유닛 4 의 경보화가 이 신호를 셀 수 있다 (v3 §3.7).
+	if stalled.Load() {
+		return errors.New("stall: 회차가 무진행으로 중단됨")
 	}
 
 	// TODO(MVP2 Retention Cleanup): Deep 실행일이면 Retention Cleanup.

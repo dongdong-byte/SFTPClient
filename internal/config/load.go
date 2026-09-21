@@ -368,6 +368,27 @@ func (l *loader) durationSeconds(s *iniSection, key string) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// optionalDurationSeconds 는 초 단위 선택 키를 읽는다.
+// optionalIntVal 과 같은 계열이다 — 키 부재가 정상이며 def 를 쓴다.
+// 값이 존재하면 durationSeconds 와 같은 규칙(정수·overflow 방어)으로
+// 읽고, 범위 판정은 validate.go 가 담당한다.
+//
+// 존재 확인은 s.get 으로 한다. l.value 는 필수 키 통로라 부재를
+// missing key 오류로 기록하기 때문이다 (optionalIntVal 이 intVal 을
+// 쓰지 않는 것과 같은 근거 — 처음 납품분이 이 규약을 어겨 키 없는
+// 기존 config 전부가 Load 에서 거부되는 회귀를 냈다).
+func (l *loader) optionalDurationSeconds(
+	s *iniSection,
+	key string,
+	def time.Duration,
+) time.Duration {
+	if _, ok := s.get(key); !ok {
+		return def
+	}
+
+	return l.durationSeconds(s, key)
+}
+
 // template 은 경로 템플릿을 읽어 파싱한다.
 //
 // 문자열이 아니라 파싱 결과를 들고 있어야 스캔 도중이 아니라
@@ -571,6 +592,11 @@ func mapConfig(f *iniFile, path string, p Protector) (*Config, error) {
 	cfg.Put.SFTP.KnownHosts = resolvePath(
 		path,
 		l.str(sftp, "KnownHosts"),
+	)
+	cfg.Put.SFTP.StallTimeout = l.optionalDurationSeconds(
+		sftp,
+		"StallTimeoutSeconds",
+		DefaultStallTimeoutSeconds*time.Second,
 	)
 
 	// 평문 접속 설정 경고.
@@ -808,6 +834,7 @@ func knownKeys() (map[string][]string, error) {
 			"User",
 			"PrivateKey",
 			"KnownHosts",
+			"StallTimeoutSeconds",
 		},
 		"LOG": {
 			"Level",

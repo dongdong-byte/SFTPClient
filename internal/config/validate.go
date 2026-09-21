@@ -296,6 +296,21 @@ func (c *Config) checkSFTP(add addFunc) {
 			"[PUT.SFTP] KnownHosts is empty; host key verification is required",
 		)
 	}
+
+	// StallTimeoutSeconds 의 양끝은 각각 다른 사고를 막는다.
+	//
+	// 하한 5초: 정상적인 원격 왕복·일시 정체를 무진행으로 오인해
+	// 매 회차를 끊는 오입력을 막는다. 그 값이 통과되면 감시가 없는
+	// 것보다 나쁘다 (정상 전송 파괴).
+	//
+	// 상한 600초는 과도한 대기를 제한한다. lock 나이와 무진행 시간은
+	// 기준이 달라 이 범위만으로 stale 탈취 이전 종료를 보장하지 않는다.
+	if s.StallTimeout < 5*time.Second || s.StallTimeout > 600*time.Second {
+		add(
+			"[PUT.SFTP] StallTimeoutSeconds must be between 5 and 600, got %d",
+			int64(s.StallTimeout/time.Second),
+		)
+	}
 }
 
 // checkCategories 는 Category 설정과 Path Template 의 관계를 검사한다.
