@@ -4,9 +4,9 @@
 > 받지 않는다. 4자리 코드는 영숫자이며 네 번째에 숫자가 올 수 있다.
 > **[확정]** 사용자 요구 / **[제안]** 구현 전 결정할 설계안 / **[미결]** 후속 설계 항목.
 > 이 문서는 구현 완료 기록이 아니다.
-> 관련: [resend 설계 v3 §6.3](../resend/SFTPClient_RESEND_DESIGN_v3.md#63-수동-명령과---site),
+> 관련: [resend 설계 v4 §6.3](../resend/SFTPClient_RESEND_DESIGN_v4.md#63-수동-명령과---site),
 > [프로젝트 지침](../../SFTPClient_PROJECT_GUIDELINES.md).
-> resend v1·v2는 이력이며 구현 기준은 v3다.
+> resend 구현 기준은 v4다. v1~v3의 경위는 v4 「개정 이력」에 있다.
 
 ## 1. 목적과 확정 범위
 
