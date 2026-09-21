@@ -344,6 +344,21 @@ type RunReport struct {
 	// 하는데, 숫자 하나의 해석을 위해 API 를 바꾸지 않는다 (2026-08-30).
 	Registered int
 
-	DryRun  bool
+	DryRun bool
+
+	// SeedMode 는 이 리포트가 seed 회차의 것임을 나타낸다 (UNIT4 §0.1-2).
+	// Run 이 Opts.SeedMode 를 복사한다. Print 의 mode= 식별에만 쓰이며
+	// 판정·장부 쓰기에는 영향이 없다 — seed 는 지문 판정 경로가 달라
+	// 요약이 live 분포와 한 통에 섞이면 배포 후 분포 분석 자체가
+	// 무효가 되기 때문에 존재한다 (§4).
+	SeedMode bool
+
+	// Range 는 이 회차 스캔 창의 이름이다 ("hot" / "deep").
+	// Run 은 scan.Range 좌표만 알고 창의 이름은 모르므로, 이름을 아는
+	// main 이 Print 전에 채운다 (UNIT4 §0.1-3). 채우지 않으면 Print 가
+	// range=unset 으로 시끄럽게 찍는다 — 조용한 기본값으로 모집단이
+	// 오염되는 것보다 낫다.
+	Range string
+
 	Elapsed time.Duration
 }

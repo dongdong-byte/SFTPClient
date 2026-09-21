@@ -1,7 +1,8 @@
-# SFTPClient — Unit 4 결정 기록 초안 v1: 변경·억제 관측과 소진 경고
+# SFTPClient — Unit 4 결정 기록 v2: 변경·억제 관측과 소진 경고
 
 - 작성일: 2026-09-21
-- 상태: 초안. 사용자 합의 방향을 기록하며, 이 문서 작성은 코드 구현을 포함하지 않는다.
+- 상태: **구현됨.** 초안의 신규 작업(`evaluated`·비율·mode/range)은 HEAD에
+  있다. 이 문서는 결정 기록이며 구현 계약서가 아니다.
 - 선행: SFTPClient_MVP2_INCIDENT_FOLLOWUP_PLAN_v3.md §2.3,
   SFTPClient_UNIT2_HASH_DESIGN_v3.md, SFTPClient_UNIT3_STALL_DESIGN_v3.md
 - 범위 변경: 후속 계획의 “분리 임계 경보”를 두 단계로 나눈다.
@@ -11,10 +12,12 @@
   **모집단 식별(mode=live/dryrun/seed, range=hot/deep)** 로 좁혔다.
   §5를 "새 `[DRIFT]` 줄"에서 "기존 요약 줄 확장"으로 바꾸고, §8.1에
   앞 유닛이 인계한 검토 후보 4건을 기록했다.
-- 개정 (2026-09-21, 교차 검토 반영): §0.1에 `RunReport`가 지금 아는 것
+- 개정 (2026-09-21, 교차 검토 반영): §0.1에 구현 전 `RunReport`가 알던 것
   (DryRun뿐)을 적고, §3에 분모는 Print 시점 합산·Touch 0행 가장자리·
-  hash unstable의 보는 위치를 보강했다. 구현 지시가 아니라 코드 사실과
-  집계 해석을 닫기 위한 기록이다.
+  hash unstable의 보는 위치를 보강했다.
+- 개정 (2026-09-21, 유닛 3 정합): 스톨은 SSH idle/keepalive가 아니라
+  원격 **무진행** 감시(UNIT3 `WatchStall`)다. 연속 스톨 경보를 유닛 4가
+  받지 않음은 §8.1과 같다. §0.1의 “없다” 세 항목은 구현 후 §10으로 옮긴다.
 
 ## 0. 목적
 
@@ -40,24 +43,18 @@
   `[PUT][WARN] category=… exhausted=… (MaxRetries=…): 예시` 출력.
   예시 상한 5(`exhaustedExampleCap`)까지 §6의 요구와 일치한다.
 - dry-run 구분 — 로그 태그가 `[PUT]` / `[DRYRUN]`로 갈린다.
-  `RunReport`가 실제로 들고 있는 실행 구분은 `DryRun`뿐이다
-  (`internal/put/type.go`). `SeedMode`와 Hot/Deep 범위는 리포트에 없고
-  `Print`도 모른다.
+  구현 *전* `RunReport`가 들고 있던 실행 구분은 `DryRun`뿐이었다.
+  지금은 `SeedMode`와 `Range`가 리포트에 있고 `Print`가 `mode=`/`range=`로
+  찍는다 (§10).
 
-**없다 (이번 유닛의 실제 신규 작업):**
+**구현 전에 없었고, 지금은 있다 (이번 유닛의 신규 작업, §10):**
 
 1. `evaluated`와 `suppressed_ratio` — §3의 정의로 계산해 기존 줄에 붙인다.
-2. **seed 회차의 구분** — seed도 `Print` 태그가 `[PUT]`이라 live 집계와
-   섞인다. `main`은 `RunOptions.SeedMode`로 경로를 가르지만 그 사실이
-   요약 줄까지 전달되지 않는다. §4의 "seed는 정상 live 분포와 섞지 않는다"가
-   현재 로그로는 성립하지 않는다.
-3. **Hot/Deep 범위의 구분** — Deep일 때만 `main`이 별도 `[SCAN] deep run`
-   줄을 남긴다. `Run`/`Print`는 `scan.Range`만 받고 창의 이름(hot/deep)은
-   모른다. 요약 줄만 보면 어느 스캔 창이었는지 알 수 없어 §5의 "범위를
-   연결할 수 있어야 한다"가 성립하지 않는다.
-
-2·3은 배포 후 로그를 모아 분포를 볼 때 **분석 자체를 무효로 만드는** 결함이다
-(다른 모집단이 한 통에 섞인다). 그래서 이번 범위에 포함한다.
+2. **seed 회차의 구분** — `mode=seed`. 태그만 `[PUT]`이어도 요약 줄에서
+   live와 섞이지 않는다.
+3. **Hot/Deep 범위의 구분** — `range=hot`/`range=deep`. `main`이 Print 전에
+   창 이름을 채운다. 스캔·해시 구간이 길어도 유닛 3 워치독은 `inFlight==0`
+   이라 발화하지 않는다(유휴 세션 타임아웃이 아님).
 
 ## 1. 합의한 두 단계
 
@@ -218,7 +215,7 @@ seed는 지문 판정 경로가 다르므로 정상 live 분포와 섞지 않는
 
 | 인계 출처 | 항목 | 이번 판단 |
 |---|---|---|
-| UNIT3 v3 §3.7 | 연속 스톨 N회의 경보화. stall 계측을 기존 집계에 추가 | 하지 않는다. 스톨 자체가 아직 현장 관측이 없다(UNIT3 §1). `[STALL]` WARN + 비정상 종료 코드로 회차 단위 가시화는 이미 되어 있다 |
+| UNIT3 v3 §3.7 | 연속 스톨 N회의 경보화. stall 계측을 기존 집계에 추가 | 하지 않는다. 스톨은 연결 idle이 아니라 원격 무진행이며, 현장 관측도 아직 없다. `[STALL]` WARN + 비정상 종료로 회차 단위 가시화는 유닛 3이 이미 한다 |
 | FOLLOWUP v3 §6.4 | `lock.ErrHeld` 무경보 정상 종료 — 장기 점유에 신호가 없다 | 하지 않는다. 유닛 3의 조기 자체 종료로 장기 점유의 주 원인이 줄었다. 그래도 남는지를 배포 후 로그로 먼저 본다 |
 | UNIT5 §3 | 버려진 `.filepart`의 장기 잔류 경보 | 하지 않는다. `SkippedPart`가 매 회차 찍히므로 신호는 있다 |
 | UNIT3 v3 §3.7·§6-6 | 소진 파일의 운영자 재개(`resend`) 의미론 | 유닛 4의 소유가 아니다. exhausted WARN은 "알린다"까지이며 "복구한다"는 별개다(§6) |
@@ -241,4 +238,15 @@ seed는 지문 판정 경로가 다르므로 정상 live 분포와 섞지 않는
 분모가 0인 회차는 정상 0%가 아니라 **스캔이 아무것도 보지 못했다는 신호**로
 읽는다. 같은 줄의 `dirs/missing/listed/errs`와 함께 본다.
 
-초안 작성 단계에서는 코드를 수정하거나 위 검증을 실행하지 않는다.
+---
+
+## 10. 구현 결과 (2026-09-21) `[코드]`
+
+- `CategoryReport.evaluated` / `suppressedRatio` — Print 시점 합산.
+  테스트: `internal/put/report_test.go`.
+- `RunReport.SeedMode`는 `Run`이 복사. `Range`는 `main`이 Print 전에
+  `hot`/`deep`을 채운다. seed 창은 ScanDays라 `range=deep`이되 식별은
+  `mode=seed`가 한다.
+- 유닛 3과의 경계: 긴 스캔·해시는 SFTP `inFlight==0`이라 워치독이 침묵한다.
+  `[STALL]`은 원격 무진행 회차의 신호이고, 이 유닛의 `[PUT]` 요약에 stall
+  계측을 섞지 않는다.

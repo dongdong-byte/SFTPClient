@@ -299,12 +299,12 @@ func run() error {
 				runCtx,
 				sf,
 				cfg.Put.SFTP.StallTimeout,
-				func(inFlight int64, idle time.Duration) {
+				func(inFlight int64, quiet time.Duration) {
 					stalled.Store(true)
 					log.Printf(
 						"[STALL] 원격 무진행 %s (진행 중 작업 %d개, 문턱 %s) — "+
 							"신규 착수를 차단하고 SSH 연결을 닫는다",
-						idle.Truncate(time.Second),
+						quiet.Truncate(time.Second),
 						inFlight,
 						cfg.Put.SFTP.StallTimeout,
 					)
@@ -436,7 +436,8 @@ func run() error {
 
 		// seed 도 live SFTP 연결을 쓰므로 watchdog 아래에 있다.
 		// runCtx 를 넘겨 발화 시 신규 원격 대조 착수가 끊기게 한다
-		// (UNIT3 v3 §3.2 — 취소가 연결 종료보다 먼저).
+		// (UNIT3 v3 §3.2·§9 — 취소가 연결 종료보다 먼저다. seed 만
+		// ctx 를 쓰면 이 순서 계약이 seed 회차에서만 깨진다).
 		kept, report, err := runner.Run(
 			runCtx,
 			jobs,
@@ -448,6 +449,10 @@ func run() error {
 			}
 			return err
 		}
+
+		// 창 크기는 Deep 과 동일한 ScanDays 전체다 (위 seedRng).
+		// 모집단 구분은 mode=seed 가 담당한다 (UNIT4 §5).
+		report.Range = "deep"
 
 		report.Print(nil)
 
@@ -464,7 +469,7 @@ func run() error {
 		}
 
 		// 마지막 대조 직후에 발화하면 오류 없이 여기 도달할 수 있다.
-		// live 회차와 같은 이유로 성공으로 위장하지 않는다 (v3 §3.7).
+		// live 회차와 같은 이유로 성공으로 위장하지 않는다 (UNIT3 v3 §3.7).
 		if stalled.Load() {
 			return errors.New("stall: 회차가 무진행으로 중단됨 (seed)")
 		}
@@ -559,6 +564,13 @@ func run() error {
 		return err
 	}
 
+	// UNIT4 §5 — 요약 줄 하나로 스캔 창 모집단을 식별한다. 창의 이름은
+	// Run 이 아니라 여기(main)만 알므로 Print 전에 채운다 (§0.1-3).
+	report.Range = "hot"
+	if isDeep {
+		report.Range = "deep"
+	}
+
 	report.Print(nil)
 
 	if live {
@@ -577,8 +589,9 @@ func run() error {
 
 	// 스톨 발화 후에도 오류 없이 여기 도달할 수 있다 (발화 시점이
 	// 마지막 작업 직후라 취소가 아무것도 끊지 못한 경우 등).
-	// 회차를 성공으로 위장하지 않는다 — [STALL] 로그와 비정상 종료
-	// 코드가 짝이어야 유닛 4 의 경보화가 이 신호를 셀 수 있다 (v3 §3.7).
+	// 회차를 성공으로 위장하지 않는다. [STALL] WARN 과 비정상 종료
+	// 코드가 짝이다 (UNIT3 v3 §3.7). 연속 스톨 경보화는 유닛 4가
+	// 닫지 않았다 (UNIT4 v2 §8.1) — 소진 WARN 이 반복 실패의 신호다.
 	if stalled.Load() {
 		return errors.New("stall: 회차가 무진행으로 중단됨")
 	}

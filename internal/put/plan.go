@@ -183,6 +183,63 @@ func SortCandidates(cands []Candidate) {
 	})
 }
 
+// evaluated 는 이 카테고리에서 변경 판정에 도달한 파일-회차 수다
+// (UNIT4 §3 — suppressed_ratio 의 분모).
+//
+// 새 증가 카운터를 두지 않고 판정의 네 출구 합으로 계산한다. 판정
+// 루프에 다섯 번째 계수를 깔면 다음 분기 추가에서 분모만 조용히
+// 어긋나기 때문이다 (§3). Ingress 거부·중복·임시 파일·hash unstable
+// 등 판정에 도달하지 못한 입력은 분모 밖이다 — 분모에서 뺐다고 그
+// 파일이 사라지는 것은 아니며, 각각 ingress_reject / skipped /
+// hash unstable= 줄에서 본다.
+func (c CategoryReport) evaluated() int {
+	return c.Unchanged + c.New + c.Changed + c.MetadataOnly
+}
+
+// suppressedRatio 는 MetadataOnly / evaluated 의 표시 문자열이다.
+//
+// 분모 0 은 "정상 0%" 가 아니라 판정이 아무것도 보지 못한 회차라는
+// 신호이므로 n/a 로 표시한다 (UNIT4 §3 — 같은 줄의 dirs/missing/
+// listed/errs 와 함께 읽는다).
+func (c CategoryReport) suppressedRatio() string {
+	ev := c.evaluated()
+	if ev == 0 {
+		return "n/a"
+	}
+
+	return fmt.Sprintf(
+		"%.1f%%",
+		100*float64(c.MetadataOnly)/float64(ev),
+	)
+}
+
+// mode 는 요약 줄의 모집단 식별자다 (UNIT4 §5 — live/dryrun/seed).
+//
+// seed 가 dryrun 보다 우선한다. seed 는 지문 판정 경로가 달라 어느
+// 분포와도 섞이면 안 되는 모집단이기 때문이다 (§4). 기존 [DRYRUN]
+// 태그는 유지하되, 태그만으로는 seed 가 live 와 구별되지 않으므로
+// mode= 필드가 그 구멍을 막는다 (§0.1-2).
+func (rr RunReport) mode() string {
+	switch {
+	case rr.SeedMode:
+		return "seed"
+	case rr.DryRun:
+		return "dryrun"
+	default:
+		return "live"
+	}
+}
+
+// rangeLabel 은 스캔 창 이름이다. 미설정을 조용한 기본값으로 가리지
+// 않는다 — 모집단 불명은 불명으로 찍혀야 분포 분석에서 걸러진다.
+func (rr RunReport) rangeLabel() string {
+	if rr.Range == "" {
+		return "unset"
+	}
+
+	return rr.Range
+}
+
 // Print 는 사람이 읽는 실행 요약이다.
 // logging 패키지는 MVP 이후이므로 표준 log 로 충분하다.
 func (rr RunReport) Print(l *log.Logger) {
@@ -196,10 +253,16 @@ func (rr RunReport) Print(l *log.Logger) {
 	}
 
 	for _, c := range rr.Categories {
+		// mode= / range= / evaluated= / suppressed_ratio= 는 UNIT4 의
+		// 확장이다. 새 [DRIFT] 줄을 만들지 않고 기존 요약 줄을 넓힌다 —
+		// 같은 사실의 출처가 둘이 되면 둘이 어긋나는 날이 온다 (§5).
 		l.Printf(
-			"%s category=%s dirs=%d missing=%d listed=%d errs=%d "+
-				"unchanged=%d new=%d changed=%d metadata_only=%d",
+			"%s mode=%s range=%s category=%s dirs=%d missing=%d listed=%d errs=%d "+
+				"unchanged=%d new=%d changed=%d metadata_only=%d "+
+				"evaluated=%d suppressed_ratio=%s",
 			tag,
+			rr.mode(),
+			rr.rangeLabel(),
 			c.Category,
 			c.Scan.Dirs,
 			c.Scan.Missing,
@@ -209,6 +272,8 @@ func (rr RunReport) Print(l *log.Logger) {
 			c.New,
 			c.Changed,
 			c.MetadataOnly,
+			c.evaluated(),
+			c.suppressedRatio(),
 		)
 
 		// 해시 계측은 활동이 있었을 때만 한 줄로 남긴다 (설계 v3 §6).

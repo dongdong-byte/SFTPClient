@@ -81,6 +81,7 @@ func (r *Runner) Run(
 ) ([]Candidate, RunReport, error) {
 	var report RunReport
 	report.DryRun = r.Opts.DryRun
+	report.SeedMode = r.Opts.SeedMode
 
 	if err := r.checkInput(jobs); err != nil {
 		return nil, report, err
