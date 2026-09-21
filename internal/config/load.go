@@ -778,11 +778,51 @@ func (l *loader) setConfig() SetConfig {
 			continue
 		}
 
-		sc.policies[version] = SetPolicy{
+		policy := SetPolicy{
 			Version:       version,
 			Enabled:       enabled,
 			RequiredKinds: kinds,
 		}
+
+		// ResendMinKinds — resend 단계의 조건부 게이트 우회 (RESEND v4 §5).
+		//
+		// 키 부재는 정상이다: 게이트 ON이면 resend가 무조건 우회하고,
+		// 게이트 OFF면 아무 의미가 없다 (§5.3 2·4행).
+		//
+		// 게이트 OFF에서 키가 존재하면 시작 오류다 (§5.3 3행) — 우회할
+		// 게이트가 없는 설정은 운영자 착오이며, 조용히 무시하면 운영자는
+		// 최소 종 정책이 살아 있다고 믿는데 실제로는 아무 일도 하지 않는다.
+		if rawMin, hasMin := sec.get("ResendMinKinds"); hasMin {
+			if !enabled {
+				l.addf(
+					"%w: line %d: [%s] ResendMinKinds: "+
+						"게이트가 꺼져 있습니다(RequiredKinds = false) — "+
+						"우회할 게이트가 없는 설정은 거부합니다 (RESEND v4 §5.3)",
+					ErrBadValue,
+					sec.lineOf("ResendMinKinds"),
+					name,
+				)
+
+				continue
+			}
+
+			minKinds, merr := parseResendMinKinds(rawMin, kinds)
+			if merr != nil {
+				l.addf(
+					"%w: line %d: [%s] ResendMinKinds: %v",
+					ErrBadValue,
+					sec.lineOf("ResendMinKinds"),
+					name,
+					merr,
+				)
+
+				continue
+			}
+
+			policy.ResendMinKinds = minKinds
+		}
+
+		sc.policies[version] = policy
 	}
 
 	return sc
@@ -864,7 +904,10 @@ func knownKeys() (map[string][]string, error) {
 	// 섹션 부재는 오류가 아니지만(setConfig 주석 참조),
 	// 존재하는 섹션의 오타 키는 여기 등록으로 잡는다.
 	for _, version := range versions {
-		m[setSectionName(version)] = []string{"RequiredKinds"}
+		m[setSectionName(version)] = []string{
+			"RequiredKinds",
+			"ResendMinKinds",
+		}
 	}
 
 	return m, nil

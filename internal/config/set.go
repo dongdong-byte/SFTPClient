@@ -27,6 +27,18 @@ type SetPolicy struct {
 	// 소문자로 정규화된 필수 kind 목록이다.
 	// Enabled가 false이면 nil이다.
 	RequiredKinds []string
+
+	// ResendMinKinds는 resend 단계의 조건부 게이트 우회 최소 종 목록이다
+	// (RESEND 설계 v4 §5). RequiredKinds의 부분집합이며 소문자로 정규화된다.
+	//
+	//	nil            게이트 ON이면 resend 단계는 게이트를 무조건 우회한다
+	//	               (§5.3 2행). 게이트 OFF면 의미 없음.
+	//	비어 있지 않음  미완성 세트라도 이 목록의 모든 종이 있으면 resend
+	//	               단계에서 전송한다. RequiredKinds와 같은 AND 의미다.
+	//
+	// 게이트 OFF(Enabled=false)에서 이 키를 적으면 로더가 시작 오류로
+	// 거부하므로, Enabled=false이면 이 값은 항상 nil이다 (§5.3 3행).
+	ResendMinKinds []string
 }
 
 // Policy는 검증된 RINEX 버전에 해당하는 정책을 반환한다.
@@ -111,31 +123,43 @@ func parseRequiredKinds(raw string) (kinds []string, enabled bool, err error) {
 		)
 	}
 
-	parts := strings.Split(v, ",")
+	out, err := parseKindList(v, "RequiredKinds")
+	if err != nil {
+		return nil, false, err
+	}
+
+	return out, true, nil
+}
+
+// parseKindList는 CSV kind 목록의 공통 문법이다.
+// RequiredKinds와 ResendMinKinds가 같은 규칙을 사용한다 (RESEND v4 §5.3 —
+// "값 문법은 RequiredKinds와 동일"). keyName은 오류 메시지 표기용이다.
+func parseKindList(raw, keyName string) ([]string, error) {
+	parts := strings.Split(raw, ",")
 	out := make([]string, 0, len(parts))
 	seen := make(map[string]bool, len(parts))
 
 	for _, p := range parts {
 		k := strings.ToLower(strings.TrimSpace(p))
 		if k == "" {
-			return nil, false, fmt.Errorf(
-				"RequiredKinds에 빈 항목이 있습니다: %q", raw,
+			return nil, fmt.Errorf(
+				"%s에 빈 항목이 있습니다: %q", keyName, raw,
 			)
 		}
 
 		for i := 0; i < len(k); i++ {
 			if k[i] < 'a' || k[i] > 'z' {
-				return nil, false, fmt.Errorf(
-					"RequiredKinds의 kind %q에 영문자 외 문자가 있습니다 "+
+				return nil, fmt.Errorf(
+					"%s의 kind %q에 영문자 외 문자가 있습니다 "+
 						"(표현 형식 .crx/.rnx는 kind가 아닙니다 — "+
-						"예: MO.crx가 아니라 MO)", p,
+						"예: MO.crx가 아니라 MO)", keyName, p,
 				)
 			}
 		}
 
 		if seen[k] {
-			return nil, false, fmt.Errorf(
-				"RequiredKinds에 kind %q가 중복입니다", k,
+			return nil, fmt.Errorf(
+				"%s에 kind %q가 중복입니다", keyName, k,
 			)
 		}
 
@@ -143,5 +167,51 @@ func parseRequiredKinds(raw string) (kinds []string, enabled bool, err error) {
 		out = append(out, k)
 	}
 
-	return out, true, nil
+	return out, nil
+}
+
+// parseResendMinKinds는 ResendMinKinds 원문을 해석한다 (RESEND v4 §5).
+//
+//	kind 목록          → 소문자 정규화. RequiredKinds의 부분집합이어야 한다.
+//	빈 값·true·false   → 오류. "우회 조건 없음(무조건 우회)"은 값이 아니라
+//	                     키 부재로 표현한다 (§5.3 2행). false로 적으면
+//	                     운영자가 무엇을 껐다고 믿는지 알 수 없으므로
+//	                     조용히 해석하지 않는다.
+//
+// required는 같은 섹션에서 이미 파싱된 RequiredKinds(게이트 ON) 목록이다.
+// 부분집합 검사에 실패하면 오류다 — RequiredKinds에 없는 종은 게이트
+// 판정에 존재하지 않으므로, 그런 최소 종은 영원히 충족되지 않는
+// 침묵 게이트가 된다 (parseRequiredKinds의 영문자 제한과 같은 계열).
+func parseResendMinKinds(raw string, required []string) ([]string, error) {
+	v := strings.TrimSpace(raw)
+
+	switch strings.ToLower(v) {
+	case "", "false", "true":
+		return nil, fmt.Errorf(
+			"ResendMinKinds = %q 는 허용하지 않습니다 "+
+				"(kind 목록만 허용 — 무조건 우회를 원하면 키 자체를 지우세요)",
+			raw,
+		)
+	}
+
+	out, err := parseKindList(v, "ResendMinKinds")
+	if err != nil {
+		return nil, err
+	}
+
+	requiredSet := make(map[string]bool, len(required))
+	for _, k := range required {
+		requiredSet[k] = true
+	}
+
+	for _, k := range out {
+		if !requiredSet[k] {
+			return nil, fmt.Errorf(
+				"ResendMinKinds의 kind %q 가 RequiredKinds에 없습니다 "+
+					"(부분집합이어야 합니다 — RESEND v4 §5.3)", k,
+			)
+		}
+	}
+
+	return out, nil
 }
