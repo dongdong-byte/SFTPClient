@@ -150,6 +150,26 @@ type RunOptions struct {
 	// 제외한다 (Ping-Pong 방지, 설계안 9.1).
 	RepostDownloaded bool
 
+	// Sites 는 관측소 선택 조건이다 (SITE v1 §4, resend 커밋 5).
+	//
+	// domain.ParseSiteList 결과(대문자 4자리, 정규화·중복 제거 완료)를
+	// 담는 것이 정석이다. Run 은 이 목록을 domain.NormalizeSiteList 로
+	// 다시 통과시킨다 — 규칙의 주인은 domain 하나이고 put 은 자기 문법을
+	// 만들지 않는다. 정규화를 거치지 않은 값(빈 항목·9자리·영숫자 외)은
+	// Run 오류다. 정확 일치만 하면 그런 값이 오류 없이 "0 건 선택"으로
+	// 끝나므로 침묵 실패 대신 오류로 드러낸다. 실행 도중 호출자가 이
+	// 목록을 변경하지 않는다.
+	//
+	// 제로값(nil/빈) = 필터 없음. 자동 PUT 과 자동 resend(커밋 7)는 이
+	// 필드를 비운다. 채우는 곳은 수동 resend CLI(커밋 8)뿐이다 — 일반
+	// 자동 PUT 의 --site 노출은 SITE v1 §7 미결이며 여기서 열지 않는다.
+	//
+	// 선택 밖 파일은 Ledger Upsert·해시(백필 포함)·전송 상태 변경·세트
+	// 관측을 일절 하지 않는다(등록 전 필터). 생략과 명시적 빈 값의
+	// 구분, 파싱 오류 시 요청 전체 거부는 CLI 몫이다 — 오류를 무시하고
+	// 빈 목록을 넘기면 잘못된 요청이 전체 선택으로 확대된다.
+	Sites []string
+
 	// Logger 는 요약·경고 출력에 쓴다. nil 이면 log.Default().
 	Logger *log.Logger
 
@@ -224,6 +244,18 @@ type CategoryReport struct {
 	// SkippedDuplicate 는 카테고리 안에서 정규화 이름이 중복 관측되어
 	// 두 번째 이후를 버린 수다.
 	SkippedDuplicate int
+
+	// SiteMismatch / SiteUnknown 은 Opts.Sites 지정 시의 제외 집계다
+	// (SITE v1 §5, resend 커밋 5).
+	//
+	//	Mismatch — 관측소를 추출했으나 선택 밖.
+	//	Unknown  — 이름에서 관측소를 확정할 수 없어(유보) 제외.
+	//
+	// Sites 가 비면 둘 다 항상 0 이다 — site 검사 자체를 하지 않으므로
+	// 식별 불가가 새 제외 사유가 되지 않는다 (SITE §4). 출력 배선은
+	// 커밋 8 의 resend 로그가 한다.
+	SiteMismatch int
+	SiteUnknown  int
 
 	Unchanged int
 	New       int

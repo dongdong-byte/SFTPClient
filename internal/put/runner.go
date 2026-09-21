@@ -56,6 +56,12 @@ type Runner struct {
 	// Run 시작 시 Opts.MaxHashBackfillPerRun 으로 초기화한다.
 	// 스캔 단계는 단일 고루틴이므로 잠금 없이 감산한다.
 	backfillRemaining int
+
+	// siteSet 은 Opts.Sites 를 Run 시작 시 한 번 접은 조회 집합이다.
+	// 비면(nil) 필터 없음. backfillRemaining 과 같은 Run 단위 상태다 —
+	// visitBatch 까지 세 단계 시그니처에 인자를 더하지 않기 위해
+	// Runner 에 둔다 (커밋 5 검토 v1 §2.3).
+	siteSet map[string]struct{}
 }
 
 // failedRef 는 FAILED 로 관측되어 attempts 확인이 필요한 후보 예비다.
@@ -91,6 +97,28 @@ func (r *Runner) Run(
 
 	// 백필 예산은 Run 단위다 — 카테고리·배치를 가로질러 공유한다.
 	r.backfillRemaining = r.Opts.MaxHashBackfillPerRun
+
+	// site 선택 집합도 Run 단위로 한 번 접는다 (SITE v1 §4).
+	// 매 Run 재구성하므로 Runner 재사용 시 이전 실행의 선택이 남지 않는다.
+	//
+	// 목록은 domain.NormalizeSiteList 로 통과시킨다 — 대조 기준
+	// (domain.SiteFromName 의 반환)과 같은 대문자로 맞추고, 정규화를
+	// 거치지 않은 값은 여기서 거부한다. 둘 다 침묵 실패를 막기 위한
+	// 것이다: 공백뿐인 목록은 빈 집합이 되어 "필터 없음"(전 관측소)으로
+	// 확대되고, 대소문자가 어긋난 값은 오류 없이 0 건이 된다. 규칙의
+	// 주인은 계속 domain 이며 put 이 자기 문법을 만들지 않는다.
+	r.siteSet = nil
+	if len(r.Opts.Sites) > 0 {
+		codes, err := domain.NormalizeSiteList(r.Opts.Sites)
+		if err != nil {
+			return nil, report, fmt.Errorf("put: Opts.Sites: %w", err)
+		}
+
+		r.siteSet = make(map[string]struct{}, len(codes))
+		for _, s := range codes {
+			r.siteSet[s] = struct{}{}
+		}
+	}
 
 	var all []Candidate
 
@@ -457,6 +485,41 @@ func (r *Runner) visitBatch(
 		}
 
 		n := domain.NormalizeName(e.Name)
+
+		// site 필터 (SITE v1 §4, resend 커밋 5) — Ledger 조회·Upsert·
+		// 해시·세트 관측 전부의 앞이다. 선택 밖 파일은 이번 대상 처리로
+		// 아무것도 바꾸지 않으므로 seen·names·ExtCount·stations 에도
+		// 넣지 않는다 (검토 v1 §3-2·§3-6). 중복 검사보다 앞이라 같은
+		// 이름이 다시 와도 중복이 아니라 같은 site 사유로 다시 센다.
+		//
+		// siteSet 이 비면 SiteFromName 자체를 호출하지 않는다 — 생략 시
+		// 식별 불가를 새 제외 사유로 만들지 않는다 (SITE §4).
+		if len(r.siteSet) > 0 {
+			site, ok, err := domain.SiteFromName(job.Category, n)
+			if err != nil {
+				// 카테고리 라우팅 누락은 유보가 아니라 구현 결함이다.
+				// "식별 불가"로 접으면 새 카테고리 전체가 조용히
+				// 제외된다 (커밋 3 의 err/유보 이원 계약 — 검토 v1 §3-1).
+				return fmt.Errorf(
+					"site filter (dir %s, file %q): %w",
+					b.Dir,
+					e.Name,
+					err,
+				)
+			}
+
+			if !ok {
+				rep.SiteUnknown++
+
+				continue
+			}
+
+			if _, want := r.siteSet[site]; !want {
+				rep.SiteMismatch++
+
+				continue
+			}
+		}
 
 		if _, dup := seen[n]; dup {
 			rep.SkippedDuplicate++

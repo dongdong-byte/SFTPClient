@@ -221,16 +221,17 @@ origin = 장부 운영 시작일 (UTC 날짜, §3.5)
   옵션은 두지 않는다.
 - 여유 1일은 §3.2 가정(관측일 ≤ 입고 시각)이 날짜 경계·시계 오차·파일명 오기로
   조금 어긋나는 경우를 흡수한다. 수학적으로는 `RetentionDays − 1`까지 안전하다.
-- 자동 창이 비는 경우(`From > To`, 즉 RetentionDays가 ScanDays + 2 이하)는 자동 단계를
-  건너뛰고 시작 시 WARN을 남긴다. 현재 검증은 `RetentionDays > ScanDays`만 강제하므로
-  이 경우가 설정상 가능하다.
+- `limit > To`(RetentionDays가 ScanDays + 2 미만)이면 자동 단계를 건너뛰고
+  시작 시 WARN을 남긴다. 현재 검증은 `RetentionDays > ScanDays`만 강제하므로
+  이 경우가 설정상 가능하다. ScanDays + 2와 같으면 양끝 포함 1일짜리 창이다.
+  설정상 창이 가능하지만 `origin > To`라 비는 경우는 §3.5의 INFO 사유다.
 - 현재 Retention Cleanup은 미구현이라 실제 삭제는 없다. 그래도 resend가 먼저
   배포되므로 규칙은 지금 코드로 강제한다.
 
 ### 3.4 설정값 — `RetentionDays` 운영 권장 35 **[확정]**
 
 현재 `config.example.ini`의 `[LEDGER] RetentionDays = 30`이면 resend가 닿는 가장
-오래된 날은 **29일 전**이다. "31일까지 늦게 올 수 있다"는 가정을 덮으려면
+오래된 날은 **28일 전**이다(`30 − 2`). "31일까지 늦게 올 수 있다"는 가정을 덮으려면
 `RetentionDays ≥ 33`이 필요하다. 운영 권장값은 **35**다. 코드 변경이 아니라
 설정값이며, 배포 시 `config.example.ini` 주석과 현장 `config.ini`에 반영한다.
 
@@ -583,7 +584,9 @@ resend 구현과 독립적인 항목이므로 이번 범위에서 결정하지 �
 - 템플릿이 가리키지 않는 위치의 파일은 지금 Deep도 수동 resend도 못 찾는다.
   그 구멍은 경로 범용화 몫이다.
 - §3의 불변식은 재귀 탐색의 날짜 경계에도 똑같이 적용한다. §3.3의 한계 함수를
-  `config`가 아닌 독립 함수로 둔다(구현 시 위치 확정).
+  `config`가 아닌 독립 함수로 둔다. 위치는 `internal/scanwindow`
+  (`RetentionLimit` / `Auto` / `ValidateManual`, 커밋 5). put·cmd·scan에
+  두지 않은 사유는 [커밋 5 검토 v1 §1](SFTPClient_RESEND_COMMIT5_ISSUES_v1.md)에 있다.
 
 ---
 
@@ -599,8 +602,8 @@ resend 구현과 독립적인 항목이므로 이번 범위에서 결정하지 �
 | 1 | docs | 이 문서(v4)와 SITE v1 기록 | — |
 | 2 | config: `ResendMinKinds` | 설정 읽기·§5.3 검증. put·cmd는 수정하지 않는다 | 부분집합, 게이트 OFF+키 오류, 키 없음 |
 | 3 | domain: site 추출·매칭 | 파일명에서 4자리 관측소 코드 추출, 대소문자·복수 선택 등 v4·SITE 확정 규칙. CLI는 연결하지 않는다 | 짧은/긴 이름, 대소문자, 복수, 불일치·식별 불가, 4자리만 허용 |
-| 4 | ledger: 운영 시작일 | §3.5 origin 기록·조회. 새 DB 기록, 기존 DB `MIN(first_seen)` 백필, 한 번 기록 후 불변 | 새 DB, 기존 DB 백필, 빈 DB, 재Open 시 불변, schema_version 불변 |
-| 5 | put: resend 대상 범위·site 필터 | 자동·수동 날짜 범위 계산(§3.3·§3.5)과 경계 검증, Ledger 등록 전 site 필터 | 한계 경계, origin 하한, 빈 창, 수동 origin 미적용, 선택 밖 장부 불변 |
+| 4 | ledger: 운영 시작일 | §3.5 origin 기록·조회. 행이 있으면 `MIN(first_seen)`으로 한 번 기록, 빈 DB·dry-run Open은 기록하지 않음(조회는 오늘), 한 번 기록 후 불변 | 빈 DB, dry-run 뒤 늦은 운영 시작, 기존 DB 백필, 재Open 시 불변, schema_version 불변, 손상 값 거부 |
+| 5 | scanwindow: 창 계산 / put: site 필터 | `internal/scanwindow`에 자동·수동 날짜 범위 계산(§3.3·§3.5)과 경계 검증(빈 창 사유 값, 센티널 오류). put은 `RunOptions.Sites`로 Ledger 등록 전 site 필터·집계만. 호출처 없음 | 한계 경계(R=S+1/+2/+3), origin 하한, 빈 창 사유, 첫 설치 곡선, 수동 origin 미적용, 선택 밖 장부·해시 불변, 세트 판정 불변, live/dry-run 일치 |
 | 6 | put: resend 게이트·수동 재시도 정책 | `ResendMinKinds` 적용, 수동 실행의 소진 파일 재시도, revision·attempts 보존. main 배선은 제외 | 최소 종 충족/미충족, 재무장 수동만, attempts 보존, 세트 절단 |
 | 7 | cmd: 정시 PUT 뒤 자동 resend 연결 | ① 완료 후 남은 예산(§6.2, `len(kept)` 차감)으로 ②, 오류·취소 시 생략, 단계별 요약 | 예산 0/음수/`MaxFilesPerRun=0`, dry-run 예산 일치, stall, put 오류, 빈 창 |
 | 8 | cmd: 수동 `resend` 명령 | site·category·기간 인자, dry-run, 락 대기(상한 = LockStale), 잘못된 요청 거부, 실행 결과 | 교집합, dry-run, 범위 거부, 형식 오류, ErrHeld 대기 상한, `before_origin` 로그 |

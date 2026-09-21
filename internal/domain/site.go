@@ -39,17 +39,28 @@ const siteCodeLen = 4
 // SITE v1 §3.1의 대문자 정규화를 따른다. 파일 추출값도 같은 형식으로
 // 반환하여 추가 변환 없이 정확 일치 비교와 로그 표기에 사용한다.
 func ParseSiteList(raw string) ([]string, error) {
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	seen := make(map[string]bool, len(parts))
+	return NormalizeSiteList(strings.Split(raw, ","))
+}
 
-	for _, p := range parts {
+// NormalizeSiteList 는 이미 나뉜 관측소 코드 목록에 ParseSiteList 와
+// 같은 규칙을 적용한다 (검사 → 대문자 → 중복 제거).
+//
+// CLI 문자열을 거치지 않고 목록을 건네받는 내부 소비자(put 의
+// RunOptions.Sites)가 자기 검사를 새로 만들지 않도록 둔다. 검사를
+// 생략하면 두 가지가 조용히 지나간다 — 공백뿐인 목록은 빈 집합이 되어
+// "필터 없음"(전 관측소)으로 확대되고, 대소문자가 어긋난 값은 정확
+// 일치에 실패해 오류 없이 0 건이 된다.
+func NormalizeSiteList(codes []string) ([]string, error) {
+	out := make([]string, 0, len(codes))
+	seen := make(map[string]bool, len(codes))
+
+	for _, p := range codes {
 		// 대소문자 변환 전에 ASCII를 검사한다. 유니코드 변환으로
 		// 비ASCII 문자가 ASCII로 바뀌어 잘못 허용되는 것을 막는다.
 		s := strings.TrimSpace(p)
 		if s == "" {
 			return nil, fmt.Errorf(
-				"domain: --site 에 빈 항목이 있습니다: %q", raw,
+				"domain: --site 에 빈 항목이 있습니다: %q", codes,
 			)
 		}
 
