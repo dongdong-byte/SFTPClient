@@ -46,6 +46,37 @@ type Entry struct {
 	Size  int64
 	MTime time.Time
 	IsDir bool
+
+	// Type 은 항목의 종류 비트이다 (fs.FileMode 의 type bits,
+	// 즉 mode & fs.ModeType). 일반 파일이면 0 이다.
+	//
+	// LocalLister 가 lstat 의미(DirEntry.Type)로 채우므로, 링크는
+	// 대상이 아니라 링크 자신의 종류(fs.ModeSymlink)로 보고된다.
+	// Windows junction/mount point 는 Go 1.23 이후 fs.ModeIrregular 로
+	// 보고된다 (PATH_DESIGN v3 §5).
+	//
+	// 이 필드는 관측 사실이다. "일반 파일만 수집, 진짜 폴더만 하강,
+	// 그 외는 건너뛰고 집계"라는 판정(PATH_DESIGN v3 §5.1)은 재귀를
+	// 수행하는 Scanner 의 책임이며 다음 커밋에서 구현한다.
+	Type fs.FileMode
+}
+
+// IsRegular 는 이 항목이 일반 파일인지 보고한다.
+//
+// fs.FileMode.IsRegular 와 같은 규약이다. 종류 비트(fs.ModeType)가
+// 없으면 일반 파일이다. 권한 비트(예: 0644)가 Type 에 섞여 있어도
+// 일반 파일로 본다. 종류를 지정하지 않고 만든 테스트 fake 의 Entry 도
+// 자연히 일반 파일이 된다.
+//
+// 디렉터리·링크·junction 은 LocalLister 가 해당 종류 비트를 채우므로
+// false 가 된다.
+//
+// IsDir 도 함께 본다. Type 을 채우지 않고 IsDir 만 세운 Entry
+// (기존 테스트 fake, 향후 다른 DirLister 구현)가 "폴더이면서 일반
+// 파일"이 되면, Scanner 의 판정 순서에 따라 폴더가 전송 후보로
+// 새어 나간다. 두 필드가 어긋나도 폴더는 파일이 아니다.
+func (e Entry) IsRegular() bool {
+	return !e.IsDir && e.Type&fs.ModeType == 0
 }
 
 // DirLister 는 디렉터리 하나를 나열한다.

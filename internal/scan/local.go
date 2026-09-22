@@ -26,6 +26,14 @@ type LocalLister struct{}
 // 0바이트, .part, 하위 디렉터리도 관측한 그대로 Entry 로 만든다.
 // 전송 가능한 파일인지 판정하는 것은 verify 의 책임이다.
 //
+// Entry.Type 과 IsDir 은 DirEntry.Type(lstat 의미)에서 같이 채운다.
+// os.Stat 은 junction·symlink 를 따라가 대상 디렉터리로 보이므로
+// 여기 쓰면 안 된다. 링크는 링크 자신(fs.ModeSymlink)으로, Windows
+// junction/mount point 는 fs.ModeIrregular(Go 1.23+,
+// GODEBUG=winsymlink=0 이면 fs.ModeSymlink)로 보고되고 ModeDir 는
+// 켜지지 않는다. 일반 파일·진짜 폴더·그 외를 어떻게 다룰지의 판정은
+// 여기가 아니라 호출자(Scanner)의 책임이다 (PATH_DESIGN v3 §5).
+//
 // os.ReadDir 자체는 context 취소를 지원하지 않는다.
 // 따라서 호출 전과 각 항목 처리 사이에서 취소 여부를 확인한다.
 //
@@ -92,11 +100,17 @@ func (LocalLister) List(
 			return nil, err
 		}
 
+		// 종류는 Info 가 아니라 DirEntry.Type 에서 읽는다.
+		// 둘은 같은 lstat 결과지만, IsDir 을 info.IsDir() 로 따로 보면
+		// 나중에 Stat 결과와 섞였을 때 링크가 폴더로 보일 수 있다.
+		typ := de.Type()
+
 		entries = append(entries, Entry{
 			Name:  de.Name(),
 			Size:  info.Size(),
 			MTime: info.ModTime(),
-			IsDir: info.IsDir(),
+			IsDir: typ&fs.ModeDir != 0,
+			Type:  typ,
 		})
 	}
 
