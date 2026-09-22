@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
-
-	"SFTPClient/internal/pathpl"
 )
 
 // ErrInvalidConfig 는 값은 읽혔으나 그 조합으로 실행할 수 없을 때 반환된다.
@@ -324,47 +322,14 @@ func (c *Config) checkCategories(add addFunc) {
 	seenLocal := make(map[string]string)
 
 	for _, cc := range c.Put.Categories {
-		// Hourly 는 HourLayout 이 반드시 dir 또는 flat 이어야 한다.
-		//
-		// 정상 Load 경로에서는 항상 값이 채워지지만,
-		// Config 를 직접 구성하는 테스트나 다른 진입점에서도
-		// zero-value 가 조용히 통과하지 않도록 여기서 다시 검사한다.
-		if cc.Category.IsHourly() && !cc.HourLayout.Valid() {
-			add(
-				"[PUT.%s] HourLayout = %q must be %q or %q",
-				cc.Category,
-				cc.HourLayout,
-				HourLayoutDir,
-				HourLayoutFlat,
-			)
-		}
-
-		// Daily 에는 HourLayout 자체가 존재하지 않는 것이 불변식이다.
-		//
-		// 정상 INI Load 에서는 knownKeys 가 Daily 의 HourLayout 키를 거부하지만,
-		// Config 를 직접 구성하는 경로에서도 같은 규칙을 유지한다.
-		if cc.Category.IsDaily() && cc.HourLayout != "" {
-			add(
-				"[PUT.%s] HourLayout = %q is not valid for a daily category",
-				cc.Category,
-				cc.HourLayout,
-			)
-		}
-
 		// 정상적인 Load 흐름에서는 mapConfig 가 nil Template 을 이미 오류로 처리한다.
 		// Validate 를 직접 호출하는 경로에서도 어떤 Path 가 빠졌는지 명확히 보고한다.
 		if cc.LocalPath == nil {
 			add("[PUT.%s] LocalPath is nil", cc.Category)
-		} else {
-			// Enabled=false 여도 Path Template 구조는 검사한다.
-			// 꺼둔 설정의 오타가 나중에 활성화할 때 처음 드러나는 것을 막는다.
-			checkHourToken(add, cc, "LocalPath", cc.LocalPath)
 		}
 
 		if cc.RemotePath == nil {
 			add("[PUT.%s] RemotePath is nil", cc.Category)
-		} else {
-			checkHourToken(add, cc, "RemotePath", cc.RemotePath)
 		}
 
 		if !cc.Enabled {
@@ -397,90 +362,6 @@ func (c *Config) checkCategories(add addFunc) {
 	// 아무 파일도 처리하지 않는 상태가 된다.
 	if enabled == 0 {
 		add("no category is enabled; the program would do nothing")
-	}
-}
-
-// checkHourToken 은 (HH) 토큰의 유무가 Category·HourLayout 과 맞는지 검사한다.
-//
-// Daily (LocalPath / RemotePath 모두):
-//
-//	(HH) 를 갖지 않는다.
-//	Daily 경로에 시각 토큰이 들어가면 실제 Daily 저장 구조와 다른 경로를
-//	조회하게 되어 파일을 조용히 놓칠 수 있으므로 시작 시 거부한다.
-//
-// Hourly + LocalPath + dir:
-//
-//	(HH) 가 반드시 있어야 한다.
-//	Scanner 는 00~23을 각각 계산하여 해당 디렉터리를 나열한다.
-//	빠지면 24개 시각이 모두 같은 디렉터리로 확장되어 같은 곳을 반복해서 읽는다.
-//
-// Hourly + LocalPath + flat:
-//
-//	(HH) 가 없어야 한다.
-//	한 날짜 디렉터리를 한 번 나열하여 그 안의 24시간 파일을 함께 관측한다.
-//
-// Hourly + RemotePath:
-//
-//	HourLayout 과 무관하게 (HH) 유무를 강제하지 않는다.
-//	서울시: 소스는 시각 폴더(dir), 목적지는 /RNX2/ 같은 flat.
-//	파일명 세션 문자(a~x)가 시각을 구분하므로 이름이 충돌하지 않는다.
-//	이 완화와 HourLayout 자체는 재귀 Scan 전의 과도기 규칙이다.
-//	Hourly (HH) 필수 검증을 재강화하지 않는다 (GUIDELINES 9.3).
-//
-// 선언과 LocalPath 가 어긋나도 파일시스템 오류 없이 일부 동작할 수 있기
-// 때문에 추측해서 보정하지 않고 시작 시 거부한다.
-//
-// HourLayout 이 유효하지 않은 경우(dir/flat 아님)는 checkCategories 의
-// 가드가 별도로 보고하므로, 여기서는 (HH) 검사를 조용히 건너뛴다.
-func checkHourToken(
-	add addFunc,
-	cc CategoryConfig,
-	key string,
-	tpl *pathpl.Template,
-) {
-	has := tpl.HasToken(pathpl.TokenHH)
-
-	switch {
-	case cc.Category.IsDaily():
-		if has {
-			add(
-				"[PUT.%s] %s has (%s) but daily paths must not include the hour token: %s",
-				cc.Category,
-				key,
-				pathpl.TokenHH,
-				tpl.String(),
-			)
-		}
-
-	case cc.Category.IsHourly():
-		// HourLayout 은 소스 스캔 배치(LocalPath)에만 적용한다.
-		if key == "RemotePath" {
-			return
-		}
-
-		switch cc.HourLayout {
-		case HourLayoutDir:
-			if !has {
-				add(
-					"[PUT.%s] %s has no (%s): hourly dir layout requires the hour token: %s",
-					cc.Category,
-					key,
-					pathpl.TokenHH,
-					tpl.String(),
-				)
-			}
-
-		case HourLayoutFlat:
-			if has {
-				add(
-					"[PUT.%s] %s has (%s) but hourly flat layout must not include the hour token: %s",
-					cc.Category,
-					key,
-					pathpl.TokenHH,
-					tpl.String(),
-				)
-			}
-		}
 	}
 }
 

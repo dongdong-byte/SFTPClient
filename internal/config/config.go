@@ -342,37 +342,15 @@ type CategoryConfig struct {
 	// 문법 오류를 Scan 도중이 아니라 프로그램 시작 시 발견하고,
 	// 실행 중에는 Parse 를 반복하지 않고 Expand 만 수행한다.
 	//
-	// Hourly Category 의 LocalPath (HH) 사용 여부는 과도기 HourLayout 이
-	// 결정한다. MVP2에서 재귀 탐색으로 교체하며 검증을 재강화하지 않는다
-	// (GUIDELINES 9.3).
-	//
-	//	HourLayout=dir  → LocalPath 에 (HH) 필수
-	//	HourLayout=flat → LocalPath 에 (HH) 금지
-	//
-	// RemotePath 는 Hourly 에서 (HH) 유무를 강제하지 않는다.
-	// 소스 dir + 목적지 flat 조합(서울시 Hourly → /RNX2/)을 허용하기 위함이다.
-	//
-	// Daily Category 는 LocalPath / RemotePath 모두 (HH) 를 포함하면 안 된다.
-	// 선언과 LocalPath 의 일치는 validate.go 가 판정한다.
+	// LocalPath 는 날짜 폴더까지만 적는다. 그 아래는 scan 이 재귀로
+	// 수집하므로 시각 토큰이 필요 없다. (HH) 는 pathpl 에서 제거되어
+	// LocalPath·RemotePath 어느 쪽이든 남아 있으면 "알 수 없는 토큰"으로
+	// 로드가 거부된다 (PATH_DESIGN v3 §1).
 	//
 	// 두 필드 모두 nil 이 아님이 Load 성공의 조건이다.
 	// Expand 는 포인터 리시버이므로 nil 이면 호출 시점에 panic 이 된다.
 	LocalPath  *pathpl.Template
 	RemotePath *pathpl.Template
-
-	// HourLayout 은 Hourly Category 의 디렉터리 배치이다 (dir | flat).
-	// 과도기 키다. MVP2에서 제거하며 기관별 값을 추가하지 않는다.
-	//
-	// Hourly 섹션에서만 읽는다. load 가 생략 시 DefaultHourLayout(dir) 로
-	// 채운다. Daily Category 에서는 사용하지 않으며 zero-value("") 로 남는다.
-	//
-	// 값은 LocalPath 스캔 배치에만 적용된다. RemotePath 의 (HH) 유무는
-	// 이 키와 독립이다 (소스 dir + 목적지 flat 허용, 2026-09-02).
-	//
-	// scan 은 이 값을 직접 보지 않고 LocalPath 의 (HH) 토큰 유무로 순회를
-	// 결정한다. HourLayout 은 dir/flat 선언과 LocalPath 의 (HH) 유무가
-	// 일치하는지 validate 가 시작 시 교차 검증하는 데 쓰인다.
-	HourLayout HourLayout
 }
 
 // LogConfig 는 [LOG] 섹션이다.

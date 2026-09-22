@@ -545,24 +545,5 @@ func checkInput(
 		)
 	}
 
-	// (HH) 는 제거된 토큰이다 (PATH_DESIGN v3 §1).
-	//
-	// 시각별 하위 디렉터리는 재귀가 흡수하므로 템플릿에 적을 이유가
-	// 없고, 남아 있으면 자정(00)으로만 확장되어 조용히 일부만 스캔하게
-	// 된다. 조용한 오동작 대신 여기서 시끄럽게 거부한다.
-	//
-	// 과도기 검사다: 다음 커밋에서 pathpl 의 TokenHH 지원 자체를
-	// 삭제하면 (HH) 템플릿은 config 로드 단계에서 "알 수 없는 토큰"으로
-	// 거부되어 이 지점에 도달할 수 없으므로, 이 검사도 그 커밋에서
-	// 함께 삭제한다.
-	if tpl.HasToken(pathpl.TokenHH) {
-		return fmt.Errorf(
-			"%w: (%s) 는 제거된 토큰입니다. 경로를 (DOY) 까지로 줄이면 그 아래는 자동으로 재귀 탐색합니다: %q",
-			ErrInvalidInput,
-			pathpl.TokenHH,
-			tpl.String(),
-		)
-	}
-
 	return nil
 }

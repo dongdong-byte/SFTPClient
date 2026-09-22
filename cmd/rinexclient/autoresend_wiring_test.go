@@ -269,9 +269,8 @@ RemotePath = %s
 
 [PUT.RINEX2_HOURLY]
 Enabled    = false
-HourLayout = dir
-LocalPath  = D:\RINEX-V2-H\(YYYY)\(DOY)\(HH)\
-RemotePath = /RINEX2Outgoing/Hourly/(YYYY)/(DOY)/(HH)/
+LocalPath  = D:\RINEX-V2-H\(YYYY)\(DOY)\
+RemotePath = /RINEX2Outgoing/Hourly/(YYYY)/(DOY)/
 
 [PUT.RINEX3_DAILY]
 Enabled    = false
@@ -280,9 +279,8 @@ RemotePath = /RINEX3Outgoing/Daily/(YYYY)/(DOY)/
 
 [PUT.RINEX3_HOURLY]
 Enabled    = false
-HourLayout = dir
-LocalPath  = D:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\
-RemotePath = /RINEX3Outgoing/Hourly/(YYYY)/(DOY)/(HH)/
+LocalPath  = D:\RINEX-V3-H\(YYYY)\(DOY)\
+RemotePath = /RINEX3Outgoing/Hourly/(YYYY)/(DOY)/
 
 [PUT.RINEX4_DAILY]
 Enabled = false
@@ -291,9 +289,8 @@ RemotePath = /RNXOutgoing/V4/(YYYY)/(DOY)/
 
 [PUT.RINEX4_HOURLY]
 Enabled = false
-HourLayout = dir
-LocalPath = D:\RINEX-V4-H\(YYYY)\(DOY)\(HH)\
-RemotePath = /RNXOutgoing/V4/(YYYY)/(DOY)/(HH)/
+LocalPath = D:\RINEX-V4-H\(YYYY)\(DOY)\
+RemotePath = /RNXOutgoing/V4/(YYYY)/(DOY)/
 
 [LOG]
 Level = info

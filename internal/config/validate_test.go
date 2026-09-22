@@ -135,9 +135,8 @@ func validConfigForValidate(t *testing.T) *Config {
 				{
 					Category:   domain.CategoryRINEX2Hourly,
 					Enabled:    true,
-					HourLayout: HourLayoutDir,
-					LocalPath:  mustTemplate(t, "/local/r2h/(YYYY)/(DOY)/(HH)/"),
-					RemotePath: mustTemplate(t, "/remote/r2h/(YYYY)/(DOY)/(HH)/"),
+					LocalPath:  mustTemplate(t, "/local/r2h/(YYYY)/(DOY)/"),
+					RemotePath: mustTemplate(t, "/remote/r2h/(YYYY)/(DOY)/"),
 				},
 				{
 					Category:   domain.CategoryRINEX3Daily,
@@ -148,9 +147,8 @@ func validConfigForValidate(t *testing.T) *Config {
 				{
 					Category:   domain.CategoryRINEX3Hourly,
 					Enabled:    true,
-					HourLayout: HourLayoutDir,
-					LocalPath:  mustTemplate(t, "/local/r3h/(YYYY)/(DOY)/(HH)/"),
-					RemotePath: mustTemplate(t, "/remote/r3h/(YYYY)/(DOY)/(HH)/"),
+					LocalPath:  mustTemplate(t, "/local/r3h/(YYYY)/(DOY)/"),
+					RemotePath: mustTemplate(t, "/remote/r3h/(YYYY)/(DOY)/"),
 				},
 				{
 					Category:   domain.CategoryRINEX4Daily,
@@ -161,9 +159,8 @@ func validConfigForValidate(t *testing.T) *Config {
 				{
 					Category:   domain.CategoryRINEX4Hourly,
 					Enabled:    false,
-					HourLayout: HourLayoutDir,
-					LocalPath:  mustTemplate(t, "/local/r4h/(YYYY)/(DOY)/(HH)/"),
-					RemotePath: mustTemplate(t, "/remote/r4h/(YYYY)/(DOY)/(HH)/"),
+					LocalPath:  mustTemplate(t, "/local/r4h/(YYYY)/(DOY)/"),
+					RemotePath: mustTemplate(t, "/remote/r4h/(YYYY)/(DOY)/"),
 				},
 			},
 		},
@@ -366,85 +363,6 @@ func TestValidate_RetentionMustExceedScanDays(t *testing.T) {
 				t.Fatalf("unexpected validation error: %v", err)
 			}
 		})
-	}
-}
-
-func TestValidate_HourToken(t *testing.T) {
-	// 과도기 HourLayout=dir 기본값과 LocalPath (HH) 의 교차 검증이다.
-	// 이 거부를 더 엄격히 만들 근거로 쓰지 않는다 (GUIDELINES 9.3).
-	tests := []struct {
-		name   string
-		mutate func(t *testing.T, cfg *Config)
-	}{
-		{
-			name: "Hourly LocalPath에 HH 없음",
-			mutate: func(t *testing.T, cfg *Config) {
-				cfg.Put.Categories[1].LocalPath =
-					mustTemplate(t, "/local/r2h/(YYYY)/(DOY)/")
-			},
-		},
-		{
-			name: "Daily LocalPath에 HH 있음",
-			mutate: func(t *testing.T, cfg *Config) {
-				cfg.Put.Categories[2].LocalPath =
-					mustTemplate(t, "/local/r3d/(YYYY)/(DOY)/(HH)/")
-			},
-		},
-		{
-			name: "Daily RemotePath에 HH 있음",
-			mutate: func(t *testing.T, cfg *Config) {
-				cfg.Put.Categories[2].RemotePath =
-					mustTemplate(t, "/remote/r3d/(YYYY)/(DOY)/(HH)/")
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := validConfigForValidate(t)
-			tt.mutate(t, cfg)
-
-			err := cfg.Validate()
-			if err == nil {
-				t.Fatal("expected validation error")
-			}
-
-			if !strings.Contains(err.Error(), "HH") {
-				t.Errorf("error does not mention HH: %v", err)
-			}
-		})
-	}
-}
-
-func TestValidate_DisabledCategoryStillChecksHourToken(t *testing.T) {
-	// 비활성 Hourly 도 기본 HourLayout=dir 이면 LocalPath (HH) 를 요구한다.
-	// 과도기 검증이며, 비활성 카테고리까지 (HH) 를 더 강하게 강제하려는
-	// 확장이 아니다.
-	cfg := validConfigForValidate(t)
-
-	// RINEX3_HOURLY
-	cfg.Put.Categories[3].Enabled = false
-	cfg.Put.Categories[3].LocalPath =
-		mustTemplate(t, "/local/r3h/(YYYY)/(DOY)/")
-
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("disabled hourly category without HH: expected error")
-	}
-
-	if !strings.Contains(err.Error(), "HH") {
-		t.Errorf("error does not mention HH: %v", err)
-	}
-}
-
-func TestValidate_HourlyRemotePathWithoutHHIsAllowed(t *testing.T) {
-	cfg := validConfigForValidate(t)
-
-	// HourLayout=dir 기본값. LocalPath 는 (HH) 유지, 목적지만 flat.
-	cfg.Put.Categories[1].RemotePath = mustTemplate(t, "/RNX2/")
-
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("dir 소스 + flat RemotePath 가 거부됐다: %v", err)
 	}
 }
 

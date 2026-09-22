@@ -50,8 +50,8 @@ RemotePath = /remote/rinex2/daily/(YYYY)/(DOY)/
 
 [PUT.RINEX2_HOURLY]
 Enabled = true
-LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/(HH)/
-RemotePath = /remote/rinex2/hourly/(YYYY)/(DOY)/(HH)/
+LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/
+RemotePath = /remote/rinex2/hourly/(YYYY)/(DOY)/
 
 [PUT.RINEX3_DAILY]
 Enabled = true
@@ -60,8 +60,8 @@ RemotePath = /remote/rinex3/daily/(YYYY)/(DOY)/
 
 [PUT.RINEX3_HOURLY]
 Enabled = true
-LocalPath = /local/rinex3/hourly/(YYYY)/(DOY)/(HH)/
-RemotePath = /remote/rinex3/hourly/(YYYY)/(DOY)/(HH)/
+LocalPath = /local/rinex3/hourly/(YYYY)/(DOY)/
+RemotePath = /remote/rinex3/hourly/(YYYY)/(DOY)/
 
 [PUT.RINEX4_DAILY]
 Enabled = false
@@ -70,8 +70,8 @@ RemotePath = /remote/rinex4/daily/(YYYY)/(DOY)/
 
 [PUT.RINEX4_HOURLY]
 Enabled = false
-LocalPath = /local/rinex4/hourly/(YYYY)/(DOY)/(HH)/
-RemotePath = /remote/rinex4/hourly/(YYYY)/(DOY)/(HH)/
+LocalPath = /local/rinex4/hourly/(YYYY)/(DOY)/
+RemotePath = /remote/rinex4/hourly/(YYYY)/(DOY)/
 
 [LOG]
 Level = INFO
@@ -374,6 +374,55 @@ func TestMapConfig_UnknownKey(t *testing.T) {
 	if !strings.Contains(err.Error(), "SCANDAY") &&
 		!strings.Contains(err.Error(), "ScanDay") {
 		t.Errorf("error does not identify unknown key: %v", err)
+	}
+}
+
+// TestMapConfig_RemovedHourLayoutKeyIsRejected 는 제거된 HourLayout 키가
+// 남은 옛 config 가 ErrUnknownKey 로 거부되는지 본다 (PATH_DESIGN v3 §1-4,
+// §7.1 T6). knownKeys 에서 키를 뺀 것만으로 얻는 동작이며, 별도 거부
+// 코드를 두지 않는다(§2-E). 배포 시 바이너리와 config 를 함께 교체해야
+// 하는 이유가 이 동작이다(§7).
+func TestMapConfig_RemovedHourLayoutKeyIsRejected(t *testing.T) {
+	input := strings.Replace(
+		validINIForLoadTest(),
+		"[PUT.RINEX2_HOURLY]\nEnabled = true",
+		"[PUT.RINEX2_HOURLY]\nHourLayout = dir\nEnabled = true",
+		1,
+	)
+
+	_, _, err := mapConfigForTest(t, input)
+	if err == nil {
+		t.Fatal("removed HourLayout key: expected error")
+	}
+
+	if !errors.Is(err, ErrUnknownKey) {
+		t.Errorf("error = %v, want ErrUnknownKey", err)
+	}
+
+	if !strings.Contains(strings.ToUpper(err.Error()), "HOURLAYOUT") {
+		t.Errorf("error does not identify HourLayout: %v", err)
+	}
+}
+
+// TestMapConfig_RemovedHourTokenIsRejected 는 제거된 (HH) 토큰이 남은
+// 옛 config 가 로드 단계에서 거부되는지 본다 (PATH_DESIGN v3 §1-3,
+// §7.1 T6). pathpl 이 (HH) 지원을 삭제했으므로 "알 수 없는 토큰"으로
+// 걸린다 — 조용히 자정 폴더만 스캔하는 오동작 대신 시작에서 선다.
+func TestMapConfig_RemovedHourTokenIsRejected(t *testing.T) {
+	input := strings.Replace(
+		validINIForLoadTest(),
+		"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/",
+		"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/(HH)/",
+		1,
+	)
+
+	_, _, err := mapConfigForTest(t, input)
+	if err == nil {
+		t.Fatal("removed (HH) token: expected error")
+	}
+
+	if !strings.Contains(err.Error(), "HH") {
+		t.Errorf("error does not mention HH: %v", err)
 	}
 }
 

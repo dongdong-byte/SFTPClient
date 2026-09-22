@@ -313,8 +313,6 @@ func xferRunner(db *ledger.DB) *Runner {
 func xferJobs(t *testing.T) []CategoryJob {
 	t.Helper()
 
-	// (HH) 는 제거된 토큰이다 (PATH_DESIGN v3 §1). 하위 시각 폴더는
-	// 재귀가 흡수하므로 로컬·원격 모두 (DOY) 까지만 적는다.
 	remote, err := pathpl.Parse("out/(YYYY)/(DOY)/")
 	if err != nil {
 		t.Fatalf("pathpl.Parse() 실패: %v", err)

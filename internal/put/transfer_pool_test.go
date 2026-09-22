@@ -199,7 +199,7 @@ func TestGroupByDirectoryPreservesOrder(t *testing.T) {
 // TestGroupByDirectoryFlatRemoteCollapsesHours 는 RemotePath 에 (HH) 가
 // 없으면 서로 다른 시각의 Hourly 파일이 한 원격 디렉터리로 묶이는지 본다.
 //
-// 서울시 Hourly 소스(dir) → /RNX2/ (flat) 조합이다.
+// 서울시 Hourly 소스(시각 하위 폴더는 재귀가 수집) → /RNX2/ (flat) 조합이다.
 // 파일명 세션 문자(f=5시, g=6시)가 달라 같은 폴더에서도 충돌하지 않는다.
 func TestGroupByDirectoryFlatRemoteCollapsesHours(t *testing.T) {
 	r := poolRunner(nil, 4)
@@ -209,7 +209,7 @@ func TestGroupByDirectoryFlatRemoteCollapsesHours(t *testing.T) {
 		t.Fatalf("pathpl.Parse(remote): %v", err)
 	}
 
-	local, err := pathpl.Parse(`Z:\RINEX-V2-H\(YYYY)\(DOY)\(HH)\`)
+	local, err := pathpl.Parse(`Z:\RINEX-V2-H\(YYYY)\(DOY)\`)
 	if err != nil {
 		t.Fatalf("pathpl.Parse(local): %v", err)
 	}

@@ -31,14 +31,14 @@ func TestExpandRealPaths(t *testing.T) {
 			want: `D:\RINEX-V3-D\2026\182\`,
 		},
 		{
-			name: "RINEX3 Hourly",
-			tmpl: `D:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\`,
-			want: `D:\RINEX-V3-H\2026\182\00\`,
+			name: "RINEX3 Hourly (날짜 폴더까지, 아래는 재귀)",
+			tmpl: `D:\RINEX-V3-H\(YYYY)\(DOY)\`,
+			want: `D:\RINEX-V3-H\2026\182\`,
 		},
 		{
 			name: "원격 POSIX 경로",
-			tmpl: "/RNXOutgoing/(YYYY)/(DOY)/(HH)/",
-			want: "/RNXOutgoing/2026/182/00/",
+			tmpl: "/RNXOutgoing/(YYYY)/(DOY)/",
+			want: "/RNXOutgoing/2026/182/",
 		},
 		{
 			name: "토큰 없는 flat RemotePath",
@@ -92,7 +92,6 @@ func TestExpandTokens(t *testing.T) {
 		{TokenDOY, "005"}, // 0채움
 		{TokenMM, "01"},
 		{TokenDD, "05"},
-		{TokenHH, "09"},
 	}
 
 	for _, tt := range tests {
@@ -141,10 +140,10 @@ func TestExpandDOYBoundaries(t *testing.T) {
 // KST 기준으로 확장하면 하루 중 9시간(00:00~08:59 KST)이 전날 UTC 에 속해
 // 엉뚱한 DOY 디렉터리를 보게 된다. 오류가 나지 않고 조용히 틀린다.
 //
-// 아래 시각은 연·월·일·시가 모두 달라지는 지점이라
-// .UTC() 를 빠뜨리면 세 토큰이 동시에 틀린다.
+// 아래 시각은 연·일이 함께 달라지는 지점이라
+// .UTC() 를 빠뜨리면 두 토큰이 동시에 틀린다.
 func TestExpandForcesUTC(t *testing.T) {
-	tpl, err := Parse("(YYYY)/(DOY)/(HH)")
+	tpl, err := Parse("(YYYY)/(DOY)")
 	if err != nil {
 		t.Fatalf("Parse 실패: %v", err)
 	}
@@ -154,7 +153,7 @@ func TestExpandForcesUTC(t *testing.T) {
 	// 2026-07-01 08:30 KST == 2026-06-30 23:30 UTC (DOY 181)
 	local := time.Date(2026, time.July, 1, 8, 30, 0, 0, kst)
 
-	const want = "2026/181/23"
+	const want = "2026/181"
 
 	if got := tpl.Expand(local); got != want {
 		t.Errorf("Expand(KST) = %q, want %q (UTC 로 해석되지 않았다)", got, want)
@@ -170,6 +169,12 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{name: "공백만", in: "   "},
 		{name: "알 수 없는 토큰", in: `D:\(SITE)\`},
 		{name: "오타 토큰", in: `D:\(DOI)\`},
+
+		// (HH) 는 재귀 Scan 도입으로 제거된 토큰이다 (PATH_DESIGN v3 §1).
+		// 옛 config 가 새 바이너리를 만나면 이 거부로 시작이 선다 —
+		// 별도 거부 코드가 아니라 지원 삭제가 만든 동작이며,
+		// 이 케이스가 그 동작을 계약으로 고정한다 (v3 §7.1 T6).
+		{name: "제거된 토큰 (HH)", in: `D:\(YYYY)\(DOY)\(HH)\`},
 		{name: "소문자 토큰", in: `D:\(yyyy)\`},
 		{name: "앞뒤 공백이 섞인 토큰", in: `D:\( YYYY )\`},
 		{name: "닫히지 않은 괄호", in: `D:\(YYYY\`},
@@ -234,9 +239,8 @@ func TestParseTrimsSurroundingSpace(t *testing.T) {
 	}
 }
 
-// HasToken 은 템플릿에 토큰이 있는지만 답한다. Hourly LocalPath 의
-// (HH) 필수 여부는 과도기 HourLayout 규칙이며 config 가 판정한다
-// (GUIDELINES 9.3). Daily 경로의 (HH) 금지는 유지한다.
+// HasToken 은 템플릿에 토큰이 있는지만 답한다.
+// 토큰 존재에 의미를 부여하는 것은 호출자다.
 func TestHasToken(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -245,16 +249,10 @@ func TestHasToken(t *testing.T) {
 		want  bool
 	}{
 		{
-			name:  "Hourly 경로에 HH 가 있다",
-			tmpl:  `D:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\`,
-			token: TokenHH,
-			want:  true,
-		},
-		{
-			name:  "Daily 경로에는 HH 가 없다",
+			name:  "DOY 확인",
 			tmpl:  `D:\RINEX-V3-D\(YYYY)\(DOY)\`,
-			token: TokenHH,
-			want:  false,
+			token: TokenDOY,
+			want:  true,
 		},
 		{
 			name:  "YYYY 확인",
@@ -285,7 +283,7 @@ func TestHasToken(t *testing.T) {
 }
 
 func TestTemplateString(t *testing.T) {
-	const in = `D:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\`
+	const in = `D:\RINEX-V3-H\(YYYY)\(DOY)\`
 
 	tpl, err := Parse(in)
 	if err != nil {
@@ -329,7 +327,7 @@ func TestExpandAdjacentTokens(t *testing.T) {
 // Deep Scan 은 같은 템플릿을 Category 당 720회 확장한다.
 // 확장이 Template 의 상태를 바꾸지 않는지 확인한다.
 func TestExpandIsRepeatable(t *testing.T) {
-	tpl, err := Parse(`D:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\`)
+	tpl, err := Parse(`D:\RINEX-V3-H\(YYYY)\(DOY)\`)
 	if err != nil {
 		t.Fatalf("Parse 실패: %v", err)
 	}
@@ -353,7 +351,7 @@ func TestExpandIsRepeatable(t *testing.T) {
 //
 //	go test ./internal/pathpl/ -race
 func TestExpandIsConcurrentSafe(t *testing.T) {
-	tpl, err := Parse(`D:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\`)
+	tpl, err := Parse(`D:\RINEX-V3-H\(YYYY)\(DOY)\`)
 	if err != nil {
 		t.Fatalf("Parse 실패: %v", err)
 	}

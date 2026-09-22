@@ -69,8 +69,8 @@ func (c Category) String() string {
 
 // IsHourly 는 이 Category 가 시간 단위 파일인지 답한다.
 //
-// Scanner 가 (HH) 디렉터리를 0~23 순회할지 결정하는 데 사용한다.
-// Daily 면 그 레벨이 존재하지 않으므로 순회하지 않는다.
+// 세트 게이트·검증 등 주기 구분이 필요한 판정에 사용한다.
+// Daily Category 에는 false 를 돌려준다.
 func (c Category) IsHourly() bool {
 	switch c {
 	case CategoryRINEX2Hourly,

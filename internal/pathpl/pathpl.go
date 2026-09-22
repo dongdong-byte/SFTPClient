@@ -3,11 +3,11 @@
 // 기관별 폴더 구조 차이를 Core 코드의 기관명 조건문이 아니라 설정으로
 // 처리하기 위한 장치이다. (설계안 10)
 //
-//	D:\RINEX-V3-H\(YYYY)\(DOY)\(HH)\  +  2026-07-01 00:00 UTC
-//	  → D:\RINEX-V3-H\2026\182\00\
+//	D:\RINEX-V3-H\(YYYY)\(DOY)\  +  2026-07-01 00:00 UTC
+//	  → D:\RINEX-V3-H\2026\182\
 //
 // 입출력만 있는 순수 함수이다. 디렉터리를 읽지 않고 날짜를 순회하지도 않는다.
-// 어떤 시각들을 확장할지는 호출자(scan)가 정한다.
+// 어떤 날짜 범위를 확장할지는 호출자(scan)가 정한다.
 // PUT 과 DOWNLOAD 가 같은 코드를 공유한다.
 package pathpl
 
@@ -23,13 +23,18 @@ import (
 // (SITE) 는 포함하지 않는다. 실제 기관 경로가 관측소별 디렉터리를 두지 않고
 // 한 디렉터리에 여러 관측소 파일을 함께 보관하기 때문이다.
 // 관측소별 조회는 file_name 이 관측소 ID 로 시작하므로 SQL 에서 처리한다.
+//
+// (HH) 는 재귀 Scan 도입으로 제거했다 (PATH_DESIGN v3 §1). 시각별 하위
+// 디렉터리는 scan 이 재귀로 흡수하고, 시각 값은 어느 경로 계산에도
+// 쓰이지 않는다. config 에 남은 (HH) 가 "알 수 없는 토큰"으로 로드
+// 거부되는 것이 설계된 동작이다 — 거부 검증을 새로 만들지 않고 지원
+// 코드 삭제로 달성했다(§2-E). 재도입하지 않는다.
 const (
 	TokenYYYY = "YYYY" // 4자리 연도.        2026
 	TokenYY   = "YY"   // 2자리 연도.        26
 	TokenDOY  = "DOY"  // 3자리 연중일수.    182, 001
 	TokenMM   = "MM"   // 2자리 월.          07
 	TokenDD   = "DD"   // 2자리 일.          01
-	TokenHH   = "HH"   // 2자리 시.          00
 )
 
 // ErrInvalidTemplate 은 템플릿 문법이 잘못되었을 때 반환된다.
@@ -133,7 +138,7 @@ func checkLiteral(literal, whole string) error {
 
 func isKnownToken(name string) bool {
 	switch name {
-	case TokenYYYY, TokenYY, TokenDOY, TokenMM, TokenDD, TokenHH:
+	case TokenYYYY, TokenYY, TokenDOY, TokenMM, TokenDD:
 		return true
 	default:
 		return false
@@ -181,8 +186,6 @@ func tokenValue(token string, when time.Time) string {
 		return fmt.Sprintf("%02d", int(when.Month()))
 	case TokenDD:
 		return fmt.Sprintf("%02d", when.Day())
-	case TokenHH:
-		return fmt.Sprintf("%02d", when.Hour())
 	default:
 		// Parse 가 이미 걸렀으므로 도달하지 않는다.
 		return ""
@@ -191,12 +194,8 @@ func tokenValue(token string, when time.Time) string {
 
 // HasToken 은 템플릿에 해당 토큰이 있는지 답한다.
 //
-// pathpl 은 Category 를 알지 못한다. (HH) 필수 여부는 config 가 세운다.
-// 현재 코드는 과도기다. HourLayout=dir 인 Hourly LocalPath 에 (HH) 가
-// 빠지면 0시부터 23시까지가 같은 디렉터리로 확장되어 같은 곳을 24번
-// 읽고, 오류 없이 일부 파일만 보일 수 있다. 이 검증을 재강화하지 말고
-// MVP2에서 HourLayout 과 함께 범위 제한 재귀 탐색으로 교체한다
-// (GUIDELINES 9.3).
+// pathpl 은 Category 를 알지 못한다. 토큰 존재에 의미를 부여하는 것은
+// 호출자다.
 func (t *Template) HasToken(token string) bool {
 	for _, seg := range t.segments {
 		if seg.token == token {

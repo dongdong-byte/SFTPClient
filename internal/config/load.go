@@ -219,8 +219,8 @@ func settingID(section, key string) string {
 // 호출 리더는 기본값만 반환하므로 복호화 오류 뒤에
 // "not an integer" 같은 2차 오류가 중복으로 쌓이지 않는다.
 //
-// hourLayout 과 optionalIntVal 은 선택 키이므로 이 통로를 사용하지 않는다.
-// 키 부재가 정상이며 각각 Default 를 사용해야 하기 때문이다.
+// optionalIntVal 은 선택 키이므로 이 통로를 사용하지 않는다.
+// 키 부재가 정상이며 기본값을 사용해야 하기 때문이다.
 // 현재 보안 요구 대상인 Host/User/Port에는 영향을 주지 않는다.
 func (l *loader) value(s *iniSection, key string) (string, bool) {
 	v, ok := s.get(key)
@@ -416,54 +416,14 @@ func (l *loader) template(s *iniSection, key string) *pathpl.Template {
 	return tpl
 }
 
-// hourLayout 은 HourLayout 값을 읽는다. Hourly 섹션에서만 호출한다.
-//
-// 과도기 키다. MVP2에서 제거한다. 선택 키이며 누락 시 absent 를 호출하지 않고
-// DefaultHourLayout(dir) 을 반환한다. 기존 동작(시각 24회 순회)을 유지한다.
-//
-// 이 리더는 l.value 를 거치지 않는다. 키 부재가 정상인 선택값이므로
-// 필수 값용 value() 를 사용하면 누락 오류가 발생하기 때문이다.
-//
-// 현재 암호화 요구 대상은 [PUT.SFTP] Host/User/Port 이므로
-// HourLayout 에 보호 값 해석을 적용하지 않는다.
-//
-// flat 은 항상 명시해야 하므로 생략이 조용히 평면으로 바뀌지 않는다.
-// 평면 배포에서 이 키를 빠뜨리면 LocalPath 에 (HH) 가 없어
-// validate 가 "dir 인데 (HH) 없음" 으로 거부한다.
-//
-// 키가 있는데 값이 dir/flat 이 아니면(빈 값 포함) ErrBadValue 다.
-func (l *loader) hourLayout(s *iniSection, key string) HourLayout {
-	v, ok := s.get(key)
-	if !ok {
-		return DefaultHourLayout
-	}
-
-	h, err := ParseHourLayout(v)
-	if err != nil {
-		l.addf(
-			"%w: line %d: [%s] %s: %v",
-			ErrBadValue,
-			s.lineOf(key),
-			s.name,
-			key,
-			err,
-		)
-
-		return DefaultHourLayout
-	}
-
-	return h
-}
-
 // optionalIntVal 은 선택 정수 키를 읽는다. 키 부재가 정상인 값 전용이며
-// 누락 시 absent 를 호출하지 않고 def 를 반환한다 (hourLayout 전례).
+// 누락 시 absent 를 호출하지 않고 def 를 반환한다.
 //
 // intVal 을 쓰면 안 되는 이유: intVal 은 필수 키용이라 부재를 오류로
 // 기록하고 0 을 돌려준다. 부재를 기본값으로 살려야 하는 키에 intVal 을
 // 쓰면 "키 없음 = 0" 오독이 조용히 성립한다 (UNIT2 설계 v3 §3.1 함정).
 //
-// 보호 값 해석(l.prot)은 거치지 않는다 — 정수 키는 암호화 대상이 아니다
-// (hourLayout 과 같은 근거).
+// 보호 값 해석(l.prot)은 거치지 않는다 — 정수 키는 암호화 대상이 아니다.
 //
 // 키가 있는데 정수가 아니면 ErrBadValue 를 남기고 def 를 반환한다.
 // 그 def 는 오류 누적 중의 자리값일 뿐이며, mapConfig 가 오류를
@@ -695,14 +655,6 @@ func (l *loader) categories() []CategoryConfig {
 			RemotePath: l.template(s, "RemotePath"),
 		}
 
-		// HourLayout 은 Hourly 섹션에서만 읽는다(선택 키, 기본 dir).
-		// Daily 는 배치 개념이 없으므로 읽지 않으며 zero-value("") 로 둔다.
-		// Daily 섹션의 HourLayout 키는 knownKeys 에서 허용하지 않으므로
-		// 적으면 ErrUnknownKey 로 거부된다.
-		if cat.IsHourly() {
-			cc.HourLayout = l.hourLayout(s, "HourLayout")
-		}
-
 		out = append(out, cc)
 	}
 
@@ -890,13 +842,9 @@ func knownKeys() (map[string][]string, error) {
 			"RemotePath",
 		}
 
-		// HourLayout 은 Hourly 섹션에서만 의미가 있다.
-		// Daily 섹션에 적으면 ErrUnknownKey 로 거부되어,
-		// "Daily 에 배치를 지정하려 한" 혼동을 시작 시 드러낸다.
-		if cat.IsHourly() {
-			keys = append(keys, "HourLayout")
-		}
-
+		// HourLayout 은 제거된 키다 (PATH_DESIGN v3 §1). knownKeys 에서
+		// 빠졌으므로 옛 config 에 남아 있으면 ErrUnknownKey 로 시작이
+		// 거부된다 — 별도 거부 코드 없이 기존 장치가 막는다(§2-E).
 		m["PUT."+cat.String()] = keys
 	}
 

@@ -52,6 +52,11 @@ func scanOneDay(t *testing.T, root string) ([]Batch, Result) {
 	return batches, result
 }
 
+// isDateDir 는 fake 경로가 날짜 디렉터리(/data/YYYY/DOY)인지 본다.
+func isDateDir(dir string) bool {
+	return strings.Count(dir, "/") == 3
+}
+
 func batchNames(b Batch) []string {
 	names := make([]string, 0, len(b.Entries))
 	for _, e := range b.Entries {

@@ -3,10 +3,8 @@ package scan
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +16,10 @@ import (
 //
 // calls 에 실제 나열 요청 순서를 보관한다.
 // fn 이 nil 이면 빈 디렉터리로 성공한다.
+//
+// 주의: 재귀 Scanner 는 IsDir Entry 를 만나면 그 하위 경로로 다시
+// List 를 호출한다. fn 이 경로와 무관하게 폴더 Entry 를 반환하면
+// 무한 재귀가 되므로, fn 은 반드시 dir 별로 응답을 나눠야 한다.
 type fakeLister struct {
 	calls []string
 	fn    func(ctx context.Context, dir string) ([]Entry, error)
@@ -34,6 +36,49 @@ func (f *fakeLister) List(
 	}
 
 	return f.fn(ctx, dir)
+}
+
+// treeLister 는 경로 → 항목 표로 파일 트리를 흉내 내는 DirLister 이다.
+//
+// 표에 없는 경로는 fs.ErrNotExist 다 — 실제 파일시스템과 같다.
+type treeLister struct {
+	calls []string
+	tree  map[string][]Entry
+	errs  map[string]error
+}
+
+func (f *treeLister) List(
+	_ context.Context,
+	dir string,
+) ([]Entry, error) {
+	f.calls = append(f.calls, dir)
+
+	if err, ok := f.errs[dir]; ok {
+		return nil, err
+	}
+
+	entries, ok := f.tree[dir]
+	if !ok {
+		return nil, fs.ErrNotExist
+	}
+
+	return entries, nil
+}
+
+func file(name string, size int64) Entry {
+	return Entry{
+		Name:  name,
+		Size:  size,
+		MTime: utcDate(2026, time.January, 1),
+	}
+}
+
+func dir(name string) Entry {
+	return Entry{
+		Name:  name,
+		IsDir: true,
+		Type:  fs.ModeDir,
+	}
 }
 
 func mustScanTemplate(t *testing.T, value string) *pathpl.Template {
@@ -121,19 +166,13 @@ func TestRangeDays(t *testing.T) {
 	}
 }
 
+// TestScannerScan_DailyTwoDays 는 평면 날짜 디렉터리(지리원형)가
+// 기존과 동일하게 날짜당 1회 나열되는지 본다 (v3 §7.1 T2).
 func TestScannerScan_DailyTwoDays(t *testing.T) {
-	lister := &fakeLister{
-		fn: func(
-			ctx context.Context,
-			dir string,
-		) ([]Entry, error) {
-			return []Entry{
-				{
-					Name:  "sample.rnx.gz",
-					Size:  100,
-					MTime: utcDate(2026, time.January, 1),
-				},
-			}, nil
+	lister := &treeLister{
+		tree: map[string][]Entry{
+			"/data/2026/001": {file("suwn0010.26o.gz", 100)},
+			"/data/2026/002": {file("suwn0020.26o.gz", 100)},
 		},
 	}
 
@@ -225,47 +264,29 @@ func TestScannerScan_DailyTwoDays(t *testing.T) {
 	}
 }
 
-// hourSubdirs 는 날짜 디렉터리 아래 00~23 시각 폴더 항목을 만든다
-// (서울시형 원본 배치).
-func hourSubdirs() []Entry {
-	subdirs := make([]Entry, 0, 24)
+// TestScannerScan_RecursesBelowDateDirectory 는 서울시형(날짜 아래
+// (HH) 폴더)에서 재귀가 전부 수집하는지 본다 (v3 §7.1 T1).
+//
+// 폴더 Entry 는 Batch 로 넘어오지 않아야 하고(§4), 순회는
+// "현재 폴더 파일 먼저 → 하위 폴더 이름 오름차순"(§3.2)이어야 한다.
+func TestScannerScan_RecursesBelowDateDirectory(t *testing.T) {
+	root := "/data/2026/001"
 
-	for h := 0; h < 24; h++ {
-		subdirs = append(subdirs, Entry{
-			Name:  fmt.Sprintf("%02d", h),
-			IsDir: true,
-			Type:  fs.ModeDir,
-		})
-	}
-
-	return subdirs
-}
-
-// isDateDir 는 fake 경로가 날짜 디렉터리(/data/YYYY/DOY)인지 본다.
-func isDateDir(dir string) bool {
-	return strings.Count(dir, "/") == 3
-}
-
-// TestScannerScan_HourlySubdirsAreRecursed 는 (HH) 없이 (DOY) 까지 적은
-// 템플릿에서 시각 하위 폴더가 재귀로 수집되는지 본다 (PATH_DESIGN v3 §1).
-// 날짜당 나열 = 날짜 폴더 1 + 시각 폴더 24.
-func TestScannerScan_HourlySubdirsAreRecursed(t *testing.T) {
-	lister := &fakeLister{
-		fn: func(
-			ctx context.Context,
-			dir string,
-		) ([]Entry, error) {
-			if isDateDir(dir) {
-				return hourSubdirs(), nil
-			}
-
-			return []Entry{
-				{
-					Name:  "hourly.rnx.gz",
-					Size:  10,
-					MTime: time.Now(),
-				},
-			}, nil
+	lister := &treeLister{
+		tree: map[string][]Entry{
+			root: {
+				// os.ReadDir 는 이름순으로 준다: 폴더 00, 07 이
+				// 평면 파일보다 앞에 온다. 그래도 Batch 는
+				// 파일 먼저다 (§3.2).
+				dir("00"),
+				dir("07"),
+				file("flat001a.26o.gz", 10),
+			},
+			root + "/00": {file("aaaa001a.26o.gz", 20)},
+			root + "/07": {
+				file("bbbb001h.26o.gz", 30),
+				file("cccc001h.26o.gz", 40),
+			},
 		},
 	}
 
@@ -275,146 +296,361 @@ func TestScannerScan_HourlySubdirsAreRecursed(t *testing.T) {
 
 	result, err := scanner.Scan(
 		context.Background(),
-		domain.CategoryRINEX3Hourly,
-		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
-		Range{
-			From: utcDate(2026, time.January, 1),
-			To:   utcDate(2026, time.January, 2),
-		},
-		func(batch Batch) error {
-			batches = append(batches, batch)
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("Scan() unexpected error: %v", err)
-	}
-
-	if len(lister.calls) != 50 {
-		t.Fatalf("List calls = %d, want 50 (2일 × (1 + 24))", len(lister.calls))
-	}
-
-	tests := []struct {
-		index int
-		want  string
-	}{
-		{0, "/data/2026/001"},
-		{1, "/data/2026/001/00"},
-		{24, "/data/2026/001/23"},
-		{25, "/data/2026/002"},
-		{49, "/data/2026/002/23"},
-	}
-
-	for _, tt := range tests {
-		if got := lister.calls[tt.index]; got != tt.want {
-			t.Errorf("calls[%d] = %q, want %q", tt.index, got, tt.want)
-		}
-	}
-
-	if result.Dirs != 50 || result.Files != 48 {
-		t.Errorf(
-			"result = {Dirs:%d Files:%d}, want {Dirs:50 Files:48}",
-			result.Dirs,
-			result.Files,
-		)
-	}
-
-	if len(batches) != 48 {
-		t.Fatalf("batches = %d, want 48", len(batches))
-	}
-
-	// 하위 폴더 Batch 도 날짜 00:00 UTC 를 갖는다 (PATH_DESIGN v3 §1.2).
-	if !batches[47].When.Equal(utcDate(2026, time.January, 2)) {
-		t.Errorf("last When = %v, want 2026-01-02 00:00 UTC", batches[47].When)
-	}
-}
-
-func TestScannerScan_MissingDirectoryIsNormal(t *testing.T) {
-	lister := &fakeLister{
-		fn: func(
-			ctx context.Context,
-			dir string,
-		) ([]Entry, error) {
-			if dir == "/data/2026/001" {
-				return nil, fs.ErrNotExist
-			}
-
-			return nil, nil
-		},
-	}
-
-	scanner := New(lister)
-
-	result, err := scanner.Scan(
-		context.Background(),
-		domain.CategoryRINEX3Hourly,
-		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
-		Range{
-			From: utcDate(2026, time.January, 1),
-			To:   utcDate(2026, time.January, 2),
-		},
-		func(batch Batch) error {
-			t.Fatal("empty directories must not call visit")
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("Scan() unexpected error: %v", err)
-	}
-
-	if len(lister.calls) != 2 {
-		t.Errorf("List calls = %d, want 2", len(lister.calls))
-	}
-
-	if result.Dirs != 1 {
-		t.Errorf("Dirs = %d, want 1", result.Dirs)
-	}
-
-	if result.Missing != 1 {
-		t.Errorf("Missing = %d, want 1", result.Missing)
-	}
-
-	if result.Errs != 0 {
-		t.Errorf("Errs = %d, want 0", result.Errs)
-	}
-}
-
-func TestScannerScan_ListFailureIsCollectedAndScanContinues(t *testing.T) {
-	permissionErr := errors.New("permission denied")
-	ioErr := errors.New("network read error")
-
-	lister := &fakeLister{
-		fn: func(
-			ctx context.Context,
-			dir string,
-		) ([]Entry, error) {
-			switch {
-			case isDateDir(dir):
-				return hourSubdirs(), nil
-
-			case dir == "/data/2026/001/03":
-				return nil, permissionErr
-
-			case dir == "/data/2026/001/17":
-				return nil, ioErr
-
-			default:
-				return nil, nil
-			}
-		},
-	}
-
-	scanner := New(lister)
-
-	result, err := scanner.Scan(
-		context.Background(),
 		domain.CategoryRINEX2Hourly,
 		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
 		Range{
 			From: utcDate(2026, time.January, 1),
 			To:   utcDate(2026, time.January, 1),
 		},
-		func(batch Batch) error {
+		func(b Batch) error {
+			batches = append(batches, b)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("Scan() unexpected error: %v", err)
+	}
+
+	wantCalls := []string{
+		root,
+		root + "/00",
+		root + "/07",
+	}
+
+	if !reflect.DeepEqual(lister.calls, wantCalls) {
+		t.Errorf(
+			"List calls = %#v, want %#v",
+			lister.calls,
+			wantCalls,
+		)
+	}
+
+	if result.Dirs != 3 {
+		t.Errorf("Dirs = %d, want 3", result.Dirs)
+	}
+
+	// 폴더 2개는 Files 에 들어가지 않는다.
+	if result.Files != 4 {
+		t.Errorf("Files = %d, want 4", result.Files)
+	}
+
+	if len(batches) != 3 {
+		t.Fatalf("batches = %d, want 3", len(batches))
+	}
+
+	// 파일 먼저: 첫 Batch 는 날짜 폴더의 평면 파일이다.
+	if batches[0].Dir != root {
+		t.Errorf(
+			"batches[0].Dir = %q, want %q (파일 먼저)",
+			batches[0].Dir,
+			root,
+		)
+	}
+
+	if len(batches[0].Entries) != 1 ||
+		batches[0].Entries[0].Name != "flat001a.26o.gz" {
+		t.Errorf(
+			"batches[0].Entries = %#v, want [flat001a.26o.gz]",
+			batches[0].Entries,
+		)
+	}
+
+	// 하위 폴더는 이름 오름차순이다.
+	if batches[1].Dir != root+"/00" || batches[2].Dir != root+"/07" {
+		t.Errorf(
+			"subdir batch order = %q, %q; want 00 then 07",
+			batches[1].Dir,
+			batches[2].Dir,
+		)
+	}
+
+	// 폴더 Entry 는 어느 Batch 에도 없다 (§4).
+	for _, b := range batches {
+		for _, e := range b.Entries {
+			if e.IsDir {
+				t.Errorf(
+					"batch %q delivered dir entry %q",
+					b.Dir,
+					e.Name,
+				)
+			}
+		}
+
+		// 하위 Batch 의 When 도 날짜 자정이다.
+		if !b.When.Equal(utcDate(2026, time.January, 1)) {
+			t.Errorf(
+				"batch %q When = %v, want day 00:00 UTC",
+				b.Dir,
+				b.When,
+			)
+		}
+	}
+}
+
+// TestScannerScan_RecursesArbitraryDepth 는 더 깊은 임의 폴더
+// (지질자원연형 SITE/주기 폴더 등)도 전부 수집하는지 본다 (v3 §7.1 T4).
+//
+// 파일이 없는 중간 폴더는 visit 되지 않지만 Dirs 에는 집계된다.
+func TestScannerScan_RecursesArbitraryDepth(t *testing.T) {
+	root := "/gnssdata/KIGAM/2026/001"
+
+	lister := &treeLister{
+		tree: map[string][]Entry{
+			root:           {dir("HDBG")},
+			root + "/HDBG": {dir("1s1h"), dir("30s1d")},
+			root + "/HDBG/1s1h": {
+				file("hdbg001a.26o.gz", 10),
+			},
+			root + "/HDBG/30s1d": {
+				file("hdbg0010.26o.gz", 20),
+			},
+		},
+	}
+
+	scanner := New(lister)
+
+	var batches []Batch
+
+	result, err := scanner.Scan(
+		context.Background(),
+		domain.CategoryRINEX2Hourly,
+		mustScanTemplate(t, "/gnssdata/KIGAM/(YYYY)/(DOY)"),
+		Range{
+			From: utcDate(2026, time.January, 1),
+			To:   utcDate(2026, time.January, 1),
+		},
+		func(b Batch) error {
+			batches = append(batches, b)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("Scan() unexpected error: %v", err)
+	}
+
+	wantCalls := []string{
+		root,
+		root + "/HDBG",
+		root + "/HDBG/1s1h",
+		root + "/HDBG/30s1d",
+	}
+
+	if !reflect.DeepEqual(lister.calls, wantCalls) {
+		t.Errorf(
+			"List calls = %#v, want %#v",
+			lister.calls,
+			wantCalls,
+		)
+	}
+
+	if result.Dirs != 4 {
+		t.Errorf("Dirs = %d, want 4", result.Dirs)
+	}
+
+	if result.Files != 2 {
+		t.Errorf("Files = %d, want 2", result.Files)
+	}
+
+	// 파일 없는 폴더(날짜 폴더, HDBG)는 visit 되지 않는다.
+	if len(batches) != 2 {
+		t.Fatalf("batches = %d, want 2", len(batches))
+	}
+
+	if batches[0].Dir != root+"/HDBG/1s1h" ||
+		batches[1].Dir != root+"/HDBG/30s1d" {
+		t.Errorf(
+			"batch dirs = %q, %q; want 1s1h then 30s1d",
+			batches[0].Dir,
+			batches[1].Dir,
+		)
+	}
+}
+
+// TestScannerScan_IrregularEntriesSkippedAndCounted 는 링크·junction 등
+// 비정규 항목이 후보로도, 하강 대상으로도 취급되지 않고 집계만
+// 되는지 본다 (v3 §5, §7.1 T7 의 Scanner 몫).
+func TestScannerScan_IrregularEntriesSkippedAndCounted(t *testing.T) {
+	root := "/data/2026/001"
+
+	lister := &treeLister{
+		tree: map[string][]Entry{
+			root: {
+				file("suwn0010.26o.gz", 10),
+				{
+					Name: "link-to-archive",
+					Type: fs.ModeSymlink,
+				},
+				{
+					Name: "junction",
+					Type: fs.ModeIrregular,
+				},
+			},
+		},
+	}
+
+	scanner := New(lister)
+
+	var batches []Batch
+
+	result, err := scanner.Scan(
+		context.Background(),
+		domain.CategoryRINEX2Daily,
+		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
+		Range{
+			From: utcDate(2026, time.January, 1),
+			To:   utcDate(2026, time.January, 1),
+		},
+		func(b Batch) error {
+			batches = append(batches, b)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("Scan() unexpected error: %v", err)
+	}
+
+	// 링크로 하강하지 않는다: List 호출은 날짜 폴더 1회뿐이다.
+	if len(lister.calls) != 1 {
+		t.Errorf(
+			"List calls = %#v, want [%s] only",
+			lister.calls,
+			root,
+		)
+	}
+
+	if len(batches) != 1 || len(batches[0].Entries) != 1 {
+		t.Fatalf(
+			"batches = %#v, want 1 batch with 1 regular file",
+			batches,
+		)
+	}
+
+	if batches[0].Entries[0].Name != "suwn0010.26o.gz" {
+		t.Errorf(
+			"delivered = %q, want suwn0010.26o.gz",
+			batches[0].Entries[0].Name,
+		)
+	}
+
+	if result.Files != 1 {
+		t.Errorf("Files = %d, want 1 (비정규 미포함)", result.Files)
+	}
+
+	if result.Irregular != 2 {
+		t.Errorf("Irregular = %d, want 2", result.Irregular)
+	}
+
+	if len(result.IrregularDetails) != 2 {
+		t.Fatalf(
+			"IrregularDetails = %#v, want 2",
+			result.IrregularDetails,
+		)
+	}
+
+	wantDetail := IrregularEntry{
+		Path: root + "/link-to-archive",
+		Type: fs.ModeSymlink,
+	}
+
+	if result.IrregularDetails[0] != wantDetail {
+		t.Errorf(
+			"IrregularDetails[0] = %#v, want %#v",
+			result.IrregularDetails[0],
+			wantDetail,
+		)
+	}
+}
+
+// TestScannerScan_MissingDirectoriesAreNormal 은 없는 날짜 폴더와,
+// 나열과 하강 사이에 사라진 하위 폴더가 모두 Missing 으로 집계되고
+// 순회가 계속되는지 본다.
+func TestScannerScan_MissingDirectoriesAreNormal(t *testing.T) {
+	day2 := "/data/2026/002"
+
+	lister := &treeLister{
+		tree: map[string][]Entry{
+			// 001 은 표에 없다 → fs.ErrNotExist (날짜 미생성).
+			day2: {
+				dir("gone"), // 표에 없다 → 하강 시 fs.ErrNotExist
+				file("suwn0020.26o.gz", 10),
+			},
+		},
+	}
+
+	scanner := New(lister)
+
+	visited := 0
+
+	result, err := scanner.Scan(
+		context.Background(),
+		domain.CategoryRINEX2Daily,
+		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
+		Range{
+			From: utcDate(2026, time.January, 1),
+			To:   utcDate(2026, time.January, 2),
+		},
+		func(b Batch) error {
+			visited++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("Scan() unexpected error: %v", err)
+	}
+
+	if result.Missing != 2 {
+		t.Errorf("Missing = %d, want 2 (날짜 1 + 하위 1)", result.Missing)
+	}
+
+	if result.Dirs != 1 {
+		t.Errorf("Dirs = %d, want 1", result.Dirs)
+	}
+
+	if result.Files != 1 {
+		t.Errorf("Files = %d, want 1", result.Files)
+	}
+
+	if visited != 1 {
+		t.Errorf("visit count = %d, want 1", visited)
+	}
+}
+
+// TestScannerScan_SubdirListFailureIsCollectedAndScanContinues 는
+// 하위 폴더 나열 실패가 형제 폴더와 나머지 순회를 막지 않는지 본다
+// (v3 §1-9: 하위 폴더도 DirError 계속).
+func TestScannerScan_SubdirListFailureIsCollectedAndScanContinues(t *testing.T) {
+	permissionErr := errors.New("permission denied")
+
+	root := "/data/2026/001"
+
+	lister := &treeLister{
+		tree: map[string][]Entry{
+			root: {
+				dir("aa"),
+				dir("bb"),
+				file("flat0010.26o.gz", 10),
+			},
+			root + "/bb": {file("suwn0010.26o.gz", 20)},
+		},
+		errs: map[string]error{
+			root + "/aa": permissionErr,
+		},
+	}
+
+	scanner := New(lister)
+
+	var batches []Batch
+
+	result, err := scanner.Scan(
+		context.Background(),
+		domain.CategoryRINEX2Daily,
+		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
+		Range{
+			From: utcDate(2026, time.January, 1),
+			To:   utcDate(2026, time.January, 1),
+		},
+		func(b Batch) error {
+			batches = append(batches, b)
 			return nil
 		},
 	)
@@ -425,46 +661,45 @@ func TestScannerScan_ListFailureIsCollectedAndScanContinues(t *testing.T) {
 		)
 	}
 
-	// 하위 폴더 두 곳이 실패해도 형제 폴더를 끝까지 간다.
-	if len(lister.calls) != 25 {
-		t.Errorf(
-			"List calls = %d, want 25",
-			len(lister.calls),
-		)
+	if result.Errs != 1 {
+		t.Errorf("Errs = %d, want 1", result.Errs)
 	}
 
-	// 날짜 폴더 1 + 성공한 시각 폴더 22.
-	if result.Dirs != 23 {
-		t.Errorf("Dirs = %d, want 23", result.Dirs)
-	}
-
-	if result.Errs != 2 {
-		t.Errorf("Errs = %d, want 2", result.Errs)
-	}
-
-	if len(result.Failures) != 2 {
+	if len(result.Failures) != 1 ||
+		!errors.Is(result.Failures[0], permissionErr) {
 		t.Fatalf(
-			"Failures = %d, want 2",
-			len(result.Failures),
+			"Failures = %#v, want [permission denied at aa]",
+			result.Failures,
 		)
 	}
 
-	if !errors.Is(result.Failures[0], permissionErr) {
+	if result.Failures[0].Dir != root+"/aa" {
 		t.Errorf(
-			"Failures[0] = %v, want permissionErr",
-			result.Failures[0],
+			"Failures[0].Dir = %q, want %q",
+			result.Failures[0].Dir,
+			root+"/aa",
 		)
 	}
 
-	if !errors.Is(result.Failures[1], ioErr) {
+	// 실패한 aa 뒤의 bb 는 정상 순회된다.
+	if len(batches) != 2 ||
+		batches[0].Dir != root ||
+		batches[1].Dir != root+"/bb" {
 		t.Errorf(
-			"Failures[1] = %v, want ioErr",
-			result.Failures[1],
+			"batches = %#v, want [root flat, bb]",
+			batches,
 		)
+	}
+
+	if result.Dirs != 2 {
+		t.Errorf("Dirs = %d, want 2 (root + bb)", result.Dirs)
 	}
 }
 
-func TestScannerScan_DoesNotFilterEntries(t *testing.T) {
+// TestScannerScan_EntriesAreDeliveredUnmodified 는 Batch 로 전달되는
+// 일반 파일 Entry 가 값 그대로인지 본다. 0바이트·.part 도 scan 은
+// 거르지 않는다 — 그 판정은 verify 의 것이다.
+func TestScannerScan_EntriesAreDeliveredUnmodified(t *testing.T) {
 	mtime := time.Date(
 		2026,
 		time.January,
@@ -481,40 +716,28 @@ func TestScannerScan_DoesNotFilterEntries(t *testing.T) {
 			Name:  "normal.rnx.gz",
 			Size:  100,
 			MTime: mtime,
-			IsDir: false,
 		},
 		{
 			Name:  "zero.rnx.gz",
 			Size:  0,
 			MTime: mtime,
-			IsDir: false,
 		},
 		{
 			Name:  "upload.part",
 			Size:  55,
 			MTime: mtime,
-			IsDir: false,
-		},
-		{
-			Name:  "subdir",
-			Size:  0,
-			MTime: mtime,
-			IsDir: true,
 		},
 	}
 
-	// 하위 폴더는 비어 있다. 모든 경로에 같은 항목을 돌려주면 "subdir"
-	// 아래에 다시 "subdir" 가 있는 무한 트리가 되어 재귀가 끝나지 않는다.
-	lister := &fakeLister{
-		fn: func(
-			ctx context.Context,
-			dir string,
-		) ([]Entry, error) {
-			if dir == "/data/2026/001" {
-				return wantEntries, nil
-			}
+	root := "/data/2026/001"
 
-			return nil, nil
+	entries := append([]Entry{}, wantEntries...)
+	entries = append(entries, dir("subdir"))
+
+	lister := &treeLister{
+		tree: map[string][]Entry{
+			root:             entries,
+			root + "/subdir": {},
 		},
 	}
 
@@ -541,22 +764,20 @@ func TestScannerScan_DoesNotFilterEntries(t *testing.T) {
 		t.Fatalf("Scan() unexpected error: %v", err)
 	}
 
+	// subdir 는 비어 있으므로 visit 는 날짜 폴더 1회뿐이다.
 	if visited != 1 {
 		t.Fatalf("visit count = %d, want 1", visited)
 	}
 
-	// 0바이트·.part 는 거르지 않는다(verify 의 책임). 재귀로 소비한
-	// 폴더만 Batch 에서 빠진다 (PATH_DESIGN v3 §4).
-	wantFiles := wantEntries[:3]
-
-	if !reflect.DeepEqual(got.Entries, wantFiles) {
+	if !reflect.DeepEqual(got.Entries, wantEntries) {
 		t.Errorf(
 			"Entries changed:\ngot  %#v\nwant %#v",
 			got.Entries,
-			wantFiles,
+			wantEntries,
 		)
 	}
 
+	// Files 는 Batch 로 전달한 일반 파일 수다. 폴더는 세지 않는다.
 	if result.Files != 3 {
 		t.Errorf(
 			"Files = %d, want 3",
@@ -564,8 +785,8 @@ func TestScannerScan_DoesNotFilterEntries(t *testing.T) {
 		)
 	}
 
-	if len(lister.calls) != 2 {
-		t.Errorf("List calls = %d, want 2 (날짜 폴더 + subdir)", len(lister.calls))
+	if result.Dirs != 2 {
+		t.Errorf("Dirs = %d, want 2 (빈 subdir 포함)", result.Dirs)
 	}
 }
 
@@ -609,28 +830,22 @@ func TestScannerScan_EmptyDirectoryDoesNotVisit(t *testing.T) {
 	}
 }
 
+// TestScannerScan_VisitErrorStopsImmediately 는 visit 오류가
+// 재귀 도중에도 즉시 전체 Scan 을 중단하는지 본다.
 func TestScannerScan_VisitErrorStopsImmediately(t *testing.T) {
 	visitErr := errors.New("ledger unavailable")
 
-	// 날짜 폴더와 시각 폴더 하나에 각각 파일이 있다. 두 번째 Batch
-	// (하위 폴더)에서 visit 오류가 나면 재귀 도중에도 즉시 멈춰야 한다.
-	lister := &fakeLister{
-		fn: func(
-			ctx context.Context,
-			dir string,
-		) ([]Entry, error) {
-			entries := []Entry{
-				{
-					Name: "sample.rnx.gz",
-					Size: 1,
-				},
-			}
+	root := "/data/2026/001"
 
-			if isDateDir(dir) {
-				entries = append(entries, hourSubdirs()...)
-			}
-
-			return entries, nil
+	lister := &treeLister{
+		tree: map[string][]Entry{
+			root: {
+				dir("aa"),
+				dir("bb"),
+				file("flat0010.26o.gz", 1),
+			},
+			root + "/aa": {file("aaaa0010.26o.gz", 1)},
+			root + "/bb": {file("bbbb0010.26o.gz", 1)},
 		},
 	}
 
@@ -640,7 +855,7 @@ func TestScannerScan_VisitErrorStopsImmediately(t *testing.T) {
 
 	result, err := scanner.Scan(
 		context.Background(),
-		domain.CategoryRINEX3Hourly,
+		domain.CategoryRINEX2Daily,
 		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
 		Range{
 			From: utcDate(2026, time.January, 1),
@@ -671,11 +886,13 @@ func TestScannerScan_VisitErrorStopsImmediately(t *testing.T) {
 		)
 	}
 
-	// 두 번째 callback 오류에서 즉시 중단해야 한다.
-	if len(lister.calls) != 2 {
+	// 두 번째 visit(aa) 오류에서 즉시 중단해야 한다. bb 는 나열되지 않는다.
+	wantCalls := []string{root, root + "/aa"}
+	if !reflect.DeepEqual(lister.calls, wantCalls) {
 		t.Errorf(
-			"List calls = %d, want 2",
-			len(lister.calls),
+			"List calls = %#v, want %#v",
+			lister.calls,
+			wantCalls,
 		)
 	}
 
@@ -739,11 +956,6 @@ func TestScannerScan_InvalidInput(t *testing.T) {
 	dailyTpl := mustScanTemplate(
 		t,
 		"/data/(YYYY)/(DOY)",
-	)
-
-	hourlyTpl := mustScanTemplate(
-		t,
-		"/data/(YYYY)/(DOY)/(HH)",
 	)
 
 	visit := func(Batch) error {
@@ -836,15 +1048,6 @@ func TestScannerScan_InvalidInput(t *testing.T) {
 			},
 			visit: visit,
 		},
-		{
-			name:     "Daily인데 HH 있음",
-			ctx:      context.Background(),
-			scanner:  New(&fakeLister{}),
-			category: domain.CategoryRINEX3Daily,
-			tpl:      hourlyTpl,
-			r:        validRange,
-			visit:    visit,
-		},
 	}
 
 	for _, tt := range tests {
@@ -871,23 +1074,18 @@ func TestScannerScan_InvalidInput(t *testing.T) {
 	}
 }
 
-// TestScannerScan_HourlyFlatMakesOneDirectoryPerDay 는 하위 폴더가 없는
-// Hourly 경로(지리원형 평면)에서 Scanner 가 날짜당 1회만 나열하고,
-// Batch.When 이 해당 날짜 00:00 UTC 인지 본다.
+// TestScannerScan_HourlyIsOneListPerDay 는 Hourly 도 날짜당 1회만
+// 나열하는지 본다. (HH) 계산이 사라졌으므로 이것이 유일한 Hourly
+// 순회 방식이다. 시각별 하위 폴더가 실제로 있으면 재귀가 줍는다.
 //
 // When 을 단언하는 이유: 전송 단계가 RemotePath.Expand(When) 에 이 값을
-// 쓴다. flat 원격에는 (HH) 가 없어 시각이 소비되지 않지만, 규약이
+// 쓴다. 표준 원격은 (HH) 가 없어 시각이 소비되지 않지만, 규약이
 // 문서로만 존재하면 조용히 바뀔 수 있으므로 테스트로 고정한다.
-func TestScannerScan_HourlyFlatMakesOneDirectoryPerDay(t *testing.T) {
-	lister := &fakeLister{
-		fn: func(_ context.Context, _ string) ([]Entry, error) {
-			return []Entry{
-				{
-					Name:  "ansg001a.26z.zip",
-					Size:  1024,
-					MTime: utcDate(2026, time.January, 1),
-				},
-			}, nil
+func TestScannerScan_HourlyIsOneListPerDay(t *testing.T) {
+	lister := &treeLister{
+		tree: map[string][]Entry{
+			"/data/2026/001": {file("ansg001a.26o.zip", 1024)},
+			"/data/2026/002": {file("ansg002a.26o.zip", 1024)},
 		},
 	}
 
@@ -912,9 +1110,12 @@ func TestScannerScan_HourlyFlatMakesOneDirectoryPerDay(t *testing.T) {
 		t.Fatalf("Scan() unexpected error: %v", err)
 	}
 
-	// 이틀 × 하루 1회 = 2회. (HH) 가 없으므로 24배가 되지 않는다.
+	// 이틀 × 하루 1회 = 2회. 24배가 되지 않는다.
 	if len(lister.calls) != 2 {
-		t.Errorf("List calls = %d, want 2 (flat hourly = 1 dir/day)", len(lister.calls))
+		t.Errorf(
+			"List calls = %d, want 2 (hourly = 1 list/day)",
+			len(lister.calls),
+		)
 	}
 
 	wantDirs := []string{"/data/2026/001", "/data/2026/002"}
@@ -932,7 +1133,7 @@ func TestScannerScan_HourlyFlatMakesOneDirectoryPerDay(t *testing.T) {
 		)
 	}
 
-	// flat 의 When 은 해당 날짜 00:00 UTC 다 (Batch.When 규약).
+	// When 은 해당 날짜 00:00 UTC 다 (Batch.When 규약).
 	wantWhens := []time.Time{
 		utcDate(2026, time.January, 1),
 		utcDate(2026, time.January, 2),
@@ -951,6 +1152,67 @@ func TestScannerScan_HourlyFlatMakesOneDirectoryPerDay(t *testing.T) {
 				want,
 			)
 		}
+	}
+}
+
+// TestJoinChild 는 부모 경로의 구분자 표기를 따르는 경로 결합을 본다.
+func TestJoinChild(t *testing.T) {
+	tests := []struct {
+		name string
+		dir  string
+		sub  string
+		want string
+	}{
+		{
+			name: "posix",
+			dir:  "/data/2026/001",
+			sub:  "00",
+			want: "/data/2026/001/00",
+		},
+		{
+			name: "posix 뒤 구분자",
+			dir:  "/data/2026/001/",
+			sub:  "00",
+			want: "/data/2026/001/00",
+		},
+		{
+			name: "windows",
+			dir:  `C:\RINEX-V2-H\2026\001`,
+			sub:  "00",
+			want: `C:\RINEX-V2-H\2026\001\00`,
+		},
+		{
+			name: "windows 뒤 구분자",
+			dir:  `C:\RINEX-V2-H\2026\001\`,
+			sub:  "00",
+			want: `C:\RINEX-V2-H\2026\001\00`,
+		},
+		{
+			name: "UNC",
+			dir:  `\\192.168.10.5\Data\2026\001`,
+			sub:  "SUWN",
+			want: `\\192.168.10.5\Data\2026\001\SUWN`,
+		},
+		{
+			name: "혼합 표기는 / 로",
+			dir:  `D:\stage/2026/001`,
+			sub:  "00",
+			want: `D:\stage/2026/001/00`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := joinChild(tt.dir, tt.sub); got != tt.want {
+				t.Errorf(
+					"joinChild(%q, %q) = %q, want %q",
+					tt.dir,
+					tt.sub,
+					got,
+					tt.want,
+				)
+			}
+		})
 	}
 }
 
