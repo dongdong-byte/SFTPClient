@@ -13,6 +13,7 @@
 
 | 일자 | 내용 |
 |---|---|
+| **2026-09-22** | **resend 기능 완성 (커밋 1~8) + 메시지·종료 코드 정책 통합.** 자동 ②(정시 2순위)와 수동 `resend` 명령, 운영 시작일 하한, site 필터, 소진 재무장. 결정 전문은 아래 「resend — 최종 결정」 절과 [resend v4](docs/resend/SFTPClient_RESEND_DESIGN_v4.md)·[SITE v1](docs/site/SFTPClient_SITE_DESIGN_v1.md)·[메시지·종료 코드](docs/SFTPClient_MESSAGES_AND_EXIT_CODES.md). 9.9절 대체. |
 | **2026-09-21** | **CONFIRMED_DECISIONS v2 통합 확인·현행 요약 추가.** 원문 1~19절은 기존 12절에 보존하고, 상단에 세트 게이트·명령 책임·설정·파싱·Ledger의 유효 결정을 정리. 원본 파일 보존, 이후 제외된 리포트·운영 절차는 재도입하지 않음. |
 | **2026-09-21** | **인시던트 후속 유닛 1~5 최종 결정 통합.** 로그 보존, schema v6·해시 판정, 임시 입력 제외, 30초 SFTP 무진행 감시·취소 종료, 기존 요약의 비율·모집단 표시. 임계 경보는 선택 사항. 아래 최종 결정 절과 종합 결과 문서 참조. |
 | 2026-08-25 | 병렬 처리 방침 정정 — Scan은 순차, 전송은 MVP 1부터 `MaxWorkers=4` 병렬. 기존 "worker=1 순차" 표기를 전면 수정 (4·5절) |
@@ -130,6 +131,102 @@ MVP2 다섯 목표와 별개이며, 전체 MVP2·현장 배포 완료를 뜻하�
 - `.part` 잔류나 QC 장애를 SFTP 스톨·중복전송의 확정 증거로 취급하지 않는다.
   코드 사실, 사용자 전달, 과거 가설, 현장 검증 결과를 구분해 기록한다.
 
+### resend — 최종 결정 (2026-09-22, 커밋 1~8 구현 완료)
+
+설계 원문은 [resend v4](docs/resend/SFTPClient_RESEND_DESIGN_v4.md)·
+[SITE v1](docs/site/SFTPClient_SITE_DESIGN_v1.md)이고, 메시지·종료 코드는
+[별도 문서](docs/SFTPClient_MESSAGES_AND_EXIT_CODES.md)가 소유한다.
+**구현과 문서가 다르면 코드가 사실의 주인이다** — 아래는 코드에서 읽어
+확정한 최종 상태다.
+
+**선별과 창.**
+
+- resend 는 **Ledger 선별** 방식이다. 강제 전체 재전송 옵션은 없다 —
+  판정은 정시 put 과 동일하고(신규/변경/미전송/FAILED 재시도), 다른 것은
+  창·게이트·재무장뿐이다 (v4 §4).
+- 창 규칙: `limit = UTC today − (RetentionDays − 2)`. 자동 창
+  `From = max(limit, 운영 시작일 origin)`, `To = today − ScanDays`, 양끝
+  포함. **RetentionDays = ScanDays + 2 는 빈 창이 아니라 1일짜리 유효
+  창**이다(경계 정정 — "이하"가 아니라 "미만"이 빈 창). 수동 창은
+  `From ≥ limit, To ≤ today, From ≤ To` 위반 시 실행 전 거부하고,
+  origin 은 적용하지 않는다(`before_origin=` 일수 로그만).
+- **운영 시작일(origin)** 은 `schema_meta` 키 하나다. 값이 없으면 행이
+  있는 DB 만 `MIN(common_ledger.first_seen)` 날짜로 기록하고, **빈 DB 는
+  기록하지 않는다** — 설치 당일 dry-run 날짜가 origin 으로 굳으면 몇 주
+  뒤 첫 live 가 그 사이 구간을 대량 재전송한다. 조회는
+  `OperationOrigin(ctx, now)` 지연 계산(키→행 MIN→오늘 순). 손상값
+  (2000년 이전 등)은 대체하지 않고 시작 오류다.
+
+**자동 ② (정시 회차의 2순위).**
+
+- 순서: `Lock → Dial(+watchdog) → Recover → ① put → ② resend → Release`.
+  ② 시작은 `[RESEND] auto from=… to=… budget=N` 한 줄로 표시한다.
+- 예산 = `MaxFilesPerRun − len(①의 kept)` (Registered 가 아니라 kept —
+  dry-run 도 같은 숫자). 0 이하면 `skipped (budget=0)`.
+  `MaxFilesPerRun = 0` 은 양단 모두 무제한이다.
+- ② 생략 조건: stall 발화, ①의 fatal 오류(이미 회차 중단), 그리고
+  **①이 한 건도 성공하지 못한 파일 단위 전실패**
+  (`failed > 0 && verified == 0`) — `[RESEND][WARN] skipped (put error…)`
+  후 종료 코드 0. 일부라도 성공했으면 ② 는 진행한다(개별 실패는 retry
+  체계 몫). 이 조건이 메시지 문서 MSG-XFER-01 의 "② 차단 여부"를 닫는다.
+- 자동은 소진 파일을 **재무장하지 않는다** — 켜면 영구 실패 파일이
+  Retention 한계까지 매시간 재시도된다.
+
+**수동 `resend` 명령.**
+
+- `rinexclient resend [--site S[,S…]] [--category C[,C…]] --from D --to D
+  [--dry-run] [--config] [--transport]`. 날짜는 UTC `YYYY-MM-DD` 또는
+  `YYYY-DDD`(평년 366 거부), 로그는 `2026-09-01(244)` 이중 표기.
+- 락: 정시는 `ErrHeld` 조용히 0, 수동은 **10초 간격 재시도·반복 안내
+  5분·상한 = LockStaleSeconds(재시도마다 갱신 없음)·초과 시 오류(1)·
+  Ctrl+C 즉시 취소**.
+- 예산 = `MaxFilesPerRun` 전체, 한 번 실행 = 한 배치, put 단계 없음.
+- **소진 재무장은 수동 전용**: `attempts` 는 되돌리지 않고 후보에
+  `RetryCeiling = 현재 attempts + 1` 을 실어 `BeginPut` 의
+  `attempts < ?` 가드를 이번 실행 한 번 통과시킨다(ledger 계약 불변).
+  dry-run 에도 켠다 — 미리보기와 실제가 같은 후보를 계산한다.
+- 선택 0건은 **exit 0 + 사유 표시**: 확정 문구 "해당 기간에 데이터가
+  없습니다."(site 미지정·errs=0·관측 엔트리 0 일 때만, 전부 missing 이면
+  마운트 확인 WARN 보조), 그 외 집계 줄에 `errs=`·요청 site 별
+  `site_matched=DBON:0,…`. **site 미발견 exit 1 예외는 메시지 문서 §6
+  미결(겹침 우선순위)을 닫기 전까지 구현하지 않는다.**
+
+**세트 게이트 (resend 단계).**
+
+- 보류 판정은 `[SET.RINEXx] ResendMinKinds`(RequiredKinds 의 부분집합,
+  AND). **키 없음 = 무조건 우회**, 게이트 OFF + 키 존재 = 시작 오류.
+- 세트 정체성(SetKey 새김·MaxFilesPerRun 경계 절단·`[SET][RESEND]` 우회
+  관측)은 계속 **RequiredKinds 기준**이다 — 보류 게이트가 전면 우회여도
+  절단이 세트를 쪼개지 않는다 (게이트 이원화, put/runner.go).
+
+**site 선택.**
+
+- CLI 정석 4자리 영숫자(`SUW1`·`DON2` 허용), 쉼표 복수, 9자리·와일드카드
+  거부. `--site` 생략 = 전체, **명시적 빈 값 = 실행 전 오류**(지정 여부를
+  `flag.Visit` 로 구분).
+- **정규화의 주인은 domain 하나**: `ParseSiteList`/`NormalizeSiteList` 가
+  **대문자 코드**로 통일해 반환하고, `SiteFromName`(파일 추출)도 대문자를
+  반환한다. put 은 `Opts.Sites` 를 Run 입구에서 `NormalizeSiteList` 로
+  다시 통과시키므로 호출자 표기와 무관하게 대조가 성립한다.
+  (커밋 3 은 소문자로 구현했으나 교차검증에서 "정규화 1곳 + 문서의
+  대문자 표기"로 뒤집혔다 — **재론 금지: 현행은 대문자이며, fold 를
+  다시 바꾸려면 ParseSiteList·SiteFromName·SiteMatched·테스트를 한
+  커밋에서 함께 바꿔야 한다.**)
+- 필터는 **Ledger 등록 전**이다: 선택 밖 파일은 Upsert·해시(백필 포함)·
+  전송 상태 변경·세트 관측이 전혀 없다. 식별 불가는 `site_unknown` 으로
+  제외(전체 fallback 없음), 생략 시 site 검사 자체를 하지 않는다.
+- **`SiteMatched`** (요청 site 별 일치 관측 수): "발견"의 판정 근거다 —
+  후보 제외 전부의 앞에서 기록하므로 VERIFIED·보류 파일도 발견으로
+  남고, 요청 site 는 0 으로 초기화되어 오타가 값 0 으로 드러난다.
+
+**검증 상태 (2026-09-22).** `go test ./... -count=1` 전 패키지 통과.
+운영 시나리오는 `cmd/rinexclient/autoresend_operations_test.go` 의 13종
+(①→② 순서, 예산 0/잔여/무제한, dry 일치, seed·lock·put 전실패의 ②
+생략, 자동 비재무장, Retention 밖 미전송, dry 장부 불변)이 실제 자식
+프로세스 실행으로 고정한다. 수동 검증 절차: ① Retention 밖 기간 →
+실행 전 거부 확인, ② 정상 기간 `--dry-run` → 0건 exit 0 + 사유 확인,
+③ 정시 회차 중 실행 → `lock held — waiting`(10초 간격) 확인.
+
 ### MVP2 현재 실행 범위 (2026-09-15 확정)
 
 > 세트 원자성의 확정 결정은 아래 「세트 완성도 게이트 — 현행 결정 통합」에서
@@ -138,7 +235,7 @@ MVP2 다섯 목표와 별개이며, 전체 MVP2·현장 배포 완료를 뜻하�
 | # | 목표 | 상태 / 범위 |
 |---|---|---|
 | 1 | 세트 원자성 | **완료.** 12절의 Set Completeness Gate 구현을 유지한다. |
-| 2 | `resend` 명령 신설 | **미구현.** 기간·대상 지정 재전송이며 세트 게이트를 우회한다. |
+| 2 | `resend` 명령 신설 | **완료 (2026-09-22, 커밋 1~8).** 자동 ②(정시 2순위) + 수동 명령. 게이트는 무조건 우회가 아니라 `ResendMinKinds` 조건 우회다. 위 「resend — 최종 결정」 참조. |
 | 3 | 경로 범용화 | **설계 예정.** 서울시 평면 Hourly 경로를 급히 지원하려고 추가한 `HourLayout`을 제거하고, 설정 루트 아래의 범위 제한 재귀 탐색으로 전환한다. 로컬 하위 구조는 원격에 복제하지 않고 RINEX 버전별 고정 평면 `RemotePath`로 전송한다. 상세 탐색 경계는 Linux OS·실경로 확인 후 확정한다. |
 | 4 | Linux 배포·테스트 | **미구현.** Linux 빌드, 실행환경·경로·스케줄러·SFTPGo 연동과 통합 테스트를 포함한다. Linux 전용 추가 보안은 포함하지 않으며 공식 보안점검에서 요구가 나온 경우에만 별도 진행한다. |
 | 5 | Retention Cleanup | **미구현.** Ledger 30일 보존 설정이 실제 DB 행 삭제로 이어지도록 구현하고 경계·FK cascade·재전송 방지 테스트를 수행한다. |
@@ -220,15 +317,18 @@ MVP2 다섯 목표와 별개이며, 전체 MVP2·현장 배포 완료를 뜻하�
 아래 항목은 아직 확정하지 않았다. 구현 시 임의로 가정하지 말고 현장 정보와
 교차검증을 거쳐 결정한 뒤 이 문서에 반영한다.
 
-- **`resend`의 Ledger 의미론:** 지정 범위 전체를 강제로 다시 보낼지, Ledger로
-  미전송·변경분을 거르고 별도 강제 옵션을 둘지 결정이 필요하다. 명령 인자와
-  보존기간 밖 요청의 처리도 이 결정에 맞춰 확정한다.
+- ~~**`resend`의 Ledger 의미론**~~ — **해소 (2026-09-22).** Ledger 선별로
+  확정·구현 완료. 강제 전체 재전송 옵션 없음, 보존기간 밖 요청은 거부.
+  「resend — 최종 결정」 및 resend v4 §3·§4 참조.
 - **제한 재귀 탐색의 경계:** 시작 루트, 최대 깊이, 날짜 범위 적용 방식,
   권한 오류 처리, symbolic link/junction 추적 여부는 다음 Linux 설치처의
   OS 버전과 실제 경로를 받은 뒤 결정한다.
-- **Retention과 재탐색/`resend`의 결합 규칙:** 30일이 지나 삭제된 Ledger 행의
-  로컬 파일이 자동 탐색에서 신규로 재등록·재전송되지 않도록 경계를 확정하고,
-  보존기간 밖 `resend`의 경고·거부·강제 실행 정책을 결정한다.
+- **Retention과 재탐색/`resend`의 결합 규칙 — 절반 해소.** resend 쪽은 확정·
+  구현 완료: 창 상한이 `today − (RetentionDays − 2)` 라 Cleanup 대상 직전
+  이틀에 닿지 않고, 보존기간 밖 요청은 거부하며 강제 실행 옵션은 없다.
+  **잔여는 Retention Cleanup 자체(미구현)** — 삭제된 행의 로컬 파일이 자동
+  탐색(Hot/Deep 은 ScanDays 창이라 구조적으로 안전, resend 자동 창은 위
+  여유 2일이 방어)에서 재등록되지 않는지 Cleanup 구현 시 함께 검증한다.
 
 이미 확정된 사항은 Ledger 보존기간 30일, 성공한 Deep Scan 뒤 Cleanup 수행,
 `common_ledger` 삭제 시 `put_ledger` FK cascade, 원격의 RINEX 버전별 고정 평면
@@ -1099,64 +1199,53 @@ UTC 로 둘 경우 `4` 는 KST 13시(한낮)가 되므로 값과 주석이 어�
 `config.ini` 주석에 어느 기준인지 반드시 명시한다.
 `internal/config` 의 `ScanConfig.DeepScanHour` 주석에도 같은 내용을 둔다.
 
-### 9.9 자동 Scan과 운영자 재전송을 분리한다 (2026-09-15 갱신)
+### 9.9 자동 Scan·자동 resend·운영자 resend — 세 갈래 (2026-09-22 대체)
 
-자동으로 도는 두 갈래와 사람이 부르는 한 갈래를 나눈다.
+> 이 절은 resend 구현 완료(커밋 1~8)로 전면 대체되었다. 결정 전문은
+> 상단 「resend — 최종 결정」과 [resend v4](docs/resend/SFTPClient_RESEND_DESIGN_v4.md),
+> 종료 코드·문구는 [메시지 문서](docs/SFTPClient_MESSAGES_AND_EXIT_CODES.md).
 
 ```text
-[자동 · 정상운영]
-  Hot Scan       최근 2일   매시간    정상 유입
-  Deep Scan      최근 7일   하루 1회  며칠 늦게 유입된 자료 회수
+[자동 · 정시 회차 하나 (락 하나)]
+  ① Hot Scan     최근 ScanRecentDays(2)일   매시간     정상 유입
+     Deep Scan   최근 ScanDays(7)일          하루 1회   늦은 유입 회수
+  ② 자동 resend  [max(Retention한계, origin), today−ScanDays]
+                 ①의 남은 예산(MaxFilesPerRun − kept)만큼, 2순위
 
-[수동 · 운영자 재전송]
-  resend         운영자가 기간·대상을 지정
-                 세트 게이트는 우회
-                 전체 강제 재전송인지 Ledger 선별 방식인지는 구현 전 결정 필요
+[수동 · 운영자 resend]
+  rinexclient resend --from --to [--site] [--category] [--dry-run]
+                 예산 = MaxFilesPerRun 전체, 한 번 실행 = 한 배치
+                 게이트는 ResendMinKinds 조건 우회, 소진 파일 재무장
 ```
 
 **`ScanRecentDays = 2` 인 이유** — 경로 토큰은 UTC 인데 실제 도착이 3~4시간
 이상 지연된다. 1일로 두면 UTC 하루의 마지막 몇 시간 분량이 매일 Hot Scan 을
 빠져나가고 Deep Scan 이 하루 늦게 회수한다.
 
-Deep Scan 범위 밖의 자료는 자동 후보가 아니다. 과거 장애 기간은 운영자가
-`resend`에 명시한다. 다만 허용 기간과 보존기간 밖 요청의 경고·거부·강제 실행
-정책은 「MVP2 구현 전 결정 필요」에 따라 구현 전에 확정한다.
+Deep Scan 범위 밖(ScanDays 초과 ~ Retention 한계)은 이제 **자동 resend ②의
+담당**이다 — 과거 9.9 의 "운영자가 resend 에 명시한다"는 절반만 남았다:
+자동 창 밖(운영 시작 전 구간, 소진 파일)만 수동 resend 의 몫이다.
 
 한때 상한을 없애고 디렉터리 mtime 으로 거르는 안을 검토했으나 **기각했다.**
 디렉터리 mtime 은 파일 생성뿐 아니라 **삭제 시에도 갱신되며**,
 로컬 보존이 10년이므로 정리 작업이 돌면 오래된 디렉터리가 통째로
 스캔 대상이 되어 장부에 없는 파일이 전량 재전송된다.
-`UseDirMtimeSkip = false` 를 유지하는 실질 근거가 이것이다.
+`UseDirMtimeSkip = false` 를 유지하는 실질 근거가 이것이다. resend 의
+운영 시작일(origin) 하한은 같은 사고를 "설치 이전 구간"에서 막는 장치다.
 
-`resend`가 Ledger 판정을 재사용하는 방식이라면 `LedgerRetentionDays`가 안전
-범위의 실질 상한이 된다. 전체 강제 재전송 방식이라면 같은 의미의 상한이 아니다.
-현재 확정된 것은 `config`가 `LedgerRetentionDays > ScanDays`를 시작 시 강제한다는
-점이며, `resend`와의 결합 규칙은 구현 전 결정한다.
+resend 는 **Ledger 판정을 재사용**하므로 `LedgerRetentionDays` 가 안전 범위의
+실질 상한이다 — 창 계산이 `RetentionDays − 2` 여유를 두어 Cleanup 직전의
+날을 건드리지 않는다 (v4 §3). 운영 권장값은 **35** 다 (`config.example.ini`).
 
-**2026-09-16 구현 상태:** `[LEDGER] RetentionDays = 30`과 위 불변식 검증은
-구현되어 있지만 실제 DB 행을 지우는 Retention Cleanup은 아직 구현되지 않았다.
-따라서 현재 실행파일은 30일이 지나도 `common_ledger`와 연결된 `put_ledger`
-행을 자동 삭제하지 않는다. `cmd/rinexclient/main.go`에도 Deep Scan 뒤 Cleanup이
-TODO로 남아 있다.
+**2026-09-22 구현 상태:** Retention 불변식 검증(`RetentionDays > ScanDays`)과
+resend 창 상한은 구현되어 있으나, **실제 DB 행을 지우는 Retention Cleanup 은
+여전히 미구현**이다 (`main.go` 의 Deep Scan 뒤 TODO). MVP2 잔여 항목의
+검증 목록(경계 시각, FK cascade, 재전송 방지)은 종전과 같다.
 
-MVP2에서 다음을 구현·검증한다.
-
-- 성공한 Deep Scan 뒤 `ingress_verified_at < now - RetentionDays`인 common 행 삭제
-- FK `ON DELETE CASCADE`에 의한 해당 put 행 삭제
-- 경계 시각의 포함/제외, 최근 행 보존, Cleanup 실패 처리
-- SQLite 파일 크기는 즉시 축소하지 않고 free page를 재사용하며 정기 VACUUM은 하지 않음
-- 재귀 Scan이 Retention 범위 밖의 오래된 파일을 다시 신규로 올려 재전송하지 않도록
-  Scan 날짜 범위와 Cleanup 정책을 함께 검증
-
-**운영 로그에 `oldest_new` 를 남긴다.**
-
-```text
-[DEEPSCAN] dirs=336 files=42000 new=340 oldest_new=2026-08-23 (5일 전)
-```
-
-`ScanDays = 7` 은 잠정값이다. 한 달 운영하면 이 값의 분포가 나오고,
-7일에 붙어 잘리는 것이 보이면 늘려야 한다는 증거가 된다.
-지금 앉아서 정할 수 없는 값이므로 **나중에 답을 가져올 장치를 대신 넣는다.**
+**운영 로그 관측** — Deep 의 `oldest_new` 와 ②의
+`[RESEND] auto from=… to=… budget=…` / `skipped (…)` 줄이 창·예산의 실측
+근거다. `ScanDays = 7` 은 잠정값이며, ②가 매시간 무엇을 회수하는지가
+이 값을 조정할 증거가 된다.
 
 ### 9.10 첫 붙임은 "추가 투입" 이 아니라 "기존 송신자 대체" 이다
 
