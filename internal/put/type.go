@@ -43,8 +43,14 @@ type Candidate struct {
 	// Size 는 스캔 시점의 크기다. BeginPut 의 local_size 입력이 된다.
 	Size int64
 
-	// When 은 이 파일이 속한 디렉터리의 UTC 관측 시각이다 (Batch.When).
+	// When 은 이 파일이 속한 날짜 슬롯의 00:00 UTC 다 (Batch.When).
 	// 전송 시 RemotePath.Expand(When) 의 입력이 된다.
+	//
+	// 재귀 Scan 도입 후 When 은 항상 그날 자정이므로, SortCandidates
+	// (When → file_name → category)의 하루 안 정렬은 시각순이 아니라
+	// 이름순(관측소순)이다. MaxFilesPerRun 절단 시 같은 날짜 안에서
+	// 어느 파일이 다음 회차로 밀리는지만 달라지며, 해롭지 않다고
+	// 판단하여 동작 변경으로 기록만 한다 (PATH_DESIGN v3 §1.2).
 	When time.Time
 
 	// IsRetry 는 기존 FAILED 행의 재시도임을 뜻한다.
@@ -272,6 +278,10 @@ type CategoryReport struct {
 	Scan scan.Result
 
 	// SkippedDirs 는 Entries 중 IsDir 라 제외한 수다.
+	//
+	// 재귀 Scan 은 폴더를 Batch Entry 로 넘기지 않으므로(PATH_DESIGN
+	// v3 §4) 정상 경로에서 이 값은 0 이다. 0 이 아니면 scan 계약
+	// 위반 신호다. 방어 분기는 그 신호를 위해 남긴다.
 	SkippedDirs int
 
 	// SkippedPart 는 임시 접미사(.part / .filepart)라 Ledger Lookup 전에

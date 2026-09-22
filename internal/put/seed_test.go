@@ -59,12 +59,15 @@ func newSeedEnv(t *testing.T) *seedEnv {
 		when:      time.Now().UTC(),
 	}
 
-	local, err := pathpl.Parse(e.localRoot + "/(YYYY)/(DOY)/(HH)/")
+	// 로컬은 (DOY) 까지만 적는다. putLocal 은 파일을 시각 하위 폴더에
+	// 두므로, seed 테스트 전체가 실제 LocalLister 로 서울시형 재귀
+	// 수집을 거친다 (PATH_DESIGN v3 §1).
+	local, err := pathpl.Parse(e.localRoot + "/(YYYY)/(DOY)/")
 	if err != nil {
 		t.Fatalf("local template: %v", err)
 	}
 
-	remote, err := pathpl.Parse("rem/(YYYY)/(DOY)/(HH)/")
+	remote, err := pathpl.Parse("rem/(YYYY)/(DOY)/")
 	if err != nil {
 		t.Fatalf("remote template: %v", err)
 	}
@@ -127,10 +130,9 @@ func (e *seedEnv) putLocal(t *testing.T, name, content string) {
 // remoteFinal 은 이 파일의 예상 finalPath(원격 대소문자 보존)다.
 func (e *seedEnv) remoteFinal(name string) string {
 	return fmt.Sprintf(
-		"rem/%s/%03d/%02d/%s",
+		"rem/%s/%03d/%s",
 		e.when.Format("2006"),
 		e.when.YearDay(),
-		e.when.Hour(),
 		name,
 	)
 }

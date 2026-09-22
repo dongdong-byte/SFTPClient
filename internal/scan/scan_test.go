@@ -3,8 +3,10 @@ package scan
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,12 +225,40 @@ func TestScannerScan_DailyTwoDays(t *testing.T) {
 	}
 }
 
-func TestScannerScan_HourlyTwoDaysMakes48Directories(t *testing.T) {
+// hourSubdirs 는 날짜 디렉터리 아래 00~23 시각 폴더 항목을 만든다
+// (서울시형 원본 배치).
+func hourSubdirs() []Entry {
+	subdirs := make([]Entry, 0, 24)
+
+	for h := 0; h < 24; h++ {
+		subdirs = append(subdirs, Entry{
+			Name:  fmt.Sprintf("%02d", h),
+			IsDir: true,
+			Type:  fs.ModeDir,
+		})
+	}
+
+	return subdirs
+}
+
+// isDateDir 는 fake 경로가 날짜 디렉터리(/data/YYYY/DOY)인지 본다.
+func isDateDir(dir string) bool {
+	return strings.Count(dir, "/") == 3
+}
+
+// TestScannerScan_HourlySubdirsAreRecursed 는 (HH) 없이 (DOY) 까지 적은
+// 템플릿에서 시각 하위 폴더가 재귀로 수집되는지 본다 (PATH_DESIGN v3 §1).
+// 날짜당 나열 = 날짜 폴더 1 + 시각 폴더 24.
+func TestScannerScan_HourlySubdirsAreRecursed(t *testing.T) {
 	lister := &fakeLister{
 		fn: func(
 			ctx context.Context,
 			dir string,
 		) ([]Entry, error) {
+			if isDateDir(dir) {
+				return hourSubdirs(), nil
+			}
+
 			return []Entry{
 				{
 					Name:  "hourly.rnx.gz",
@@ -241,23 +271,16 @@ func TestScannerScan_HourlyTwoDaysMakes48Directories(t *testing.T) {
 
 	scanner := New(lister)
 
-	tpl := mustScanTemplate(
-		t,
-		"/data/(YYYY)/(DOY)/(HH)",
-	)
-
-	r := Range{
-		From: utcDate(2026, time.January, 1),
-		To:   utcDate(2026, time.January, 2),
-	}
-
 	var batches []Batch
 
 	result, err := scanner.Scan(
 		context.Background(),
 		domain.CategoryRINEX3Hourly,
-		tpl,
-		r,
+		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
+		Range{
+			From: utcDate(2026, time.January, 1),
+			To:   utcDate(2026, time.January, 2),
+		},
 		func(batch Batch) error {
 			batches = append(batches, batch)
 			return nil
@@ -267,75 +290,42 @@ func TestScannerScan_HourlyTwoDaysMakes48Directories(t *testing.T) {
 		t.Fatalf("Scan() unexpected error: %v", err)
 	}
 
-	if len(lister.calls) != 48 {
-		t.Fatalf(
-			"List calls = %d, want 48",
-			len(lister.calls),
-		)
+	if len(lister.calls) != 50 {
+		t.Fatalf("List calls = %d, want 50 (2일 × (1 + 24))", len(lister.calls))
 	}
 
 	tests := []struct {
 		index int
 		want  string
 	}{
-		{0, "/data/2026/001/00"},
-		{1, "/data/2026/001/01"},
-		{23, "/data/2026/001/23"},
-		{24, "/data/2026/002/00"},
-		{47, "/data/2026/002/23"},
+		{0, "/data/2026/001"},
+		{1, "/data/2026/001/00"},
+		{24, "/data/2026/001/23"},
+		{25, "/data/2026/002"},
+		{49, "/data/2026/002/23"},
 	}
 
 	for _, tt := range tests {
 		if got := lister.calls[tt.index]; got != tt.want {
-			t.Errorf(
-				"calls[%d] = %q, want %q",
-				tt.index,
-				got,
-				tt.want,
-			)
+			t.Errorf("calls[%d] = %q, want %q", tt.index, got, tt.want)
 		}
 	}
 
-	if result.Dirs != 48 {
-		t.Errorf("Dirs = %d, want 48", result.Dirs)
-	}
-
-	if result.Files != 48 {
-		t.Errorf("Files = %d, want 48", result.Files)
-	}
-
-	if result.Missing != 0 {
-		t.Errorf("Missing = %d, want 0", result.Missing)
-	}
-
-	if result.Errs != 0 {
-		t.Errorf("Errs = %d, want 0", result.Errs)
+	if result.Dirs != 50 || result.Files != 48 {
+		t.Errorf(
+			"result = {Dirs:%d Files:%d}, want {Dirs:50 Files:48}",
+			result.Dirs,
+			result.Files,
+		)
 	}
 
 	if len(batches) != 48 {
-		t.Fatalf(
-			"batches = %d, want 48",
-			len(batches),
-		)
+		t.Fatalf("batches = %d, want 48", len(batches))
 	}
 
-	wantWhen := time.Date(
-		2026,
-		time.January,
-		2,
-		23,
-		0,
-		0,
-		0,
-		time.UTC,
-	)
-
-	if !batches[47].When.Equal(wantWhen) {
-		t.Errorf(
-			"last When = %v, want %v",
-			batches[47].When,
-			wantWhen,
-		)
+	// 하위 폴더 Batch 도 날짜 00:00 UTC 를 갖는다 (PATH_DESIGN v3 §1.2).
+	if !batches[47].When.Equal(utcDate(2026, time.January, 2)) {
+		t.Errorf("last When = %v, want 2026-01-02 00:00 UTC", batches[47].When)
 	}
 }
 
@@ -345,7 +335,7 @@ func TestScannerScan_MissingDirectoryIsNormal(t *testing.T) {
 			ctx context.Context,
 			dir string,
 		) ([]Entry, error) {
-			if dir == "/data/2026/001/05" {
+			if dir == "/data/2026/001" {
 				return nil, fs.ErrNotExist
 			}
 
@@ -358,10 +348,10 @@ func TestScannerScan_MissingDirectoryIsNormal(t *testing.T) {
 	result, err := scanner.Scan(
 		context.Background(),
 		domain.CategoryRINEX3Hourly,
-		mustScanTemplate(t, "/data/(YYYY)/(DOY)/(HH)"),
+		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
 		Range{
 			From: utcDate(2026, time.January, 1),
-			To:   utcDate(2026, time.January, 1),
+			To:   utcDate(2026, time.January, 2),
 		},
 		func(batch Batch) error {
 			t.Fatal("empty directories must not call visit")
@@ -372,15 +362,12 @@ func TestScannerScan_MissingDirectoryIsNormal(t *testing.T) {
 		t.Fatalf("Scan() unexpected error: %v", err)
 	}
 
-	if len(lister.calls) != 24 {
-		t.Errorf(
-			"List calls = %d, want 24",
-			len(lister.calls),
-		)
+	if len(lister.calls) != 2 {
+		t.Errorf("List calls = %d, want 2", len(lister.calls))
 	}
 
-	if result.Dirs != 23 {
-		t.Errorf("Dirs = %d, want 23", result.Dirs)
+	if result.Dirs != 1 {
+		t.Errorf("Dirs = %d, want 1", result.Dirs)
 	}
 
 	if result.Missing != 1 {
@@ -401,11 +388,14 @@ func TestScannerScan_ListFailureIsCollectedAndScanContinues(t *testing.T) {
 			ctx context.Context,
 			dir string,
 		) ([]Entry, error) {
-			switch dir {
-			case "/data/2026/001/03":
+			switch {
+			case isDateDir(dir):
+				return hourSubdirs(), nil
+
+			case dir == "/data/2026/001/03":
 				return nil, permissionErr
 
-			case "/data/2026/001/17":
+			case dir == "/data/2026/001/17":
 				return nil, ioErr
 
 			default:
@@ -419,7 +409,7 @@ func TestScannerScan_ListFailureIsCollectedAndScanContinues(t *testing.T) {
 	result, err := scanner.Scan(
 		context.Background(),
 		domain.CategoryRINEX2Hourly,
-		mustScanTemplate(t, "/data/(YYYY)/(DOY)/(HH)"),
+		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
 		Range{
 			From: utcDate(2026, time.January, 1),
 			To:   utcDate(2026, time.January, 1),
@@ -435,16 +425,17 @@ func TestScannerScan_ListFailureIsCollectedAndScanContinues(t *testing.T) {
 		)
 	}
 
-	// 두 오류가 있어도 24시까지 끝까지 간다.
-	if len(lister.calls) != 24 {
+	// 하위 폴더 두 곳이 실패해도 형제 폴더를 끝까지 간다.
+	if len(lister.calls) != 25 {
 		t.Errorf(
-			"List calls = %d, want 24",
+			"List calls = %d, want 25",
 			len(lister.calls),
 		)
 	}
 
-	if result.Dirs != 22 {
-		t.Errorf("Dirs = %d, want 22", result.Dirs)
+	// 날짜 폴더 1 + 성공한 시각 폴더 22.
+	if result.Dirs != 23 {
+		t.Errorf("Dirs = %d, want 23", result.Dirs)
 	}
 
 	if result.Errs != 2 {
@@ -512,12 +503,18 @@ func TestScannerScan_DoesNotFilterEntries(t *testing.T) {
 		},
 	}
 
+	// 하위 폴더는 비어 있다. 모든 경로에 같은 항목을 돌려주면 "subdir"
+	// 아래에 다시 "subdir" 가 있는 무한 트리가 되어 재귀가 끝나지 않는다.
 	lister := &fakeLister{
 		fn: func(
 			ctx context.Context,
 			dir string,
 		) ([]Entry, error) {
-			return wantEntries, nil
+			if dir == "/data/2026/001" {
+				return wantEntries, nil
+			}
+
+			return nil, nil
 		},
 	}
 
@@ -548,19 +545,27 @@ func TestScannerScan_DoesNotFilterEntries(t *testing.T) {
 		t.Fatalf("visit count = %d, want 1", visited)
 	}
 
-	if !reflect.DeepEqual(got.Entries, wantEntries) {
+	// 0바이트·.part 는 거르지 않는다(verify 의 책임). 재귀로 소비한
+	// 폴더만 Batch 에서 빠진다 (PATH_DESIGN v3 §4).
+	wantFiles := wantEntries[:3]
+
+	if !reflect.DeepEqual(got.Entries, wantFiles) {
 		t.Errorf(
 			"Entries changed:\ngot  %#v\nwant %#v",
 			got.Entries,
-			wantEntries,
+			wantFiles,
 		)
 	}
 
-	if result.Files != 4 {
+	if result.Files != 3 {
 		t.Errorf(
-			"Files = %d, want 4",
+			"Files = %d, want 3",
 			result.Files,
 		)
+	}
+
+	if len(lister.calls) != 2 {
+		t.Errorf("List calls = %d, want 2 (날짜 폴더 + subdir)", len(lister.calls))
 	}
 }
 
@@ -607,17 +612,25 @@ func TestScannerScan_EmptyDirectoryDoesNotVisit(t *testing.T) {
 func TestScannerScan_VisitErrorStopsImmediately(t *testing.T) {
 	visitErr := errors.New("ledger unavailable")
 
+	// 날짜 폴더와 시각 폴더 하나에 각각 파일이 있다. 두 번째 Batch
+	// (하위 폴더)에서 visit 오류가 나면 재귀 도중에도 즉시 멈춰야 한다.
 	lister := &fakeLister{
 		fn: func(
 			ctx context.Context,
 			dir string,
 		) ([]Entry, error) {
-			return []Entry{
+			entries := []Entry{
 				{
 					Name: "sample.rnx.gz",
 					Size: 1,
 				},
-			}, nil
+			}
+
+			if isDateDir(dir) {
+				entries = append(entries, hourSubdirs()...)
+			}
+
+			return entries, nil
 		},
 	}
 
@@ -628,7 +641,7 @@ func TestScannerScan_VisitErrorStopsImmediately(t *testing.T) {
 	result, err := scanner.Scan(
 		context.Background(),
 		domain.CategoryRINEX3Hourly,
-		mustScanTemplate(t, "/data/(YYYY)/(DOY)/(HH)"),
+		mustScanTemplate(t, "/data/(YYYY)/(DOY)"),
 		Range{
 			From: utcDate(2026, time.January, 1),
 			To:   utcDate(2026, time.January, 1),
@@ -858,12 +871,9 @@ func TestScannerScan_InvalidInput(t *testing.T) {
 	}
 }
 
-// TestScannerScan_HourlyFlatMakesOneDirectoryPerDay 는 (HH) 가 없는 Hourly
-// 경로(flat 배치)에서 Scanner 가 날짜당 24회가 아니라 1회만 나열하고,
+// TestScannerScan_HourlyFlatMakesOneDirectoryPerDay 는 하위 폴더가 없는
+// Hourly 경로(지리원형 평면)에서 Scanner 가 날짜당 1회만 나열하고,
 // Batch.When 이 해당 날짜 00:00 UTC 인지 본다.
-//
-// 과도기 HourLayout=flat 동작이다. MVP2 재귀 탐색으로 바꾸면 이 순회
-// 방식도 교체한다. 지금은 템플릿의 (HH) 유무로 횟수를 정한다.
 //
 // When 을 단언하는 이유: 전송 단계가 RemotePath.Expand(When) 에 이 값을
 // 쓴다. flat 원격에는 (HH) 가 없어 시각이 소비되지 않지만, 규약이

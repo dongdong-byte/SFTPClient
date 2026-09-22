@@ -313,12 +313,14 @@ func xferRunner(db *ledger.DB) *Runner {
 func xferJobs(t *testing.T) []CategoryJob {
 	t.Helper()
 
-	remote, err := pathpl.Parse("out/(YYYY)/(DOY)/(HH)/")
+	// (HH) 는 제거된 토큰이다 (PATH_DESIGN v3 §1). 하위 시각 폴더는
+	// 재귀가 흡수하므로 로컬·원격 모두 (DOY) 까지만 적는다.
+	remote, err := pathpl.Parse("out/(YYYY)/(DOY)/")
 	if err != nil {
 		t.Fatalf("pathpl.Parse() 실패: %v", err)
 	}
 
-	local, err := pathpl.Parse("in/(YYYY)/(DOY)/(HH)/")
+	local, err := pathpl.Parse("in/(YYYY)/(DOY)/")
 	if err != nil {
 		t.Fatalf("pathpl.Parse() 실패: %v", err)
 	}
@@ -830,7 +832,7 @@ func TestTransferEnsureDirCache(t *testing.T) {
 		var cands []Candidate
 		for i := 0; i < 3; i++ {
 			c := seedCandidate(t, db, fmt.Sprintf("hour%03d.rnx.gz", i), "x")
-			c.When = c.When.Add(time.Duration(i) * time.Hour) // (HH) 가 달라진다
+			c.When = c.When.AddDate(0, 0, i) // (DOY) 가 달라진다
 			cands = append(cands, c)
 		}
 

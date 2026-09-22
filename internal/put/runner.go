@@ -293,6 +293,27 @@ func (r *Runner) runCategory(
 		r.logf("[SCAN][WARN] category=%s %v", job.Category, f)
 	}
 
+	// 링크·junction 등 비정규 항목은 scan 이 후보에서 이미 제외했다
+	// (PATH_DESIGN v3 §5). 말없이 빼면 누락이 되므로 발생 시에만
+	// 요약 한 줄 + 상한 내 상세를 남긴다. 0이면 아무것도 출력하지
+	// 않는다 — 정상 실행의 출력은 늘리지 않는다 (§5.4).
+	if res.Irregular > 0 {
+		r.logf(
+			"[SCAN][WARN] category=%s irregular=%d skipped (not a regular file or directory)",
+			job.Category,
+			res.Irregular,
+		)
+
+		for _, ie := range res.IrregularDetails {
+			r.logf(
+				"[SCAN][WARN] category=%s irregular path=%q type=%v",
+				job.Category,
+				ie.Path,
+				ie.Type,
+			)
+		}
+	}
+
 	// FAILED 부분집합의 attempts 해소.
 	//
 	// 여기 들어오는 FAILED 는 Unchanged 파일의 현재 revision 이다.

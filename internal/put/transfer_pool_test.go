@@ -59,8 +59,9 @@ func poolRunner(db *ledger.DB, maxWorkers int) *Runner {
 // seedCandDir 는 seedCandidate 로 만든 후보의 When 을 지정해
 // 원격 디렉터리를 통제한다.
 //
-// RemotePath 가 (HH) 를 포함하므로 hour 가 다르면 다른 디렉터리,
-// 같으면 같은 디렉터리로 그룹핑된다.
+// RemotePath 는 (DOY) 까지이므로 slot 을 날짜 오프셋으로 쓴다. slot 이
+// 다르면 다른 디렉터리, 같으면 같은 디렉터리로 그룹핑된다. ((HH) 토큰
+// 제거 전에는 시각으로 나눴다 — PATH_DESIGN v3 §1.)
 //
 // When 은 ledger 에 저장되지 않으며 전송 시 remote_path 계산에만
 // 사용되므로 seed 후 덮어써도 장부 정합성에 영향이 없다.
@@ -69,7 +70,7 @@ func seedCandDir(
 	db *ledger.DB,
 	name string,
 	content string,
-	hour int,
+	slot int,
 ) Candidate {
 	t.Helper()
 
@@ -77,8 +78,8 @@ func seedCandDir(
 	c.When = time.Date(
 		2026,
 		1,
-		1,
-		hour,
+		1+slot,
+		0,
 		0,
 		0,
 		0,
@@ -120,7 +121,7 @@ func countStatuses(
 func TestGroupByDirectoryPreservesOrder(t *testing.T) {
 	r := poolRunner(nil, 4) // groupByDirectory 는 DB 를 쓰지 않는다.
 
-	mk := func(name string, hour int) Candidate {
+	mk := func(name string, slot int) Candidate {
 		return Candidate{
 			Key: ledger.PutKey{
 				Category: xferTestCat,
@@ -129,11 +130,12 @@ func TestGroupByDirectoryPreservesOrder(t *testing.T) {
 			},
 			LocalPath: "/local/" + name,
 			Size:      10,
+			// slot 은 날짜 오프셋이다 (seedCandDir 주석).
 			When: time.Date(
 				2026,
 				1,
-				1,
-				hour,
+				1+slot,
+				0,
 				0,
 				0,
 				0,
@@ -142,7 +144,7 @@ func TestGroupByDirectoryPreservesOrder(t *testing.T) {
 		}
 	}
 
-	// dirA(hour=3)와 dirB(hour=4)를 의도적으로 교차한다.
+	// dirA(slot=3)와 dirB(slot=4)를 의도적으로 교차한다.
 	cands := []Candidate{
 		mk("a1", 3),
 		mk("b1", 4),
