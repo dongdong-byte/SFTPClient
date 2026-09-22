@@ -234,6 +234,15 @@ func (r *Runner) runCategory(
 		ExtCount:         map[string]int{},
 	}
 
+	// 요청 site 는 전부 0 으로 초기화한다 — "요청했는데 관측 0" 이
+	// 키 부재가 아니라 값 0 으로 보이게 한다 (MSG-SITE-01 선행 계약).
+	if len(r.siteSet) > 0 {
+		rep.SiteMatched = make(map[string]int, len(r.siteSet))
+		for s := range r.siteSet {
+			rep.SiteMatched[s] = 0
+		}
+	}
+
 	var (
 		cands []Candidate
 		// failed 는 Unchanged 로 관측된 FAILED 의 attempts 해소 대기열이다.
@@ -572,6 +581,11 @@ func (r *Runner) visitBatch(
 
 				continue
 			}
+
+			// 일치 관측 — "발견"의 판정 근거다 (MSG-SITE-01 선행
+			// 계약). 중복 검사·검증·게이트·후보 제외 전부의 앞에서
+			// 기록하므로, 뒤에서 어떤 이유로 빠지든 발견은 남는다.
+			rep.SiteMatched[site]++
 		}
 
 		if _, dup := seen[n]; dup {

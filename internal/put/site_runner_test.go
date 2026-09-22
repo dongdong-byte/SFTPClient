@@ -709,3 +709,92 @@ func TestRunner_SiteFilter_RoutingErrorNotUnknown(t *testing.T) {
 		t.Fatalf("라우팅 오류를 SiteUnknown=%d 로 접었다", rep.SiteUnknown)
 	}
 }
+
+// TestRunner_SiteMatched_ObservedBeforeExclusions — "발견"의 판정 근거
+// (메시지 문서 MSG-SITE-01 선행 계약). 일치 관측은 후보 제외 전에
+// 기록되므로 VERIFIED 파일도 발견으로 남고, 요청했으나 관측 0 인 site 는
+// 키 부재가 아니라 값 0 으로 보이며, 요청 site별로 따로 센다 — 합계만으론
+// DBON,DBOM 중 DBON 만 발견된 상황을 구분할 수 없다 (문서 §5).
+func TestRunner_SiteMatched_ObservedBeforeExclusions(t *testing.T) {
+	db, _ := xferTestDB(t)
+	ctx := context.Background()
+	when := siteTestWhen()
+	mtime := when.Add(-time.Hour).Unix()
+
+	// sonp 는 이미 VERIFIED (지문 있음 — 백필·필수 해시 없이 Unchanged).
+	insertKnownForHashTest(
+		t, db,
+		domain.NormalizeName(siteSonpMO),
+		siteTestSize, mtime, siteTestHash, true,
+	)
+
+	r, jobs, _ := siteTestFixture(
+		t, db, when,
+		[]string{siteDbonMO, siteSonpMO, siteUnknownName},
+		nil,
+		func(o *RunOptions) {
+			// zzz9 는 존재하지 않는(오타 재현) 관측소다.
+			o.Sites = []string{"dbon", "sonp", "zzz9"}
+		},
+	)
+
+	kept, report, err := r.Run(ctx, jobs, scan.Range{From: when, To: when})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	rep := report.Categories[0]
+
+	// dbon 신규 1건만 후보 — sonp 는 VERIFIED 제외, 식별 불가 1건 제외.
+	if len(kept) != 1 || rep.SiteUnknown != 1 {
+		t.Fatalf("kept=%d unknown=%d, want 1/1", len(kept), rep.SiteUnknown)
+	}
+
+	// 키는 NormalizeSiteList 정규화 결과(대문자)다 — Opts.Sites 를
+	// 소문자로 넣어도 키는 대문자로 통일된다.
+	want := map[string]int{"DBON": 1, "SONP": 1, "ZZZ9": 0}
+
+	for s, n := range want {
+		got, ok := rep.SiteMatched[s]
+		if !ok {
+			t.Errorf("SiteMatched[%q] 키 부재 — 요청 site 는 0 초기화되어야 한다", s)
+
+			continue
+		}
+
+		if got != n {
+			t.Errorf("SiteMatched[%q] = %d, want %d", s, got, n)
+		}
+	}
+
+	if len(rep.SiteMatched) != len(want) {
+		t.Errorf("SiteMatched 크기 = %d, want %d: %+v",
+			len(rep.SiteMatched), len(want), rep.SiteMatched)
+	}
+}
+
+// TestRunner_SiteMatched_NilWhenSitesOmitted — Sites 생략 시 site 검사
+// 자체가 없으므로 관측 맵도 nil 이다 (SITE §4 — 생략 시 새 검사 금지).
+func TestRunner_SiteMatched_NilWhenSitesOmitted(t *testing.T) {
+	db, _ := xferTestDB(t)
+	when := siteTestWhen()
+
+	r, jobs, _ := siteTestFixture(
+		t, db, when, []string{siteDbonMO}, nil, nil,
+	)
+
+	_, report, err := r.Run(
+		context.Background(), jobs,
+		scan.Range{From: when, To: when},
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if report.Categories[0].SiteMatched != nil {
+		t.Fatalf(
+			"Sites 생략인데 SiteMatched 가 있다: %+v",
+			report.Categories[0].SiteMatched,
+		)
+	}
+}

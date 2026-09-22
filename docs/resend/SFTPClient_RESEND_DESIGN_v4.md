@@ -456,6 +456,11 @@ rinexclient resend --site DBON --category RINEX2_DAILY --from 2026-09-01 --to 20
 | `--config`, `--transport` | 아니오 | 기존 의미 그대로 |
 
 - 서브커맨드 분기는 `secure-set`과 같은 방식(`os.Args[1]`)이다.
+  `resend`는 첫 인자여야 한다. `rinexclient --config … resend …`처럼
+  플래그가 앞에 오면, 정기 실행이 남은 인자를 무시하고 live로 들어가지 않도록
+  위치 인자를 오류로 거절한다.
+- `--site`·`--category` 생략은 전체 선택이다. 명시적 빈 값(`--site=""`,
+  `--category=""`)은 실행 전 오류이며, 전체 선택으로 확대하지 않는다.
 - 날짜는 UTC로 해석한다. 로그에는 두 표기를 함께 남긴다:
   `from=2026-09-01(244) to=2026-09-03(246)`.
 - `--seed`, `--deep`은 resend와 함께 쓸 수 없다.
@@ -488,8 +493,14 @@ Lock(같은 경로, stale = 설정 LockStaleSeconds)
   시간이 통제된다. 수동 전용 stale 값을 두지 않는다.
 - **락이 잡혀 있을 때:** 스케줄러는 조용히 종료(0)한다. 수동은 사람이 기다리므로
   `[RESEND] lock held — waiting` 후 재시도한다. 대기 상한은 설정 `LockStaleSeconds`를
-  넘기지 않는다. 상한을 넘기면 오류로 끝나고 운영자가 다시 실행한다. 재시도 간격은
-  구현 시 정한다.
+  넘기지 않는다. 상한을 넘기면 오류로 끝나고 운영자가 다시 실행한다.
+  재시도 간격은 **10초**, 반복 안내는 **5분**이다. 첫 대기 안내는 즉시 한 번이다.
+  문구와 종료 코드는 [메시지 문서](../SFTPClient_MESSAGES_AND_EXIT_CODES.md) §3·§7.
+- 정상 탐색의 선택 0건은 exit 0과 사유 표시다. 지정 site 자료 미발견을 exit 1로
+  보는 예외는 메시지 문서 §3-6이며, 겹침 규칙(같은 문서 §6)을 닫기 전에는
+  구현하지 않는다.
+- 구현은 이 흐름대로 락을 접속보다 먼저 잡는다. dry-run도 같은 락을 잡는다.
+  대기 중에는 SFTP 세션을 열어 두지 않는다.
 - 수동이 정시 시각과 겹치면 그 정시는 기존처럼 `ErrHeld`로 한 번 양보한다.
 
 ### 6.4 회차 시간 — `MaxFilesPerRun` 운영 계약 **[확정]**
@@ -520,6 +531,11 @@ Lock(같은 경로, stale = 설정 LockStaleSeconds)
   UNIT4 해시 계측(`HashNew` ms)으로 실측한다.
 - **3배를 넘는 회선 저하:** resend 이전에도 같은 위험이다. 배포 후 회차 소요시간으로
   관측하고, 필요하면 위 처방(절단 크기 축소)을 적용한다.
+- **수동 범위:** 수동 기간은 ScanDays가 아니라 Retention 한계까지다. dry-run도
+  같은 락을 잡는다. 관측소·카테고리를 비운 넓은 기간은 절단 건수가 적어도
+  해시·장부 반영 동안 정시를 건너뛰게 할 수 있다. 대기 중인 수동 명령은
+  10초마다 `Acquire`하므로, 락이 stale이 되면 다음 정시가 아니라 그 10초 안에
+  탈취한다.
 
 ---
 
@@ -527,7 +543,8 @@ Lock(같은 경로, stale = 설정 LockStaleSeconds)
 
 - 자동: ② 시작 시 `[RESEND] auto from=… to=… budget=…`, 건너뛸 때 사유
   (`budget=0` / `stalled` / `put error` / `empty window`)
-- 수동: `[RESEND] manual sites=… categories=… from=… to=… days=… retention_limit=…`
+- 수동: `[RESEND] manual sites=… categories=… from=… to=… dry_run=… budget=…`
+  (`from`/`to`는 `2026-09-01(244)` 이중 표기)
 - site 생략은 `sites=all`로 표시하고, 지정 시 정규화한 선택값을 남긴다.
   site 불일치·식별 불가 제외 집계는 SITE 문서의 관측 규칙을 따른다.
 - 요약 한 줄(`range=resend`)은 자동·수동 공통이다. 자동/수동 구분은 `[RESEND]` 줄의
@@ -637,7 +654,7 @@ resend 구현과 독립적인 항목이므로 이번 범위에서 결정하지 �
 | Q9 | 자동 resend 스캔 비용은 배포 후 실측 (§8.3) | **확정** |
 | Q10 | lock stale — 정시·수동 모두 설정 `LockStaleSeconds`, heartbeat 없음 (§6.4) | **확정** (v3의 수동 24시간 폐기) |
 | Q11 | 회차 시간 통제 — `MaxFilesPerRun` 운영 계약, stale 근접 가드 없음 (§6.4) | **확정** (v3의 stale 가드 폐기) |
-| Q12 | 수동 lock 대기 상한 = 설정 `LockStaleSeconds` (§6.3) | **확정** |
+| Q12 | 수동 lock 대기 상한 = 설정 `LockStaleSeconds` (§6.3). 재시도 10초, 반복 안내 5분 | **확정** (간격은 2026-09-22) |
 | Q13 | 예산 차감 = `len(①의 kept)` (§6.2) | **확정** |
 | Q14 | `MaxFilesPerRun = 0` config 거부 (§8.5) | **미결** — resend와 독립. 이번 구현에서 제외 |
 | Q15 | 자동 창 하한 = max(Retention 한계, 장부 운영 시작일), 수동에는 미적용 (§3.5) | **확정** (v4 보강) |

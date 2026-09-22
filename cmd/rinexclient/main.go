@@ -100,6 +100,14 @@ func run() error {
 
 	flag.Parse()
 
+	// resend·secure-set 은 os.Args[1] 에서만 가로챈다. 그 앞에 플래그가
+	// 오면 Parse 가 서브커맨드에서 멈추고, 남은 인자를 버린 채 정기
+	// 실행이 나간다. `rinexclient --config x resend ...` 가 live 전송이
+	// 되는 구멍을 여기서 막는다.
+	if err := rejectExtraArgs(flag.Args()); err != nil {
+		return err
+	}
+
 	// --config 미지정 시 실행파일 옆의 config.ini 를 쓴다.
 	//
 	// 기본값을 "config.ini" 문자열로 두면 CWD 상대경로가 되어,
@@ -582,18 +590,27 @@ func run() error {
 
 	report.Print(nil)
 
+	// putFailed·putVerified 는 ①의 파일 단위 결과다. 실패는 fatal 이
+	// 아니므로 회차는 계속되고 종료 코드도 0 이지만, ②의 진입 판단이
+	// 두 값을 함께 읽는다.
+	putFailed, putVerified := 0, 0
+
 	if live {
-		if _, err := runner.Transfer(
+		putRep, err := runner.Transfer(
 			runCtx,
 			uploader,
 			jobs,
 			kept,
-		); err != nil {
+		)
+		if err != nil {
 			if stalled.Load() {
 				return fmt.Errorf("stall: 회차가 무진행으로 중단됨 (Transfer): %w", err)
 			}
 			return err
 		}
+
+		putFailed = putRep.Failed
+		putVerified = putRep.Verified
 	}
 
 	// ── ② 자동 resend (v4 §6.1 — 정시 회차의 2순위) ─────────────────
@@ -604,12 +621,39 @@ func run() error {
 	//
 	// stall 이 발화한 회차는 죽은 연결로 착수만 시도하게 되므로
 	// 건너뛴다 — 새 기능이 아니라 기존 stall 종료 경로를 ② 앞에서
-	// 한 번 더 지키는 조건문이다 (§6.1). ①이 오류로 끝났으면 위에서
-	// 이미 return 되어 여기 오지 않고, seed 는 조기 반환이라 ② 가 없다.
+	// 한 번 더 지키는 조건문이다 (§6.1). ①이 fatal 오류로 끝났으면
+	// 위에서 이미 return 되어 여기 오지 않고, seed 는 조기 반환이라
+	// ② 가 없다.
+	//
+	// ①이 실패만 있고 성공이 하나도 없으면(Failed > 0 && Verified == 0)
+	// ② 를 건너뛴다 — 원격이 전반적으로 실패를 내는 상태에서 ② 를
+	// 돌리면 같은 원인으로 attempts 만 태울 가능성이 크다.
+	//
+	// 일부라도 성공했으면 원격은 살아 있다 — 실패는 특정 파일의 사정
+	// (원격 권한 등)으로 보고 ② 를 진행한다. 실패 1건으로 막으면 그
+	// 파일이 소진될 때까지(MaxRetries 회차) ② 가 매시간 멈추고, 그런
+	// 파일이 계속 생기면 ② 가 영영 돌지 않는다 (2026-09-22 확정).
+	//
+	// 회차 종료 코드는 기존대로 0 이다(파일 단위 실패는 retry 체계의
+	// 몫). 실패분과 ② 몫은 다음 정시가 재판정한다. (운영 테스트
+	// put_failure_blocks_resend 가 차단 쪽 계약을 고정한다 — 메시지
+	// 문서 MSG-XFER-01 반영은 커밋 9.)
 	//
 	// dry-run 도 ② 를 관측으로 수행한다 — 예산이 len(kept) 기준이라
 	// live 와 같은 숫자가 나온다 (§6.2, resendBudget 주석).
-	if !stalled.Load() {
+	switch {
+	case stalled.Load():
+		// 아래 기존 stall 반환이 회차를 마감한다.
+
+	case putFailed > 0 && putVerified == 0:
+		// 매시간 반복되면 원격 장애다 — 조용한 일반 줄로 두지 않는다.
+		log.Printf(
+			"[RESEND][WARN] skipped (put error: failed=%d verified=0) — "+
+				"①이 한 건도 성공하지 못해 자동 재전송을 보류한다. 다음 정시가 재판정한다",
+			putFailed,
+		)
+
+	default:
 		// now 를 넘겨 resend 창 계산과 같은 "오늘"을 쓴다. 키가 아직
 		// 없으면(운영 극초기) 행의 MIN(first_seen) 또는 오늘로 지연
 		// 계산된다 — 어느 쪽이든 자동 창이 과거로 열리지 않는다.
@@ -667,6 +711,23 @@ func run() error {
 			)
 
 		default:
+			// 단계 전환 표식 — ① 요약·XFER 뒤, ② 요약 앞의 한 줄이다.
+			// 순서 검증과 budget 관측이 이 줄을 읽는다 (§6.1 단계별 요약).
+			if cfg.Put.MaxFilesPerRun == 0 {
+				log.Printf(
+					"[RESEND] auto from=%s to=%s budget=unlimited (MaxFilesPerRun=0)",
+					auto.Range.From.Format(time.DateOnly),
+					auto.Range.To.Format(time.DateOnly),
+				)
+			} else {
+				log.Printf(
+					"[RESEND] auto from=%s to=%s budget=%d",
+					auto.Range.From.Format(time.DateOnly),
+					auto.Range.To.Format(time.DateOnly),
+					budget,
+				)
+			}
+
 			// ② 는 ① 과 같은 협력자에 Opts 만 다르다: 남은 예산으로
 			// 절단하고, 게이트는 ResendMinKinds 로 판정한다(Resend).
 			// 자동은 소진 파일을 재무장하지 않는다 (§4.3 — 켜면
@@ -727,6 +788,22 @@ func run() error {
 	// TODO(MVP2 Retention Cleanup): Deep 실행일이면 Retention Cleanup.
 
 	return nil
+}
+
+// rejectExtraArgs 는 정기 실행의 위치 인자를 거부한다.
+//
+// 스케줄러 호출은 플래그만 쓰거나 인자가 없다. 위치 인자가 있으면
+// 서브커맨드를 정기 실행으로 오인한 것이므로 전송을 시작하지 않는다.
+func rejectExtraArgs(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"알 수 없는 인자: %q — 정기 실행은 위치 인자를 받지 않는다. "+
+			"수동 재전송은 resend 가 첫 인자여야 한다 (rinexclient resend ...)",
+		args,
+	)
 }
 
 // mustSetPolicy 는 카테고리의 RINEX 버전에 해당하는 [SET.RINEXx] 의

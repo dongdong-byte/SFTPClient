@@ -1,6 +1,8 @@
 package main
 
-import "testing"
+import (
+	"testing"
+)
 
 // resendBudget (v4 §6.2) 테스트.
 //

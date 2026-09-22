@@ -300,6 +300,22 @@ type CategoryReport struct {
 	SiteMismatch int
 	SiteUnknown  int
 
+	// SiteMatched 는 요청 site별 일치 관측 수다
+	// (메시지 문서 MSG-SITE-01 선행 계약, SITE v1 §5).
+	//
+	// "발견"의 판정 근거는 kept 가 아니라 이 값이다 — 전부 VERIFIED
+	// 여도, 안정성·세트 검사로 보류되어도 발견은 된 것이다. 따라서
+	// 관측 시점은 site 필터 일치 직후, 중복 검사·검증·게이트·후보
+	// 제외 전부의 앞이다.
+	//
+	// 키는 domain.NormalizeSiteList 가 정규화한 관측소 코드(대문자)다 —
+	// Opts.Sites 의 표기와 무관하게 Run 입구에서 통일되며, Sites 지정 시
+	// 요청한 모든 site 가 0 으로 초기화된다. 합계만으로는 DBON,DBOM 중
+	// DBON 만 발견된 상황을 구분할 수 없다(문서 §5). Sites 가 비면
+	// nil 이다. 같은 정규화 이름이 중복 관측되면 중복도 센다 —
+	// 발견 여부 판정에는 영향이 없다.
+	SiteMatched map[string]int
+
 	Unchanged int
 	New       int
 	Changed   int
