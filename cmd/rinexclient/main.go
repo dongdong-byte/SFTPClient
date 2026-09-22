@@ -25,6 +25,7 @@ import (
 	"SFTPClient/internal/logging"
 	"SFTPClient/internal/put"
 	"SFTPClient/internal/scan"
+	"SFTPClient/internal/scanwindow"
 	"SFTPClient/internal/security"
 	"SFTPClient/internal/transport"
 	"SFTPClient/internal/verify"
@@ -51,6 +52,13 @@ func run() error {
 	// "설치 시 1회 도구" 범주다.
 	if len(os.Args) > 1 && os.Args[1] == "secure-set" {
 		return secureSet()
+	}
+
+	// resend 는 수동 재전송 서브커맨드다 (v4 §6.3). secure-set 과 같은
+	// 방식으로 flag.Parse 전에 가로챈다 — 가로채지 않으면 위치 인자로
+	// 무시되어 정기 실행(live 전송)이 발동한다.
+	if len(os.Args) > 1 && os.Args[1] == "resend" {
+		return resendCmd()
 	}
 
 	var (
@@ -370,6 +378,13 @@ func run() error {
 	jobs := make([]put.CategoryJob, 0)
 
 	for _, cc := range cfg.Put.EnabledCategories() {
+		// Set Completeness Gate 정책 (버전 단위).
+		// RequiredKinds nil 은 게이트 OFF — 기본 배포 상태이며 기존
+		// 동작과 완전히 동일하다. ResendMinKinds 는 ②(자동 resend)와
+		// 수동 resend 의 보류 판정에만 쓰이고(put Opts.Resend), 정시
+		// ① 에서는 읽히지 않는다.
+		required, resendMin := mustSetPolicy(cfg, cc.Category)
+
 		jobs = append(
 			jobs,
 			put.CategoryJob{
@@ -377,14 +392,8 @@ func run() error {
 				LocalPath:  cc.LocalPath,
 				RemotePath: cc.RemotePath,
 
-				// Set Completeness Gate 정책 (버전 단위).
-				// nil 이면 게이트 OFF — 기본 배포 상태이며 기존 동작과
-				// 완전히 동일하다. 버전의 출처는 닫힌 열거형 하나다
-				// (§5 3차 확정) — Category 는 config 가 ParseCategory 로
-				// 강제한 값이라 아래 err 는 발생하지 않아야 하며,
-				// 발생한다면 열거형/switch 정합이 깨진 코드 결함이므로
-				// 조용히 게이트를 끄는 대신 시작을 중단한다.
-				RequiredKinds: mustSetKinds(cfg, cc.Category),
+				RequiredKinds:  required,
+				ResendMinKinds: resendMin,
 			},
 		)
 	}
@@ -587,6 +596,125 @@ func run() error {
 		}
 	}
 
+	// ── ② 자동 resend (v4 §6.1 — 정시 회차의 2순위) ─────────────────
+	//
+	// ①(정시 put)의 Transfer 가 끝난 뒤에만 시작한다. put 코드·정렬
+	// 규칙은 바꾸지 않는다 — ② 안에서는 기존 SortCandidates 가 관측일
+	// 오래된 것부터(Retention 한계에 가까운 날부터) 보낸다 (§6.2).
+	//
+	// stall 이 발화한 회차는 죽은 연결로 착수만 시도하게 되므로
+	// 건너뛴다 — 새 기능이 아니라 기존 stall 종료 경로를 ② 앞에서
+	// 한 번 더 지키는 조건문이다 (§6.1). ①이 오류로 끝났으면 위에서
+	// 이미 return 되어 여기 오지 않고, seed 는 조기 반환이라 ② 가 없다.
+	//
+	// dry-run 도 ② 를 관측으로 수행한다 — 예산이 len(kept) 기준이라
+	// live 와 같은 숫자가 나온다 (§6.2, resendBudget 주석).
+	if !stalled.Load() {
+		// now 를 넘겨 resend 창 계산과 같은 "오늘"을 쓴다. 키가 아직
+		// 없으면(운영 극초기) 행의 MIN(first_seen) 또는 오늘로 지연
+		// 계산된다 — 어느 쪽이든 자동 창이 과거로 열리지 않는다.
+		origin, err := db.OperationOrigin(ctx, now)
+		if err != nil {
+			// origin 없이 자동 창을 계산하면 하한이 사라져 §3.5 가
+			// 막으려던 대량 재전송이 그대로 난다. zero 값이나
+			// Retention 한계로 대체하지 않는다 (커밋 5 검토 §1.4).
+			return fmt.Errorf("resend: operation origin: %w", err)
+		}
+
+		auto, err := scanwindow.Auto(
+			now,
+			origin,
+			cfg.Ledger.RetentionDays,
+			cfg.Scan.Days,
+		)
+		if err != nil {
+			// ErrInvalidOrigin — origin 이 손상(2000년 이전 등)이다.
+			// 오늘이나 Retention 한계로 대체하면 자동 창 범위가
+			// 조용히 달라지므로 회차를 중단하고 사람에게 올린다.
+			return fmt.Errorf("resend: auto window: %w", err)
+		}
+
+		budget, skipBudget := resendBudget(
+			cfg.Put.MaxFilesPerRun,
+			len(kept),
+		)
+
+		switch {
+		case auto.Empty && auto.Why == scanwindow.EmptyBeforeOrigin:
+			// 운영 시작 후 ScanDays 가 지나기 전의 정상 상태 —
+			// WARN 이 아니라 INFO 다 (§3.5).
+			log.Printf(
+				"[RESEND] skipped (window empty: before origin=%s)",
+				origin.Format(time.DateOnly),
+			)
+
+		case auto.Empty:
+			// RetentionDays < ScanDays+2 — 자동 창이 영구히 없는
+			// 설정이다. 조용히 지나가면 안 된다 (§3.3, scanwindow).
+			log.Printf(
+				"[RESEND][WARN] skipped (window empty: %s, "+
+					"RetentionDays=%d ScanDays=%d)",
+				auto.Why,
+				cfg.Ledger.RetentionDays,
+				cfg.Scan.Days,
+			)
+
+		case skipBudget:
+			log.Printf(
+				"[RESEND] skipped (budget=0: MaxFilesPerRun=%d kept=%d)",
+				cfg.Put.MaxFilesPerRun,
+				len(kept),
+			)
+
+		default:
+			// ② 는 ① 과 같은 협력자에 Opts 만 다르다: 남은 예산으로
+			// 절단하고, 게이트는 ResendMinKinds 로 판정한다(Resend).
+			// 자동은 소진 파일을 재무장하지 않는다 (§4.3 — 켜면
+			// 영구 실패 파일이 Retention 한계까지 매시간 재시도된다).
+			resendOpts := runner.Opts
+			resendOpts.MaxFilesPerRun = budget
+			resendOpts.Resend = true
+
+			resendRunner := &put.Runner{
+				Scanner:  scan.New(scan.LocalLister{}),
+				DB:       db,
+				Verifier: verify.Verifier{Grace: cfg.Ingress.Grace},
+				Opts:     resendOpts,
+			}
+
+			resendKept, resendReport, err := resendRunner.Run(
+				runCtx,
+				jobs,
+				auto.Range,
+			)
+			if err != nil {
+				if stalled.Load() {
+					return fmt.Errorf("stall: 회차가 무진행으로 중단됨 (resend Run): %w", err)
+				}
+				return err
+			}
+
+			// 요약 모집단을 hot/deep 과 분리한다 (§6.1, UNIT4 §5).
+			resendReport.Range = "resend"
+
+			resendReport.Print(nil)
+
+			if live {
+				if _, err := resendRunner.Transfer(
+					runCtx,
+					uploader,
+					jobs,
+					resendKept,
+				); err != nil {
+					if stalled.Load() {
+						return fmt.Errorf("stall: 회차가 무진행으로 중단됨 (resend Transfer): %w", err)
+					}
+					return err
+				}
+			}
+		}
+	}
+
 	// 스톨 발화 후에도 오류 없이 여기 도달할 수 있다 (발화 시점이
 	// 마지막 작업 직후라 취소가 아무것도 끊지 못한 경우 등).
 	// 회차를 성공으로 위장하지 않는다. [STALL] WARN 과 비정상 종료
@@ -601,19 +729,26 @@ func run() error {
 	return nil
 }
 
-// mustSetKinds 는 카테고리의 RINEX 버전에 해당하는 [SET.RINEXx]
-// RequiredKinds 를 돌려준다. 게이트 OFF(부재/false)는 nil 이다.
+// mustSetPolicy 는 카테고리의 RINEX 버전에 해당하는 [SET.RINEXx] 의
+// RequiredKinds(평소 게이트)와 ResendMinKinds(resend 게이트, v4 §5)를
+// 돌려준다. 게이트 OFF(부재/false)는 둘 다 nil 이다.
 //
-// RinexVersion 의 err 는 "열거형에 있는데 버전 switch 가 빠진" 설정
-// 공백이며, 정상 config 경로에서는 도달하지 않는다. 도달하면 게이트가
-// 조용히 꺼진 채 도는 것을 막기 위해 즉시 중단한다 (SetKeyKind 의
-// err/유보 이원 계약과 같은 원칙).
-func mustSetKinds(cfg *config.Config, cat domain.Category) []string {
+// 버전의 출처는 닫힌 열거형 하나다 (§5 3차 확정). RinexVersion 의 err 는
+// "열거형에 있는데 버전 switch 가 빠진" 설정 공백이며, 정상 config
+// 경로에서는 도달하지 않는다. 도달하면 게이트가 조용히 꺼진 채 도는
+// 것을 막기 위해 즉시 중단한다 (SetKeyKind 의 err/유보 이원 계약과
+// 같은 원칙).
+func mustSetPolicy(
+	cfg *config.Config,
+	cat domain.Category,
+) (required, resendMin []string) {
 	ver, err := cat.RinexVersion()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "set gate: %v\n", err)
 		os.Exit(1)
 	}
 
-	return cfg.Set.Policy(ver).RequiredKinds
+	p := cfg.Set.Policy(ver)
+
+	return p.RequiredKinds, p.ResendMinKinds
 }
