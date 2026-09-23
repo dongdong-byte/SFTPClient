@@ -11,7 +11,7 @@ alwaysApply: true
 - Windows 우선 개발 후 Linux로 확장한다.
 - 폐쇄망 배포를 고려하고 가능하면 CGO_ENABLED=0 빌드를 유지한다.
 - SOLID를 지키되 불필요한 추상화를 만들지 않는다.
-- 실제 개발 순서는 **PUT(MVP1, 완료) → MVP2 보강 → DOWNLOAD(MVP3) → BOTH/성능 개선(번호 미정)**이다.
+- 실제 개발 순서는 **PUT(MVP1, 완료) → MVP2 보강(DOWNLOAD 로컬 수신 포함, 2026-09-20 편입) → 원격 수신·BOTH/성능 개선(번호 미정)**이다.
 - 문서 간 충돌이 있으면 최신 문서를 우선한다. MVP 범위가 어긋나면 `SFTPClient_PROJECT_GUIDELINES.md` 상단의 「MVP2 현재 실행 범위」가 이긴다.
 - GUIDELINES 12절과 `SFTPClient_MVP2_CONFIRMED_DECISIONS_v2.md`는 2026-09-10 역사 스냅샷이다. 현재형으로 남아 있어도 현행 지시로 읽지 않는다.
 - 설계안의 `file_id`는 구현에서 `(category, file_name)` 복합키로 개정되었다. `file_name` 단독이 식별자가 아니다.
@@ -53,14 +53,16 @@ Local Scanner
 
 MVP2 남은 목표:
 
-- `resend`(기간·대상 지정 재전송, 세트 게이트 우회). Ledger 의미론·인자는 구현 전 확정. 임의로 가정하지 않는다.
+- ~~`resend`~~ 완료 (2026-09-22, 커밋 1~8).
 - ~~경로 범용화~~ 완료 (2026-09-22, PATH_DESIGN v3). 깊이 제한 없음(날짜 폴더가 범위 제한), symlink/junction 미추적은 확정됨 — v3 §1·§5.
+- Retention Cleanup 구현·검증 (**우선** — 3개 기관 운영이 30일에 가까움). 지금은 설정과 `RetentionDays > ScanDays` 검증만 있고 실제 삭제는 없다.
+- DOWNLOAD **로컬 수신** + `download_ledger` (2026-09-20 대표 요구로 편입). 기존 저장 경로의 파일을 표준 폴더로 복제하고, PUT은 표준 폴더를 보낸다. 로컬 수신 파일의 origin은 `LOCAL`이다. 설계 원칙은 `docs/path/SFTPClient_PATH_DESIGN_v1.md` §3~§13, v3 §10 우선. 세부는 구현 전 확정하며 임의로 가정하지 않는다.
 - Linux 배포·테스트(전용 추가 보안 제외).
-- Retention Cleanup 구현·검증. 지금은 설정과 `RetentionDays > ScanDays` 검증만 있고 실제 삭제는 없다.
 
 MVP2에서 하지 않는다:
 
-- DOWNLOAD 및 `download_ledger`(MVP3).
+- DOWNLOAD 원격(SFTP) 수신과 `origin=DOWNLOAD` Ping-Pong 제외(후속, 번호 미정).
+- Linux 전용 추가 보안(공식 보안점검 요구 시에만).
 - 미완성 세트 보류 리포트, 게이트 활성화 운영 절차, RINEX3 운영 프로파일.
 - 재귀 탐색 경계를 현장 정보 없이 추측해 고정하는 것.
 

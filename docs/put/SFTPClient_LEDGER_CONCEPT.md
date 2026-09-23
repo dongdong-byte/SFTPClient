@@ -9,7 +9,10 @@
 > 파일 상단의 v1~v8은 *설계* 개정 이력이고, `schema_meta.schema_version`은 *실재 DB* 구조 세대다.
 > 둘의 숫자가 같다고 가정하지 않는다. (현재: 개정 v8 ↔ `schema_version` `'5'`)
 > 현재 구현 상태(2026-09-15): PUT과 v4→v5 자동 마이그레이션, 세트 원자성은 완료.
-> Retention Cleanup은 설정·불변식 검증만 있고 실제 삭제는 미구현이며, DOWNLOAD는 MVP3 예정이다.
+> Retention Cleanup은 설정·불변식 검증만 있고 실제 삭제는 미구현이다.
+> DOWNLOAD 로컬 수신과 `download_ledger`는 2026-09-20 대표 요구로 **MVP2**에 편입됐다
+> (원격 SFTP 수신은 후속). 장부 관계는 `docs/path/SFTPClient_PATH_DESIGN_v1.md` §4·§9 [제안]을
+> DOWNLOAD 설계 때 확정하고, 확정 시 이 문서와 `schema.sql`을 함께 갱신한다.
 > 현재 Ledger 보존 정책(2026-09-16): 서울시·측위원 현장 배포에서 적용한
 > 1개월을 **30일**로 고정하여 `[LEDGER] RetentionDays = 30`을 사용한다.
 > `[LOG] RetentionDays = 30`과 값은 같지만 DB 행 보존과 로그 파일 보존은 별개 책임이다.
@@ -84,7 +87,7 @@ MVP 일정상 물리 설계(DDL)를 먼저 확정하고 개념·논리를 사후
 |---|---|---|
 | 파일 | 이 파일이 무엇이고 지금 어떤 상태인가 | `common_ledger` |
 | 송신 이력 | 이 파일을 보냈는가, 결과는 무엇인가 | `put_ledger` |
-| 수신 이력 | 이 파일을 받았는가, 결과는 무엇인가 | `download_ledger` (MVP3 예정, 현재 미구현) |
+| 수신 이력 | 이 파일을 받았는가, 결과는 무엇인가 | `download_ledger` (MVP2 편입 2026-09-20, 현재 미구현) |
 
 설계안 9절의 "하나의 사실에는 하나의 주인만 둔다"를 그대로 따른다.
 
