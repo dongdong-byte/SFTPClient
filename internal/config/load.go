@@ -399,6 +399,17 @@ func (l *loader) template(s *iniSection, key string) *pathpl.Template {
 		return nil
 	}
 
+	return l.parseTemplate(s, key, v)
+}
+
+// parseTemplate 은 이미 읽은 원문 v 를 파싱한다. template 과 rolePathTemplate 이
+// 공유하는 뒷부분이다 — value 는 보호 값 해석을 겸하므로 한 키에 두 번
+// 부르지 않는다.
+func (l *loader) parseTemplate(
+	s *iniSection,
+	key string,
+	v string,
+) *pathpl.Template {
 	tpl, err := pathpl.Parse(v)
 	if err != nil {
 		l.addf(
@@ -414,6 +425,101 @@ func (l *loader) template(s *iniSection, key string) *pathpl.Template {
 	}
 
 	return tpl
+}
+
+// 경로 역할별 금지 토큰 (PATH v4 / DOWNLOAD v3 §2.1-5·§7.1).
+//
+// (SITE)·(HH) 는 값의 출처가 파일명인 토큰이다. 파일별 값을 채울 수 있는
+// 자리는 DOWNLOAD 목적지(LocalPath) 하나뿐이다:
+//
+//	[PUT.*]      LocalPath   원본 — 파일 토큰을 받지 않는다
+//	[PUT.*]      RemotePath  목적지 — RemotePath.Expand(When) 이 스캔 날짜만으로
+//	                         전개하므로 채울 수 없다. PUT 지원은 후속(결정 문서 §8-3)
+//	[DOWNLOAD.*] RemotePath  원본 — 파일 토큰을 받지 않는다 (v3 §7.1-2)
+//	[DOWNLOAD.*] LocalPath   목적지 — 허용. Daily 카테고리의 (HH) 만 별도 거부(v3 §7.1-3)
+//
+// 이 목록의 주인은 config 다. 토큰의 문법(괄호·이름)은 pathpl 것이지만,
+// "어느 경로 역할에서 어느 토큰을 허용하는가"는 정책이다.
+// 검사는 pathpl.Parse 이전에 원문 문자열로 한다 — 경로 토큰 커밋 2
+// 시점에는 pathpl 이 이 토큰들을 아직 모르므로 Parse 가 먼저 "알 수 없는
+// 토큰"으로 실패해 정책에 도달하지 못한다. 커밋 3 에서 pathpl 이
+// (SITE)·(HH) 를 알게 되어도 이 검사가 그대로 남아, 옛 config 의 (HH)
+// (PATH v3 §1-3 에서 삭제한 날짜 파생 시각 토큰)가 다시 로드되는 창이
+// 어느 커밋에도 열리지 않는다.
+//
+// downloadSourceForbiddenTokens 는 아직 호출자가 없다. [DOWNLOAD.*] 로더
+// (DOWNLOAD v3 §13-2)가 생기면 RemotePath 에 rolePathTemplate 으로 붙인다.
+// 두 역할이 같은 목록을 쓰지만 변수를 나눠 두는 이유는, 뒤에 PUT 이 파일
+// 토큰을 지원하게 되어도(§8-3) DOWNLOAD 원본 금지는 그대로 남아야 하기
+// 때문이다 — 하나를 풀 때 다른 하나가 따라 풀리면 안 된다.
+var (
+	putPathForbiddenTokens        = []string{"SITE", "HH"}
+	downloadSourceForbiddenTokens = []string{"SITE", "HH"}
+)
+
+// forbiddenTokenHints 는 금지 토큰별로 운영자가 할 일을 알려 주는 문구다.
+//
+// 이 오류를 가장 먼저 만나는 사람은 PUT 만 쓰는 현장(서울시 등)의
+// 운영자다. 문구에 DOWNLOAD 를 언급하면 "DOWNLOAD 를 켜야 하나" 로
+// 오독되므로, 방향 설명 대신 고칠 방법을 적는다.
+//
+//	(HH)   PATH v3 에서 PUT 경로의 (HH) 를 제거한 옛 config 가 남은 경우다.
+//	       재배포 절차(PATH v3 §7)의 "LocalPath 에서 (HH)\ 제거" 와 같은 말을 한다.
+//	(SITE) 아직 이 경로에서 지원하지 않는 토큰이다.
+var forbiddenTokenHints = map[string]string{
+	"HH":   "remove it; hour subfolders under the date folder are scanned recursively (PATH v3)",
+	"SITE": "remove it; site folders are not supported in this path",
+}
+
+// rolePathTemplate 은 경로 템플릿을 역할 정책과 함께 읽는다.
+//
+// template 과 같되, 파싱 전에 forbidden 을 원문에서 찾아 거부한다.
+// role 은 오류 문구에 들어가는 사람용 이름("PUT paths" 등)이다 — 커밋 3
+// 뒤에는 같은 토큰이 DOWNLOAD 목적지에서 정상이므로, 운영자가 "토큰이
+// 틀렸다"가 아니라 "이 방향에서는 안 된다"로 읽어야 한다.
+//
+// 토큰은 항상 "(" + 이름 + ")" 형태이고 pathpl 이 대소문자 변형을 받지
+// 않으므로 정확한 표기만 찾아도 빠지는 경우가 없다 — 소문자 (hh) 등은
+// pathpl.Parse 가 알 수 없는 토큰으로 거부한다.
+//
+// 금지 토큰이 있으면 Parse 를 건너뛴다. 같은 줄에 정책 오류와 문법 오류를
+// 둘 다 쌓으면 운영자가 두 가지를 고쳐야 하는 줄 알게 된다.
+func (l *loader) rolePathTemplate(
+	s *iniSection,
+	key string,
+	role string,
+	forbidden []string,
+) *pathpl.Template {
+	v, ok := l.value(s, key)
+	if !ok {
+		return nil
+	}
+
+	for _, name := range forbidden {
+		if !strings.Contains(v, "("+name+")") {
+			continue
+		}
+
+		l.addf(
+			"%w: line %d: [%s] %s: token (%s) is not supported in %s: %s",
+			ErrBadValue,
+			s.lineOf(key),
+			s.name,
+			key,
+			name,
+			role,
+			forbiddenTokenHints[name],
+		)
+
+		return nil
+	}
+
+	return l.parseTemplate(s, key, v)
+}
+
+// putTemplate 은 [PUT.<CATEGORY>] 의 LocalPath·RemotePath 를 읽는다.
+func (l *loader) putTemplate(s *iniSection, key string) *pathpl.Template {
+	return l.rolePathTemplate(s, key, "PUT paths", putPathForbiddenTokens)
 }
 
 // optionalIntVal 은 선택 정수 키를 읽는다. 키 부재가 정상인 값 전용이며
@@ -651,8 +757,8 @@ func (l *loader) categories() []CategoryConfig {
 		cc := CategoryConfig{
 			Category:   cat,
 			Enabled:    l.boolVal(s, "Enabled"),
-			LocalPath:  l.template(s, "LocalPath"),
-			RemotePath: l.template(s, "RemotePath"),
+			LocalPath:  l.putTemplate(s, "LocalPath"),
+			RemotePath: l.putTemplate(s, "RemotePath"),
 		}
 
 		out = append(out, cc)
