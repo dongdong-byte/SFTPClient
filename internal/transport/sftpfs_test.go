@@ -53,6 +53,19 @@ func TestCloseAfterAbortSkipsSFTPDrain(t *testing.T) {
 	}
 }
 
+// 생성 도중 실패한 객체나 테스트 대역에서도 정리 경로가 panic 하지 않는다.
+func TestCloseAndAbortAreNilSafe(t *testing.T) {
+	t.Parallel()
+
+	s := &SFTPFS{}
+	s.Abort()
+	s.Abort()
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
+}
+
 func TestIgnoreBenignClose(t *testing.T) {
 	t.Parallel()
 

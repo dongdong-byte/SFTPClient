@@ -63,7 +63,9 @@ type SFTPDialOptions struct {
 	KnownHostsPath string
 }
 
-// SFTPFS 는 SFTP 서버로의 전송이다. put.Uploader 를 구조적으로 만족한다.
+// SFTPFS 는 SFTP 서버로의 전송이다. put.Uploader 를 구조적으로 만족하고,
+// DOWNLOAD 용 원시 호출(ReadDir·DownloadPart)도 제공한다. download 패키지는
+// 자기 쪽에 필요한 최소 인터페이스(RemoteFS)를 선언해 이것을 쓴다 (커밋 3).
 //
 // LocalFS 와 달리 접속 상태(연결 핸들)를 가지므로 값이 아니라 포인터로
 // 쓰며, 사용 후 Close 가 필요하다. 파일 작업 관점에서는 여전히
@@ -75,16 +77,25 @@ type SFTPDialOptions struct {
 // 동시성: *sftp.Client 는 요청을 다중화하므로 여러 goroutine 이 동시에
 // 호출해도 된다 (Uploader 계약의 MaxWorkers 동시 호출 요구).
 //
-// ctx 에 대하여: pkg/sftp 의 개별 작업은 context 를 받지 않는다.
-// 따라서 각 메서드는 작업 시작 전에 ctx 취소를 확인하고,
-// UploadPart 는 추가로 청크 사이에서 ctx 를 확인한다.
+// ctx 에 대하여: ReadDir 은 pkg/sftp 의 ReadDirContext 로 취소를 전달한다.
+// 나머지 개별 작업은 context 를 받지 않으므로 작업 시작 전에 확인하고,
+// UploadPart·DownloadPart 는 추가로 청크 사이에서 ctx 를 확인한다.
 //
 // 이미 진행 중인 Stat, Rename, MkdirAll, Write 같은 SFTP 왕복 자체를
 // ctx 취소로 즉시 중단시키지는 못한다. 해당 호출이 반환된 뒤 다음
 // 취소 지점에서 중단된다.
 type SFTPFS struct {
 	client *sftp.Client
-	conn   *ssh.Client
+
+	// conn 은 SFTP 세션 아래의 전송 연결이다. 운영에서는 *ssh.Client,
+	// in-process 테스트에서는 pipe 를 닫는 closer 다 (DOWNLOAD 커밋 계획 §3.4).
+	//
+	// 구체 타입이 아니라 io.Closer 로 두는 이유는 Abort 계약 때문이다.
+	// Abort 의 뜻은 "이 연결을 닫아 그 위에 블록된 모든 원격 호출을 깨운다"
+	// 하나이고, 필요한 능력도 Close 하나다. 테스트가 conn == nil 로 두고
+	// Abort 를 무동작으로 만들면 stall 경로의 해제 계약을 시험하지 못한다.
+	// 그래서 테스트도 실제로 블록을 깨우는 closer 를 같은 자리에 넣는다.
+	conn io.Closer
 
 	// prog 는 원격 작업의 진전 계측이다 (UNIT3 — 무진행 감시).
 	// 모든 원격 메서드가 enter/exit 로 감싸고, UploadPart 는 청크
@@ -98,11 +109,11 @@ type SFTPFS struct {
 	aborted   atomic.Bool
 }
 
-// DialSFTP 는 SFTP 서버에 접속해 SFTPFS 를 만든다.
+// DialSFTP 는 PUT 용으로 SFTP 서버에 접속해 SFTPFS 를 만든다.
 //
 // 접속 시점에 posix-rename 확장 지원을 확인하고, 미지원으로 판정되면
 // 즉시 실패한다 (2026-08-31 확정: 명확한 오류로 실패, fallback 없음).
-// 확인은 광고 → 기능 탐침의 2단계다 (본문 주석 참조).
+// 확인은 광고 → 기능 탐침의 2단계다 (requirePosixRename 주석 참조).
 //
 // 판정을 Rename 호출 시점이 아니라 접속 시점에 두는 이유는 attempts
 // 예산 보호다 — 진짜 미지원 서버에서 Rename 시점 판정은 매시
@@ -115,6 +126,40 @@ type SFTPFS struct {
 // Remove 성공 후 Rename 실패 시 원격의 멀쩡한 옛 파일까지 잃는다
 // (Uploader.Rename 계약에서 기각한 것과 같은 근거).
 func DialSFTP(opts SFTPDialOptions) (*SFTPFS, error) {
+	return dialSFTP(opts, requirePosixRename)
+}
+
+// DialSFTPReadOnly 는 DOWNLOAD 용으로 SFTP 서버에 접속한다
+// (DOWNLOAD 커밋 계획 §3.1).
+//
+// DialSFTP 와 다른 점은 posix-rename 검사를 하지 않는다는 것 하나다.
+// DOWNLOAD 는 원격을 나열(ReadDir)하고 읽기(DownloadPart)만 하며, 최종
+// Rename 은 로컬 파일시스템에서 한다. 원격 Rename 을 쓰지 않는 방향이
+// 원격 Rename 확장 때문에 접속을 거부당하면, 읽기 전용 계정이나 확장이
+// 없는 서버에서 멀쩡한 수신이 통째로 막힌다.
+//
+// TCP·SSH handshake·known_hosts·키 인증·SFTP subsystem 초기화·deadline
+// 해제는 DialSFTP 와 같은 dialSFTP 를 거친다. 두 경로가 갈라지는 지점은
+// 방향별 접속 후 검사(afterConnect) 하나뿐이다.
+//
+// "읽기 전용"은 이 접속의 용도를 뜻한다. 반환된 SFTPFS 의 쓰기 메서드
+// (UploadPart·Rename 등)를 막지는 않는다 — 원격 쓰기를 하지 않는 것은
+// 호출자(download)의 계약이며, 서버 계정 권한이 최종 방어선이다.
+func DialSFTPReadOnly(opts SFTPDialOptions) (*SFTPFS, error) {
+	return dialSFTP(opts, nil)
+}
+
+// afterConnectFunc 는 SFTP 초기화 직후, 접속 deadline 이 아직 걸려 있는
+// 동안 방향별로 수행할 검사다. 오류를 돌려주면 접속을 닫고 실패한다.
+// 원격 왕복을 할 수 있으므로 dialTimeout 예산 안에서 실행된다.
+type afterConnectFunc func(client *sftp.Client, addr string) error
+
+// dialSFTP 는 DialSFTP·DialSFTPReadOnly 의 공통 접속 경로다.
+// afterConnect 가 nil 이면 검사를 건너뛴다.
+func dialSFTP(
+	opts SFTPDialOptions,
+	afterConnect afterConnectFunc,
+) (*SFTPFS, error) {
 	keyBytes, err := os.ReadFile(opts.PrivateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("sftp: read private key: %w", err)
@@ -172,6 +217,31 @@ func DialSFTP(opts SFTPDialOptions) (*SFTPFS, error) {
 		return nil, fmt.Errorf("sftp: open subsystem: %w", err)
 	}
 
+	if afterConnect != nil {
+		if err := afterConnect(client, addr); err != nil {
+			_ = client.Close()
+			_ = conn.Close()
+
+			return nil, err
+		}
+	}
+
+	// ★ deadline 해제는 필수이며, 위치는 handshake 직후가 아니라
+	// SFTP 초기화(NewClient)·접속 후 검사(posix-rename 탐침)까지 마친 뒤다
+	// (UNIT3 v3 §2-5). 남겨두면 접속 시작 10초 뒤부터 정상적인
+	// 파일 읽기·쓰기도 i/o timeout 으로 실패한다. DOWNLOAD 도 같다.
+	if err := tcpConn.SetDeadline(time.Time{}); err != nil {
+		_ = client.Close()
+		_ = conn.Close()
+		return nil, fmt.Errorf("sftp: clear handshake deadline: %w", err)
+	}
+
+	return &SFTPFS{client: client, conn: conn}, nil
+}
+
+// requirePosixRename 은 PUT 접속의 사후 검사다. 서버가 posix-rename
+// 확장을 처리하지 못하면 오류를 돌려준다. (DialSFTP 주석 참조)
+func requirePosixRename(client *sftp.Client, addr string) error {
 	// posix-rename 지원 확인은 2단계다: 광고 → 기능 탐침.
 	//
 	// 1) 광고: 서버가 SSH_FXP_VERSION 에서 확장을 광고하면 신뢰한다.
@@ -197,10 +267,7 @@ func DialSFTP(opts SFTPDialOptions) (*SFTPFS, error) {
 
 		probeErr := client.PosixRename(probe, probe+"-dst")
 		if probeErr != nil && !isNotExist(probeErr) {
-			_ = client.Close()
-			_ = conn.Close()
-
-			return nil, fmt.Errorf(
+			return fmt.Errorf(
 				"sftp: 서버 %s 가 %s 확장을 지원하지 않는 것으로 "+
 					"판정됐다 (탐침 응답: %v). Uploader.Rename 계약(대상 "+
 					"존재 시 덮어쓰기)을 만족할 수 없으므로 전송을 시작하지 "+
@@ -210,17 +277,7 @@ func DialSFTP(opts SFTPDialOptions) (*SFTPFS, error) {
 		}
 	}
 
-	// ★ deadline 해제는 필수이며, 위치는 handshake 직후가 아니라
-	// SFTP 초기화(NewClient)·posix-rename 탐침까지 마친 뒤다
-	// (UNIT3 v3 §2-5). 남겨두면 접속 시작 10초 뒤부터 정상적인
-	// 파일 읽기·쓰기도 i/o timeout 으로 실패한다.
-	if err := tcpConn.SetDeadline(time.Time{}); err != nil {
-		_ = client.Close()
-		_ = conn.Close()
-		return nil, fmt.Errorf("sftp: clear handshake deadline: %w", err)
-	}
-
-	return &SFTPFS{client: client, conn: conn}, nil
+	return nil
 }
 
 // dialSSH 는 TCP 연결과 SSH handshake 가 하나의 dialTimeout 예산을
@@ -280,10 +337,15 @@ func (s *SFTPFS) Close() error {
 		return nil
 	}
 
-	return errors.Join(
-		ignoreBenignClose(s.client.Close()),
-		ignoreBenignClose(s.conn.Close()),
-	)
+	var clientErr, connErr error
+	if s.client != nil {
+		clientErr = ignoreBenignClose(s.client.Close())
+	}
+	if s.conn != nil {
+		connErr = ignoreBenignClose(s.conn.Close())
+	}
+
+	return errors.Join(clientErr, connErr)
 }
 
 // Abort 는 스톨 탈출 전용 강제 종료다 (UNIT3 v3 §3.2).
@@ -299,7 +361,9 @@ func (s *SFTPFS) Close() error {
 func (s *SFTPFS) Abort() {
 	s.abortOnce.Do(func() {
 		s.aborted.Store(true)
-		_ = s.conn.Close()
+		if s.conn != nil {
+			_ = s.conn.Close()
+		}
 	})
 }
 
@@ -521,6 +585,292 @@ func (s *SFTPFS) Remove(ctx context.Context, p string) error {
 	}
 
 	return nil
+}
+
+// ReadDir 은 원격 디렉터리 dir 의 항목을 돌려준다 (DOWNLOAD 커밋 계획 §3.2).
+//
+// DOWNLOAD 의 원격 나열 어댑터(download 패키지, 커밋 3)가 scan.DirLister 로
+// 바꿔 쓰는 원시 호출이다. 여기서는 판정하지 않는다:
+//
+//   - 항목 순서를 보장하지 않는다. 서버가 준 순서 그대로다.
+//   - 파일 종류 비트를 보존한다. 서버의 READDIR 응답은 lstat 기준이므로
+//     심볼릭 링크는 fs.ModeSymlink 로 나오고 IsDir()==false 다. 링크를
+//     따라가 디렉터리로 바꾸지 않는다 — 링크·비정규 대상의 처리는
+//     scan.Scanner 의 Irregular 정책이 정한다.
+//   - "." ".." 은 pkg/sftp 클라이언트가 이미 걸러 준다.
+//
+// 없는 경로는 errors.Is(err, fs.ErrNotExist) 가 성립한다. Scanner 는 이것을
+// 오류가 아니라 빈 날짜 슬롯(Missing)으로 집계한다. 권한 오류 등 그 외는
+// 그대로 오류다 — "없음"과 "읽을 수 없음"은 다른 사실이다.
+//
+// 원격 호출 전체를 진행 중 작업으로 계측한다. 목록 응답이 오지 않으면
+// WatchStall 이 발화하고 Abort 가 이 호출을 깨운다.
+func (s *SFTPFS) ReadDir(ctx context.Context, dir string) ([]fs.FileInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.prog.enter()
+	defer s.prog.exit()
+
+	entries, err := s.client.ReadDirContext(ctx, dir)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+
+		// 일부 서버(특히 Windows 기반 구현)는 디렉터리 자리에 파일이
+		// 있어도 NO_SUCH_FILE 을 돌려준다. 그대로 감싸면 Scanner 가 실제
+		// 원격 구조 오류를 빈 날짜 슬롯(Missing)으로 조용히 넘긴다.
+		// 반대로 디렉터리는 있는데 목록만 NO_SUCH_FILE 이면, 그것도
+		// Missing 으로 넘기면 그 날짜 파일이 통째로 빠진다.
+		// 정상 나열에는 왕복을 늘리지 않고, 실패했을 때만 Lstat 으로
+		// 재확인해 두 경우를 갈라낸다.
+		fi, statErr := s.client.Lstat(dir)
+		return nil, classifyReadDirFailure(dir, err, fi, statErr)
+	}
+
+	return entries, nil
+}
+
+// classifyReadDirFailure 는 ReadDir 실패를 Scanner 가 보는 오류로 나눈다.
+//
+//	없는 경로                         → fs.ErrNotExist (Missing)
+//	있는 파일·링크                    → 디렉터리가 아님 (Missing 아님)
+//	있는 디렉터리인데 목록만 없음     → Missing 아님. 하루치가 조용히 빠진다
+//	있음 확인 자체가 다른 오류        → 그 확인 오류
+func classifyReadDirFailure(dir string, listErr error, fi fs.FileInfo, statErr error) error {
+	switch {
+	case statErr == nil && fi != nil && !isListableDir(fi):
+		return fmt.Errorf("read dir: %q is not a directory", dir)
+
+	case statErr == nil && fi != nil && isNotExist(listErr):
+		// %w 로 잇지 않는다. listErr 가 fs.ErrNotExist 이면 Scanner 가
+		// 이 디렉터리를 빈 날짜(Missing)로 넘겨 그 날짜 파일을 건너뛴다.
+		return fmt.Errorf("read dir: %q exists but listing failed: %v", dir, listErr)
+
+	case isNotExist(listErr) && statErr != nil && !isNotExist(statErr):
+		return fmt.Errorf("read dir: verify path kind: %w", statErr)
+
+	default:
+		return wrapNotExist("read dir", listErr)
+	}
+}
+
+// isListableDir 는 나열해도 되는 진짜 디렉터리인지 답한다.
+// 링크는 대상이 디렉터리여도 따라가지 않는다.
+func isListableDir(fi fs.FileInfo) bool {
+	mode := fi.Mode()
+	return mode.IsDir() && mode&fs.ModeSymlink == 0
+}
+
+// DownloadPart 는 원격 remotePath 의 내용을 로컬 localPartPath(호스트 OS
+// 경로)로 복사한다 (DOWNLOAD 커밋 계획 §3.3, DOWNLOAD v3 §6).
+//
+// 처리 순서:
+//
+//  1. 원격 파일을 읽기 전용으로 연다.
+//  2. 이전 회차의 정규 .part 를 제거하고 O_CREATE|O_EXCL 로 새로 연다.
+//     이어받지 않으며, 링크를 따라 다른 파일을 자르지 않는다 (D9).
+//  3. 청크 경계마다 ctx 취소를 확인한다.
+//  4. 읽은 바이트 전체가 기록될 때까지 short write 를 처리한다.
+//  5. 청크 기록 성공마다 진전(beat)을 기록한다.
+//  6. 끝까지 받으면 로컬 .part 를 Sync 해 디스크에 내린다.
+//  7. Read·Write·Sync·Close 오류를 버리지 않는다. 주 오류가 있으면 그
+//     원인을 앞에 두고 Close 오류는 errors.Join 으로 덧붙인다.
+//
+// 원격을 먼저 여는 이유: 원격에 파일이 없으면(목록 이후 사라짐) 로컬에
+// 빈 .part 를 남기지 않는다. 그 경우 오류는 fs.ErrNotExist 가 성립한다.
+//
+// 하지 않는 일 (DOWNLOAD v3 §6.2): 크기 판정, 최종 이름 Rename, 실패 후
+// .part 삭제, 목적지 디렉터리 생성. 전부 호출자(download 러너) 몫이다.
+// 따라서 실패로 반환되면 로컬 .part 가 부분 내용으로 남아 있을 수 있다.
+//
+// 오류 판별 주의: 로컬 쪽 오류도 os 가 준 원문을 보존하므로, 목적지
+// 디렉터리가 없으면 그 오류도 fs.ErrNotExist 가 성립한다. 호출자는
+// EnsureDir 을 먼저 하고, DownloadPart 의 fs.ErrNotExist 로 원격 부재를
+// 판정해 분기하지 않는다 — DOWNLOAD 실패는 원인과 무관하게 다음 회차가
+// 다시 시도한다(커밋 계획 §1.1-6). 원인은 오류 문구의 "open remote" /
+// "create local .part" 머리로 구분된다.
+//
+// 계측 창: 원격 Open 부터 원격 Close 까지를 진행 중 작업으로 본다.
+// 청크 사이의 로컬 Write 도 이 창 안이라 로컬 디스크가 블록되면 발화는
+// 하되 ssh close 로 풀리지는 않는다. UploadPart 의 로컬 Read 와 같은
+// 알려진 잔여다 (UNIT3 v3 §3.4, §6-5).
+func (s *SFTPFS) DownloadPart(
+	ctx context.Context,
+	remotePath string,
+	localPartPath string,
+) (err error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	// exit 의 defer 를 src.Close 의 defer 보다 먼저 등록해 마지막 원격
+	// Close 까지 창 안에 둔다 (defer 는 역순 실행).
+	s.prog.enter()
+	defer s.prog.exit()
+
+	src, err := s.client.Open(remotePath)
+	if err != nil {
+		return wrapNotExist("open remote", err)
+	}
+	defer closeInto(&err, src, "close remote")
+
+	dst, err := openLocalPart(localPartPath)
+	if err != nil {
+		return fmt.Errorf("create local .part: %w", err)
+	}
+	defer closeInto(&err, dst, "close local .part")
+
+	if err := copyDownload(ctx, dst, src, s.prog.beat); err != nil {
+		return err
+	}
+
+	// 디스크에 내린 뒤에야 성공이다. 호출자는 이 반환 직후 크기를
+	// 비교하고 최종 이름으로 Rename 한다. Sync 없이 Rename 하면
+	// 정전·강제 종료 뒤 "크기는 맞는데 내용이 0 으로 채워진" 최종
+	// 파일이 남을 수 있고, 다음 회차는 크기가 같으니 기존으로 건너뛴다.
+	if serr := dst.Sync(); serr != nil {
+		return fmt.Errorf("sync local .part: %w", serr)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("download canceled: %w", ctxErr)
+	}
+
+	return nil
+}
+
+func copyDownload(ctx context.Context, dst io.Writer, src io.Reader, beat func()) error {
+	buf := make([]byte, uploadChunk)
+
+	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("download canceled: %w", ctxErr)
+		}
+
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if werr := writeFull(dst, buf[:n]); werr != nil {
+				return fmt.Errorf("write local .part: %w", werr)
+			}
+			beat()
+
+			// io.Reader 는 마지막 호출에서 (n > 0, io.EOF)를 함께 돌려줄
+			// 수 있다. 쓰는 동안 취소된 회차를 EOF 성공으로 오인하지 않는다.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("download canceled: %w", ctxErr)
+			}
+		}
+
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			return fmt.Errorf("read remote: %w", readErr)
+		}
+	}
+}
+
+// openLocalPart 는 매 회차의 .part 를 새 inode/파일로 만든다.
+//
+// 기존 정규 파일을 O_TRUNC 로 바로 열면 그것이 다른 파일의 hard link 인
+// 경우 원본까지 잘린다. 심볼릭 링크라면 링크 대상이 잘린다. 먼저 이름만
+// 제거한 뒤 O_EXCL 로 새 파일을 만들면 두 경우 모두 다른 대상을 건드리지
+// 않는다. 제거와 생성 사이에 누군가 같은 이름을 만들더라도 O_EXCL 이
+// 실패하므로 그 대상을 따라가지 않는다. 디렉터리·장치 등 비정규 대상은
+// 제거하지 않고 명시적으로 거부한다.
+func openLocalPart(localPartPath string) (*os.File, error) {
+	fi, err := os.Lstat(localPartPath)
+	switch {
+	case err == nil:
+		if !fi.Mode().IsRegular() {
+			return nil, fmt.Errorf("existing path is not a regular file: %q", localPartPath)
+		}
+		if err := removeReplaceableFile(localPartPath); err != nil {
+			return nil, err
+		}
+	case errors.Is(err, fs.ErrNotExist):
+		// 처음 수신하는 파일이다.
+	case err != nil:
+		return nil, fmt.Errorf("inspect existing path: %w", err)
+	}
+
+	return os.OpenFile(
+		localPartPath,
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		0o644,
+	)
+}
+
+// removeReplaceableFile 은 다음 수신이 덮어쓸 정규 파일을 지운다.
+//
+// 먼저 이름만 제거한다. hard link 의 모드를 바꾸면 원본 inode 의 권한까지
+// 바뀌므로, 삭제가 될 때는 Chmod 하지 않는다. Windows 는 읽기 전용 파일이면
+// Remove 를 거절한다. 그때만 속성을 풀고 한 번 더 지운다. 풀지 않으면 그
+// .part 는 매 회차 같은 오류로 남는다.
+func removeReplaceableFile(path string) error {
+	err := os.Remove(path)
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	if cerr := os.Chmod(path, 0o644); cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {
+		return fmt.Errorf("remove existing file: %w", err)
+	}
+
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove existing file: %w", err)
+	}
+
+	return nil
+}
+
+// writeFull 은 p 전체가 w 에 기록될 때까지 Write 를 반복한다.
+//
+// io.Writer 계약상 n < len(p) 이면 오류가 함께 와야 하지만, 그 계약을
+// 어기는 구현(0, nil)도 무한 루프 대신 io.ErrShortWrite 로 끝낸다.
+func writeFull(w io.Writer, p []byte) error {
+	for written := 0; written < len(p); {
+		m, err := w.Write(p[written:])
+		if err != nil {
+			return err
+		}
+
+		if m == 0 {
+			return io.ErrShortWrite
+		}
+
+		written += m
+	}
+
+	return nil
+}
+
+// closeInto 는 defer 에서 c 를 닫고 그 오류를 *errp 에 반영한다.
+//
+//	*errp == nil, Close 오류 → Close 오류가 결과가 된다
+//	*errp != nil, Close 오류 → 주 오류를 앞에 두고 errors.Join 으로 보존
+//	Close 성공             → *errp 불변
+//
+// 주 오류를 덮어쓰지 않는다. 운영자가 먼저 봐야 하는 것은 전송이 왜
+// 실패했는가이고, 그 뒤의 Close 실패는 부수 사실이다. 반대로 주 오류가
+// 없을 때의 Close 실패는 버리지 않는다 — 로컬 Close 는 쓰기 반영 실패를
+// 알리는 마지막 지점일 수 있다.
+func closeInto(errp *error, c io.Closer, op string) {
+	cerr := c.Close()
+	if cerr == nil {
+		return
+	}
+
+	cerr = fmt.Errorf("%s: %w", op, cerr)
+
+	if *errp == nil {
+		*errp = cerr
+		return
+	}
+
+	*errp = errors.Join(*errp, cerr)
 }
 
 // Join 은 SFTP 경로 규칙('/')으로 dir 과 name 을 결합한다.
