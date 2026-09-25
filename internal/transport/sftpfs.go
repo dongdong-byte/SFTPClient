@@ -805,25 +805,16 @@ func openLocalPart(localPartPath string) (*os.File, error) {
 
 // removeReplaceableFile 은 다음 수신이 덮어쓸 정규 파일을 지운다.
 //
-// 먼저 이름만 제거한다. hard link 의 모드를 바꾸면 원본 inode 의 권한까지
-// 바뀌므로, 삭제가 될 때는 Chmod 하지 않는다. Windows 는 읽기 전용 파일이면
-// Remove 를 거절한다. 그때만 속성을 풀고 한 번 더 지운다. 풀지 않으면 그
-// .part 는 매 회차 같은 오류로 남는다.
+// 먼저 이름만 제거한다. Windows에서는 실제 읽기 전용 정규 파일일 때만
+// 제한적으로 속성을 풀어 재시도한다. sharing violation 등 다른 실패에서는
+// 속성을 바꾸지 않고 운영자가 확인하도록 오류를 그대로 남긴다.
 func removeReplaceableFile(path string) error {
-	err := os.Remove(path)
+	err := removeRegularFile(path)
 	if err == nil || errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 
-	if cerr := os.Chmod(path, 0o644); cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {
-		return fmt.Errorf("remove existing file: %w", err)
-	}
-
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove existing file: %w", err)
-	}
-
-	return nil
+	return fmt.Errorf("remove existing file: %w", err)
 }
 
 // writeFull 은 p 전체가 w 에 기록될 때까지 Write 를 반복한다.
