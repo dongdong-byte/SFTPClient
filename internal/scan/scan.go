@@ -2,6 +2,12 @@
 // 나열하고, 그 아래를 재귀로 나열하여, 발견한 일반 파일을 호출자에게
 // 전달한다.
 //
+// 템플릿에 파일 토큰((SITE)·(HH))이 있으면 그 자리의 폴더는 "채우기"가
+// 아니라 "찾기"다 (PATH v4 커밋 계획 §2). 부모를 나열해 패턴에 맞는 진짜
+// 폴더만 따라 내려가 루트를 여러 개 만들고, 각 루트 아래는 지금의 재귀
+// 수집 그대로다. 파일 토큰이 없으면 루트는 하나이고 지금과 완전히 같은
+// 경로다 (커밋 계획 I2).
+//
 // scan 은 파일의 의미를 판정하지 않는다.
 //
 //	scan    어떤 일반 파일이 어디에 있고 크기·시각이 얼마인가
@@ -236,6 +242,41 @@ type Result struct {
 	// IrregularDetails 는 건너뛴 비정규 항목의 상세이다.
 	// Failures 와 같은 상한(maxFailureDetails)을 적용한다.
 	IrregularDetails []IrregularEntry
+
+	// Unmatched 는 패턴 단의 부모를 나열했을 때 진짜 폴더이지만 패턴에
+	// 맞지 않아 따라가지 않은 폴더 수이다 (커밋 계획 D3: "backup" 등).
+	// 오류가 아니다. 일부만 불일치면 호출자는 debug 로 두고, 한 단에서
+	// 루트가 하나도 안 나오면 WARN 으로 올린다 (put/runner.go). 파일
+	// 토큰이 없는 템플릿에서는 항상 0 이다. 같은 부모를 여러 날짜가
+	// 공유해도 실제 나열 한 번당 한 번만 센다 (Scan 안의 나열 캐시 참조).
+	Unmatched int
+
+	// UnmatchedDetails 는 따라가지 않은 폴더의 경로다.
+	// Failures 와 같은 상한(maxFailureDetails)을 적용한다.
+	UnmatchedDetails []string
+
+	// PatternParentFiles 는 패턴 단의 부모를 나열했을 때 발견한 일반 파일
+	// 수이다. 토큰 위치를 한 단계 잘못 적으면 실제 데이터 파일이 있는
+	// 디렉터리를 패턴 부모로 나열하게 된다. 이 값을 관측하지 않으면
+	// Unmatched=0, PatternRoots=0, Files=0으로 조용히 끝난다.
+	//
+	// 파일 토큰이 없는 템플릿에서는 항상 0이다. 같은 부모의 캐시된 목록은
+	// 다시 세지 않고 실제 나열 한 번당 한 번만 센다.
+	PatternParentFiles int
+
+	// PatternParentFileDetails 는 패턴 부모에서 무시한 일반 파일 경로다.
+	// Failures 와 같은 상한(maxFailureDetails)을 적용한다.
+	PatternParentFileDetails []string
+
+	// PatternRoots 는 파일 토큰 단을 거쳐 만들어진 스캔 루트 수의 합이다
+	// (날짜마다 더한다). 파일 토큰이 없는 템플릿에서는 항상 0 이다.
+	//
+	// Unmatched > 0 인데 PatternRoots == 0 이면 "부모 폴더는 있었는데 패턴에
+	// 맞는 폴더가 하나도 없었다"는 뜻이다. 관측소 폴더 이름 규칙이 설정과
+	// 다른 경우(5자리 이름, 글자 부분 대소문자 차이 등) 오류 없이 파일 0개로
+	// 끝나므로, 호출자는 이 조합을 경고로 올린다. 일부만 맞으면 D3 대로
+	// 조용히 둔다.
+	PatternRoots int
 }
 
 // Scanner 는 날짜 범위를 날짜 디렉터리로 펼치고 그 아래를 재귀로
@@ -318,23 +359,275 @@ func (s *Scanner) Scan(
 	from := truncateToUTCDay(r.From)
 	days := r.Days()
 
+	// 패턴 단 부모의 나열 결과를 이 Scan 한 번 안에서만 재사용한다.
+	// "/data/(SITE)/(YYYY)/(DOY)/" 처럼 관측소가 날짜 위에 있으면 부모
+	// "/data/" 는 날짜마다 같으므로 Deep Scan 30일이 같은 목록을 30번
+	// 받는 것을 막는다 (커밋 계획 R3). 관측소가 날짜 아래에 있으면
+	// 부모가 날마다 달라 캐시가 맞지 않을 뿐 해는 없다.
+	// 성공한 나열만 담는다. 회차를 넘겨 보관하지 않으므로 새 관측소
+	// 폴더는 다음 회차에 바로 보인다.
+	cache := map[string][]Entry{}
+
 	for dayOffset := 0; dayOffset < days; dayOffset++ {
 		day := from.AddDate(0, 0, dayOffset)
-		dir := tpl.Expand(day)
 
-		if err := s.scanDir(
-			ctx,
-			category,
-			dir,
-			day,
-			visit,
-			&result,
-		); err != nil {
+		roots, err := s.resolveRoots(ctx, tpl.Steps(day), cache, &result)
+		if err != nil {
 			return result, err
+		}
+
+		for _, dir := range roots {
+			if err := s.scanDir(
+				ctx,
+				category,
+				dir,
+				day,
+				visit,
+				&result,
+			); err != nil {
+				return result, err
+			}
 		}
 	}
 
 	return result, nil
+}
+
+// resolveRoots 는 하루치 단계를 따라 스캔 루트를 만든다.
+//
+// 고정 단은 지금까지의 경로에 이어 붙이고, 패턴 단은 그 시점의 경로를
+// 부모로 나열해 패턴에 맞는 진짜 폴더마다 경로를 갈라 낸다. 마지막 단까지
+// 온 경로들이 루트다. 단 사이의 값 일관성("/(SITE)/.../(SITE)/")은
+// FileFields.Merge 로 보고, 어긋나면 따라가지 않는다.
+//
+// 파일 토큰이 없는 템플릿은 고정 단 하나뿐이므로 나열 없이 루트 하나
+// (= Expand(day)) 가 나온다.
+//
+// 부모 나열의 오류 정책은 scanDir 과 같다: fs.ErrNotExist 는 Missing,
+// 그 외는 Errs/Failures 로 집계하고 그 가지만 비운 채 계속한다.
+// context 취소만 오류로 돌려 Scan 을 중단한다.
+//
+// 부모 경로는 단계가 만든 표기 그대로 나열한다 ("/data/", "C:\").
+// 끝 구분자를 떼면 "C:" 처럼 뜻이 바뀌는 표기가 있고, os.ReadDir 와
+// sftp.ReadDir 모두 끝 구분자를 받는다. 첫 폴더가 패턴이면 부모가 빈
+// 문자열이므로 현재 디렉터리(".")를 나열한다.
+func (s *Scanner) resolveRoots(
+	ctx context.Context,
+	steps []pathpl.Step,
+	cache map[string][]Entry,
+	result *Result,
+) ([]string, error) {
+	type root struct {
+		path   string
+		fields pathpl.FileFields
+	}
+
+	current := []root{{}}
+	hasPattern := false
+
+	for _, step := range steps {
+		if step.IsPattern() {
+			hasPattern = true
+		}
+
+		if !step.IsPattern() {
+			for i := range current {
+				current[i].path += step.Fixed
+			}
+			continue
+		}
+
+		var next []root
+
+		for _, r := range current {
+			parent := r.path
+			listTarget := parent
+			if listTarget == "" {
+				listTarget = "."
+			}
+
+			// fresh 는 이번에 실제로 나열했다는 뜻이다. 건너뛴 폴더와
+			// 비정규 항목은 실제 나열 한 번당 한 번만 센다 — 캐시에서
+			// 꺼낸 목록을 날마다 다시 세면 같은 backup 폴더가 30번
+			// 집계된다.
+			entries, cached := cache[listTarget]
+			fresh := !cached
+			if fresh {
+				var (
+					ok      bool
+					listErr error
+				)
+				entries, ok, listErr = s.listDir(ctx, listTarget, result)
+				if listErr != nil {
+					return nil, listErr
+				}
+				if !ok {
+					continue
+				}
+				cache[listTarget] = entries
+			}
+
+			var matched []root
+
+			for _, e := range entries {
+				typeBits := e.Type & fs.ModeType
+				isRealDir := e.IsDir && (typeBits == 0 || typeBits == fs.ModeDir)
+
+				switch {
+				case isRealDir:
+					f, ok := step.Match(e.Name)
+					if !ok {
+						if fresh {
+							s.noteUnmatched(result, parent+e.Name)
+						}
+						continue
+					}
+
+					merged, ok := r.fields.Merge(f)
+					if !ok {
+						// 위 단에서 정한 관측소와 다른 폴더다.
+						// "/DBON/.../SUW1/" 로는 내려가지 않는다.
+						if fresh {
+							s.noteUnmatched(result, parent+e.Name)
+						}
+						continue
+					}
+
+					matched = append(matched, root{
+						path:   parent + e.Name,
+						fields: merged,
+					})
+
+				case e.IsRegular():
+					// 패턴 단의 부모에 놓인 파일은 수집 대상이 아니다. 다만
+					// 토큰 위치를 한 단계 잘못 적은 설정이 전송 0건으로 조용히
+					// 끝나지 않도록 관측한다.
+					if fresh {
+						s.notePatternParentFile(result, parent+e.Name)
+					}
+
+				default:
+					// 링크·junction 관측소 폴더는 따라가지 않는다 (R4).
+					if fresh {
+						s.noteIrregular(result, parent+e.Name, e.Type)
+					}
+				}
+			}
+
+			// 루트 순서도 이름 오름차순으로 결정적이어야 한다 (§3.2 와
+			// 같은 이유). 부모 나열 순서에 기대지 않는다.
+			sort.Slice(matched, func(i, j int) bool {
+				return matched[i].path < matched[j].path
+			})
+
+			next = append(next, matched...)
+		}
+
+		current = next
+	}
+
+	roots := make([]string, 0, len(current))
+	for _, r := range current {
+		roots = append(roots, r.path)
+	}
+
+	if hasPattern {
+		result.PatternRoots += len(roots)
+	}
+
+	return roots, nil
+}
+
+// noteUnmatched 는 패턴에 맞지 않아 따라가지 않은 폴더를 집계한다.
+func (s *Scanner) noteUnmatched(result *Result, path string) {
+	result.Unmatched++
+
+	if len(result.UnmatchedDetails) < maxFailureDetails {
+		result.UnmatchedDetails = append(result.UnmatchedDetails, path)
+	}
+}
+
+// notePatternParentFile 은 패턴 단의 부모에서 무시한 일반 파일을 집계한다.
+func (s *Scanner) notePatternParentFile(result *Result, path string) {
+	result.PatternParentFiles++
+
+	if len(result.PatternParentFileDetails) < maxFailureDetails {
+		result.PatternParentFileDetails = append(result.PatternParentFileDetails, path)
+	}
+}
+
+// noteIrregular 는 일반 파일도 진짜 폴더도 아닌 항목을 집계한다.
+func (s *Scanner) noteIrregular(result *Result, path string, typ fs.FileMode) {
+	result.Irregular++
+
+	if len(result.IrregularDetails) < maxFailureDetails {
+		result.IrregularDetails = append(
+			result.IrregularDetails,
+			IrregularEntry{
+				Path: path,
+				Type: typ,
+			},
+		)
+	}
+}
+
+// listDir 은 디렉터리 하나를 나열하고 scanDir·resolveRoots 공통의 오류
+// 정책을 적용한다.
+//
+//	ok=true            나열 성공. Dirs 를 센다
+//	ok=false, err=nil  없거나(Missing) 실패(Errs/Failures). 집계 완료, 계속
+//	err != nil         context 취소. 즉시 중단
+func (s *Scanner) listDir(
+	ctx context.Context,
+	dir string,
+	result *Result,
+) ([]Entry, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, fmt.Errorf(
+			"scan: canceled: %w",
+			err,
+		)
+	}
+
+	entries, err := s.lister.List(ctx, dir)
+
+	// List 구현이 context 취소를 다른 형태의 오류로 감싸더라도
+	// 취소는 일반적인 디렉터리 실패로 집계하지 않는다.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, false, fmt.Errorf(
+			"scan: canceled at %q: %w",
+			dir,
+			ctxErr,
+		)
+	}
+
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		// 날짜 디렉터리가 없는 것은 해당 날짜 데이터 미생성으로
+		// 정상이다. 하위 디렉터리가 나열과 하강 사이에 사라진 경우,
+		// 패턴 단의 부모가 아직 없는 경우도 같은 정책이다.
+		result.Missing++
+		return nil, false, nil
+
+	case err != nil:
+		result.Errs++
+
+		if len(result.Failures) < maxFailureDetails {
+			result.Failures = append(
+				result.Failures,
+				DirError{
+					Dir: dir,
+					Err: err,
+				},
+			)
+		}
+
+		return nil, false, nil
+	}
+
+	result.Dirs++
+
+	return entries, true, nil
 }
 
 // scanDir 은 디렉터리 하나를 나열하여 일반 파일을 visit 에 전달하고,
@@ -351,50 +644,13 @@ func (s *Scanner) scanDir(
 	visit VisitFunc,
 	result *Result,
 ) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf(
-			"scan: canceled: %w",
-			err,
-		)
+	entries, ok, err := s.listDir(ctx, dir, result)
+	if err != nil {
+		return err
 	}
-
-	entries, err := s.lister.List(ctx, dir)
-
-	// List 구현이 context 취소를 다른 형태의 오류로 감싸더라도
-	// 취소는 일반적인 디렉터리 실패로 집계하지 않는다.
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fmt.Errorf(
-			"scan: canceled at %q: %w",
-			dir,
-			ctxErr,
-		)
-	}
-
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		// 날짜 디렉터리가 없는 것은 해당 날짜 데이터 미생성으로
-		// 정상이다. 하위 디렉터리가 나열과 하강 사이에 사라진 경우도
-		// 같은 정책이다.
-		result.Missing++
-		return nil
-
-	case err != nil:
-		result.Errs++
-
-		if len(result.Failures) < maxFailureDetails {
-			result.Failures = append(
-				result.Failures,
-				DirError{
-					Dir: dir,
-					Err: err,
-				},
-			)
-		}
-
+	if !ok {
 		return nil
 	}
-
-	result.Dirs++
 
 	// 종류별 선별 (PATH_DESIGN v3 §4·§5):
 	//
@@ -423,17 +679,7 @@ func (s *Scanner) scanDir(
 			files = append(files, e)
 
 		default:
-			result.Irregular++
-
-			if len(result.IrregularDetails) < maxFailureDetails {
-				result.IrregularDetails = append(
-					result.IrregularDetails,
-					IrregularEntry{
-						Path: joinChild(dir, e.Name),
-						Type: e.Type,
-					},
-				)
-			}
+			s.noteIrregular(result, joinChild(dir, e.Name), e.Type)
 		}
 	}
 

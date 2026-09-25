@@ -314,6 +314,41 @@ func (r *Runner) runCategory(
 		}
 	}
 
+	// LocalPath 의 파일 토큰 단((SITE)·(HH))에서 부모 폴더는 있었는데
+	// 맞는 폴더가 하나도 없으면 설정 오류 신호다 (PATH v4 커밋 계획 D3).
+	// 패턴 부모에 일반 파일만 보인 경우도 토큰 위치가 한 단계 어긋난
+	// 신호다. 둘 다 오류 없이 파일 0개로 끝나므로 조용히 두면 "전송이
+	// 멈췄다"가 원인 없이 보인다. 일부 폴더라도 맞았으면 나머지는 정상
+	// 운영의 잡음일 수 있어 출력하지 않는다. 파일 토큰이 없는 템플릿은
+	// 두 집계가 항상 0이라 정상 실행의 출력을 늘리지 않는다.
+	if res.PatternRoots == 0 &&
+		(res.Unmatched > 0 || res.PatternParentFiles > 0) {
+		r.logf(
+			"[SCAN][WARN] category=%s no folder matched the LocalPath token pattern; "+
+				"unmatched=%d parent_files=%d (check token position and folder names in %q)",
+			job.Category,
+			res.Unmatched,
+			res.PatternParentFiles,
+			job.LocalPath.String(),
+		)
+
+		for _, p := range res.UnmatchedDetails {
+			r.logf(
+				"[SCAN][WARN] category=%s unmatched path=%q",
+				job.Category,
+				p,
+			)
+		}
+
+		for _, p := range res.PatternParentFileDetails {
+			r.logf(
+				"[SCAN][WARN] category=%s pattern parent file=%q",
+				job.Category,
+				p,
+			)
+		}
+	}
+
 	// FAILED 부분집합의 attempts 해소.
 	//
 	// 여기 들어오는 FAILED 는 Unchanged 파일의 현재 revision 이다.
