@@ -167,15 +167,15 @@ func TestParseRejectsInvalid(t *testing.T) {
 	}{
 		{name: "빈 문자열", in: ""},
 		{name: "공백만", in: "   "},
-		{name: "알 수 없는 토큰", in: `D:\(SITE)\`},
+		{name: "알 수 없는 토큰", in: `D:\(STATION)\`},
 		{name: "오타 토큰", in: `D:\(DOI)\`},
 
-		// (HH) 는 재귀 Scan 도입으로 제거된 토큰이다 (PATH_DESIGN v3 §1).
-		// 옛 config 가 새 바이너리를 만나면 이 거부로 시작이 선다 —
-		// 별도 거부 코드가 아니라 지원 삭제가 만든 동작이며,
-		// 이 케이스가 그 동작을 계약으로 고정한다 (v3 §7.1 T6).
-		{name: "제거된 토큰 (HH)", in: `D:\(YYYY)\(DOY)\(HH)\`},
+		// (SITE)·(HH) 는 경로 토큰 커밋 3 부터 pathpl 이 아는 토큰이다.
+		// 옛 config 의 (HH) 가 PUT 경로에서 거부되는 계약(PATH v3 §7.1 T6)은
+		// 이 패키지가 아니라 config 정책(커밋 2, putPathForbiddenTokens)이
+		// 담당한다 — config 의 TestMapConfig_RemovedHourTokenIsRejected 참조.
 		{name: "소문자 토큰", in: `D:\(yyyy)\`},
+		{name: "소문자 파일 토큰", in: `D:\(site)\`},
 		{name: "앞뒤 공백이 섞인 토큰", in: `D:\( YYYY )\`},
 		{name: "닫히지 않은 괄호", in: `D:\(YYYY\`},
 		{name: "여는 괄호 누락", in: `D:\YYYY)\`},
@@ -371,5 +371,289 @@ func TestExpandIsConcurrentSafe(t *testing.T) {
 		})
 	}
 
+	wg.Wait()
+}
+
+// ---- 경로 토큰 커밋 3: 파일 토큰 (SITE)·(HH) ----
+
+// 파일 토큰이 있는 템플릿도 Parse 는 받는다. 어느 역할에서 허용하는지는
+// config 정책이다.
+func TestParseAcceptsFileTokens(t *testing.T) {
+	for _, in := range []string{
+		`D:\RNX\(YYYY)\(DOY)\(SITE)\`,
+		`D:\RNX\(YYYY)\(MM)(DD)\(SITE)\`,
+		`/rnx/(SITE)/(YYYY)/(DOY)/(HH)/`,
+		`D:\RNX\(SITE)(HH)\`,
+		`D:\RNX\st(SITE)\`,
+	} {
+		if _, err := Parse(in); err != nil {
+			t.Errorf("Parse(%q) = %v; want nil", in, err)
+		}
+	}
+}
+
+func TestFileTokens(t *testing.T) {
+	tests := []struct {
+		tmpl string
+		want []string
+	}{
+		{`D:\RINEX-V3-D\(YYYY)\(DOY)\`, nil},
+		{`D:\RNX\(YYYY)\(DOY)\(SITE)\`, []string{TokenSITE}},
+		{`/rnx/(SITE)/(YYYY)/(DOY)/(HH)/`, []string{TokenSITE, TokenHH}},
+		{`/rnx/(HH)/(SITE)/`, []string{TokenHH, TokenSITE}},
+		{`/rnx/(SITE)/(SITE)/`, []string{TokenSITE}}, // 중복은 한 번
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.tmpl, func(t *testing.T) {
+			tpl, err := Parse(tt.tmpl)
+			if err != nil {
+				t.Fatalf("Parse 실패: %v", err)
+			}
+
+			got := tpl.FileTokens()
+			if len(got) != len(tt.want) {
+				t.Fatalf("FileTokens() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("FileTokens() = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestHasTokenFileTokens(t *testing.T) {
+	tpl, err := Parse(`D:\RNX\(YYYY)\(DOY)\(SITE)\`)
+	if err != nil {
+		t.Fatalf("Parse 실패: %v", err)
+	}
+
+	if !tpl.HasToken(TokenSITE) {
+		t.Error("HasToken(SITE) = false, want true")
+	}
+	if tpl.HasToken(TokenHH) {
+		t.Error("HasToken(HH) = true, want false")
+	}
+}
+
+// 실제 목적지 형태로 확인한다.
+//
+//	측위원        D:\RNX\(YYYY)\(DOY)\(SITE)\
+//	지질자원연구원 형태  D:\RNX\(YYYY)\(MM)(DD)\(SITE)\  (DOY 없이 월일)
+//	시각 폴더 쓰는 현장  .../(SITE)/(HH)/
+func TestExpandFileRealPaths(t *testing.T) {
+	// 2026년 9월 7일은 DOY 250 이다.
+	when := utc(2026, time.September, 7, 0)
+	fields := FileFields{Site: "DBON", Hour: "13"}
+
+	tests := []struct {
+		name string
+		tmpl string
+		want string
+	}{
+		{
+			name: "측위원: 관측소 폴더",
+			tmpl: `D:\RNX\(YYYY)\(DOY)\(SITE)\`,
+			want: `D:\RNX\2026\250\DBON\`,
+		},
+		{
+			name: "지질자원연구원 형태: (MM)(DD) 붙여 쓰기 + 관측소",
+			tmpl: `D:\RNX\(YYYY)\(MM)(DD)\(SITE)\`,
+			want: `D:\RNX\2026\0907\DBON\`,
+		},
+		{
+			name: "관측소가 날짜 앞에",
+			tmpl: `/rnx/(SITE)/(YYYY)/(DOY)/`,
+			want: `/rnx/DBON/2026/250/`,
+		},
+		{
+			name: "시각 폴더",
+			tmpl: `D:\RNX\(YYYY)\(DOY)\(SITE)\(HH)\`,
+			want: `D:\RNX\2026\250\DBON\13\`,
+		},
+		{
+			name: "파일 토큰 붙여 쓰기",
+			tmpl: `D:\RNX\(SITE)(HH)\`,
+			want: `D:\RNX\DBON13\`,
+		},
+		{
+			name: "폴더 이름 중간",
+			tmpl: `D:\RNX\st_(SITE)_rnx\`,
+			want: `D:\RNX\st_DBON_rnx\`,
+		},
+		{
+			name: "파일 토큰 없는 템플릿은 Expand 와 같다",
+			tmpl: `D:\RINEX-V3-D\(YYYY)\(DOY)\`,
+			want: `D:\RINEX-V3-D\2026\250\`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tpl, err := Parse(tt.tmpl)
+			if err != nil {
+				t.Fatalf("Parse 실패: %v", err)
+			}
+
+			got, err := tpl.ExpandFile(when, fields)
+			if err != nil {
+				t.Fatalf("ExpandFile 실패: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("ExpandFile() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// 템플릿에 없는 토큰의 필드는 비어 있어도 된다 — Daily 카테고리는 Hour 를
+// 채울 수 없지만 목적지에 (HH) 가 없으면 정상이다.
+func TestExpandFileIgnoresUnusedFields(t *testing.T) {
+	tpl, err := Parse(`D:\RNX\(YYYY)\(DOY)\(SITE)\`)
+	if err != nil {
+		t.Fatalf("Parse 실패: %v", err)
+	}
+
+	got, err := tpl.ExpandFile(utc(2026, time.September, 7, 0), FileFields{Site: "DBON"})
+	if err != nil {
+		t.Fatalf("ExpandFile 실패: %v", err)
+	}
+	if want := `D:\RNX\2026\250\DBON\`; got != want {
+		t.Errorf("ExpandFile() = %q, want %q", got, want)
+	}
+}
+
+// 요구하는 필드가 비면 부분 경로 없이 오류다.
+func TestExpandFileMissingField(t *testing.T) {
+	when := utc(2026, time.September, 7, 0)
+
+	tests := []struct {
+		name   string
+		tmpl   string
+		fields FileFields
+	}{
+		{"SITE 누락", `D:\RNX\(YYYY)\(DOY)\(SITE)\`, FileFields{}},
+		{"HH 누락", `D:\RNX\(YYYY)\(DOY)\(SITE)\(HH)\`, FileFields{Site: "DBON"}},
+		{"둘 다 누락", `D:\RNX\(SITE)\(HH)\`, FileFields{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tpl, err := Parse(tt.tmpl)
+			if err != nil {
+				t.Fatalf("Parse 실패: %v", err)
+			}
+
+			got, err := tpl.ExpandFile(when, tt.fields)
+			if !errors.Is(err, ErrMissingFileField) {
+				t.Fatalf("ExpandFile() = %q, %v; want ErrMissingFileField", got, err)
+			}
+			if got != "" {
+				t.Errorf("오류 시 부분 경로를 돌려주면 안 된다: %q", got)
+			}
+		})
+	}
+}
+
+// 목적지 경로를 만드는 마지막 계층에서도 파일 필드 계약을 검사한다.
+// 특히 "."·".."과 경로 구분자는 상위/하위 폴더로 경로를 바꿀 수 있다.
+func TestExpandFileRejectsBadFields(t *testing.T) {
+	when := utc(2026, time.September, 7, 0)
+
+	tests := []struct {
+		name   string
+		tmpl   string
+		fields FileFields
+	}{
+		{"SITE 짧음", `D:\RNX\(SITE)\`, FileFields{Site: "ABC"}},
+		{"SITE 김", `D:\RNX\(SITE)\`, FileFields{Site: "ABCDE"}},
+		{"SITE 점", `D:\RNX\(SITE)\`, FileFields{Site: "."}},
+		{"SITE 상위 폴더", `D:\RNX\(SITE)\`, FileFields{Site: ".."}},
+		{"SITE 슬래시", `D:\RNX\(SITE)\`, FileFields{Site: `DB/ON`}},
+		{"SITE 역슬래시", `D:\RNX\(SITE)\`, FileFields{Site: `DB\ON`}},
+		{"SITE 기호", `D:\RNX\(SITE)\`, FileFields{Site: "DB-N"}},
+		{"SITE 비ASCII", `D:\RNX\(SITE)\`, FileFields{Site: "관측소1"}},
+		{"HH 한 자리", `D:\RNX\(HH)\`, FileFields{Hour: "7"}},
+		{"HH 범위 초과", `D:\RNX\(HH)\`, FileFields{Hour: "24"}},
+		{"HH 문자", `D:\RNX\(HH)\`, FileFields{Hour: "ab"}},
+		{"HH 경로 구분자", `D:\RNX\(HH)\`, FileFields{Hour: `0/`}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tpl, err := Parse(tt.tmpl)
+			if err != nil {
+				t.Fatalf("Parse 실패: %v", err)
+			}
+
+			got, err := tpl.ExpandFile(when, tt.fields)
+			if !errors.Is(err, ErrBadFileField) {
+				t.Errorf("ExpandFile() = %q, %v; want ErrBadFileField", got, err)
+			}
+			if got != "" {
+				t.Errorf("오류 시 부분 경로를 돌려주면 안 된다: %q", got)
+			}
+		})
+	}
+}
+
+// Expand(when) 은 파일 토큰을 채울 수 없다. 빈 문자열로 접지는 않지만,
+// 이 결과를 일반 Scanner에 넘기면 파일 0개로 조용히 끝날 수 있다.
+// PATH v4 원본 패턴 탐색기만 원문 토큰을 해석해야 한다.
+func TestExpandKeepsFileTokensLiteral(t *testing.T) {
+	tpl, err := Parse(`D:\RNX\(YYYY)\(DOY)\(SITE)\(HH)\`)
+	if err != nil {
+		t.Fatalf("Parse 실패: %v", err)
+	}
+
+	got := tpl.Expand(utc(2026, time.September, 7, 0))
+	if want := `D:\RNX\2026\250\(SITE)\(HH)\`; got != want {
+		t.Errorf("Expand() = %q, want %q", got, want)
+	}
+}
+
+// 날짜 토큰의 UTC 규칙은 ExpandFile 에도 그대로 적용된다.
+func TestExpandFileForcesUTC(t *testing.T) {
+	kst := time.FixedZone("KST", 9*60*60)
+	// KST 2026-09-08 03:00 = UTC 2026-09-07 18:00 → DOY 250 이어야 한다.
+	when := time.Date(2026, time.September, 8, 3, 0, 0, 0, kst)
+
+	tpl, err := Parse(`D:\RNX\(YYYY)\(DOY)\(SITE)\`)
+	if err != nil {
+		t.Fatalf("Parse 실패: %v", err)
+	}
+
+	got, err := tpl.ExpandFile(when, FileFields{Site: "DBON"})
+	if err != nil {
+		t.Fatalf("ExpandFile 실패: %v", err)
+	}
+	if want := `D:\RNX\2026\250\DBON\`; got != want {
+		t.Errorf("ExpandFile() = %q, want %q", got, want)
+	}
+}
+
+func TestExpandFileIsConcurrentSafe(t *testing.T) {
+	tpl, err := Parse(`D:\RNX\(YYYY)\(DOY)\(SITE)\`)
+	if err != nil {
+		t.Fatalf("Parse 실패: %v", err)
+	}
+
+	when := utc(2026, time.September, 7, 0)
+	sites := []string{"DBON", "SUW1", "IHWA", "SONP"}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			site := sites[i%len(sites)]
+			got, err := tpl.ExpandFile(when, FileFields{Site: site})
+			if err != nil || got != `D:\RNX\2026\250\`+site+`\` {
+				t.Errorf("ExpandFile(%s) = %q, %v", site, got, err)
+			}
+		}(i)
+	}
 	wg.Wait()
 }
