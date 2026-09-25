@@ -486,6 +486,26 @@ func (c *Config) checkDownloadCategories(add addFunc) {
 	if enabled == 0 {
 		add("[DOWNLOAD] no category is enabled; the program would do nothing")
 	}
+
+	// DOWNLOAD RemotePath 는 SFTP 경로라 구분자가 '/' 하나다. Windows 운영자가
+	// 습관대로 '\' 를 쓰면 서버는 그것을 이름의 글자로 보아 "없음"으로 답하고,
+	// Scanner 는 매일 빈 날짜(Missing)로 세어 오류 없이 수신 0건이 계속된다.
+	// 비활성 Category 도 잠복 설정을 남기지 않도록 함께 본다.
+	//
+	// PUT RemotePath 에는 적용하지 않는다. 운영 중인 PUT 설정을 새로 거부할
+	// 수 있어 별도 판단이 필요하다.
+	for _, cc := range c.Download.Categories {
+		if cc.RemotePath == nil || !strings.Contains(cc.RemotePath.String(), `\`) {
+			continue
+		}
+
+		add(
+			"[DOWNLOAD.%s] RemotePath uses '\\': %s; "+
+				"SFTP paths use '/' only (e.g. /RNX/(YYYY)/(DOY)/)",
+			cc.Category,
+			cc.RemotePath.String(),
+		)
+	}
 }
 
 // categoryRoles 는 방향별로 어느 키가 원본이고 어느 키가 목적지인지다.

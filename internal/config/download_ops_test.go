@@ -516,3 +516,41 @@ func mustWrite(t *testing.T, p string) {
 		t.Fatal(err)
 	}
 }
+
+// ── DOWNLOAD RemotePath 의 '\' (커밋 3 리뷰) ─────────────────────────
+
+// Windows 습관으로 원격 경로에 '\' 를 쓰면 SFTP 서버는 "없음"으로 답하고
+// Scanner 는 매일 Missing 으로 세어 오류 없이 수신 0건이 계속된다.
+// 시작 단계에서 거부한다. 비활성 Category 도 잠복 설정으로 남기지 않는다.
+func TestDownload_RemotePathBackslashRejected(t *testing.T) {
+	for _, section := range []string{"DOWNLOAD.RINEX2_HOURLY", "DOWNLOAD.RINEX4_DAILY"} {
+		t.Run(section, func(t *testing.T) {
+			ini := replaceLine(t, downloadOnlyINI(), section, "RemotePath",
+				`RemotePath = \RNX\(YYYY)\(DOY)\`)
+
+			cfg, _, err := mapConfigForTest(t, ini)
+			if err != nil {
+				t.Fatalf("mapConfig() unexpected error: %v", err)
+			}
+
+			err = cfg.Validate()
+			mustContain(t, err, "["+section+"] RemotePath uses '\\'")
+			mustContain(t, err, "SFTP paths use '/' only")
+		})
+	}
+}
+
+// 로컬 목적지(LocalPath)의 '\' 는 Windows 에서 정상이다.
+func TestDownload_LocalPathBackslashAllowed(t *testing.T) {
+	ini := replaceLine(t, downloadOnlyINI(), "DOWNLOAD.RINEX2_DAILY", "LocalPath",
+		`LocalPath = D:\RNX\(YYYY)\(DOY)\`)
+
+	cfg, _, err := mapConfigForTest(t, ini)
+	if err != nil {
+		t.Fatalf("mapConfig() unexpected error: %v", err)
+	}
+
+	err = cfg.Validate()
+	mustNotContain(t, err, "uses '\\'")
+	onlyGateError(t, err)
+}
