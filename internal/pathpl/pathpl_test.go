@@ -171,9 +171,9 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{name: "오타 토큰", in: `D:\(DOI)\`},
 
 		// (SITE)·(HH) 는 경로 토큰 커밋 3 부터 pathpl 이 아는 토큰이다.
-		// 옛 config 의 (HH) 가 PUT 경로에서 거부되는 계약(PATH v3 §7.1 T6)은
-		// 이 패키지가 아니라 config 정책(커밋 2, putPathForbiddenTokens)이
-		// 담당한다 — config 의 TestMapConfig_RemovedHourTokenIsRejected 참조.
+		// PUT LocalPath 의 (HH) 는 커밋 6 부터 허용이다 (D1).
+		// PUT RemotePath 의 (SITE)·(HH) 는 config 가 거부한다
+		// (putRemoteForbiddenTokens, TestMapConfig_PutRemotePathFileTokensRejected).
 		{name: "소문자 토큰", in: `D:\(yyyy)\`},
 		{name: "소문자 파일 토큰", in: `D:\(site)\`},
 		{name: "앞뒤 공백이 섞인 토큰", in: `D:\( YYYY )\`},

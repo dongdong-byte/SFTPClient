@@ -3,11 +3,13 @@ package config
 import (
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"SFTPClient/internal/domain"
+	"SFTPClient/internal/pathpl"
 )
 
 func validINIForLoadTest() string {
@@ -404,16 +406,16 @@ func TestMapConfig_RemovedHourLayoutKeyIsRejected(t *testing.T) {
 	}
 }
 
-// TestMapConfig_RemovedHourTokenIsRejected 는 제거된 (HH) 토큰이 남은
-// 옛 config 가 로드 단계에서 거부되는지 본다 (PATH_DESIGN v3 §1-3,
-// §7.1 T6). 조용히 자정 폴더만 스캔하는 오동작 대신 시작에서 선다.
+// TestMapConfig_SeoulHourTokenIsAcceptedInLocalPath 는 서울시형 옛 설정
+// "(YYYY)/(DOY)/(HH)/" 가 LocalPath 에서 다시 로드되는지 본다 (커밋 계획
+// D1, 경로 토큰 커밋 6). PATH v3 §1-3 의 거부를 번복한 것이다.
 //
-// 거부의 주인은 경로 토큰 커밋 2 부터 config 의 putPathForbiddenTokens
-// 정책이다. 그 전에는 pathpl 이 (HH) 를 모르는 것에 의존했는데, 커밋 3
-// 에서 pathpl 이 파일명 출처의 (HH) 를 알게 되면 그 의존은 사라진다.
-// 이 테스트는 어느 커밋에서도 통과해야 한다 — 그것이 "보호막을 먼저
-// 깐다"는 커밋 순서의 검증이다.
-func TestMapConfig_RemovedHourTokenIsRejected(t *testing.T) {
+// 이력: 커밋 2 까지 이 자리의 테스트는 "거부된다"였다. pathpl 이 (HH) 를
+// 모르던 시절의 거부(v3)와, 커밋 3 에서 pathpl 이 알게 된 뒤 커밋 2 의
+// 보호막이 유지한 거부가 있었고, 여기서 보호막을 걷는다. 지금의 (HH) 는
+// 스캔 날짜로 계산한 시각이 아니라 00~23 폴더를 나열하는 패턴 단이라
+// 재귀 수집과 같은 파일을 모은다 (scan 의 HourPatternEqualsRecursion).
+func TestMapConfig_SeoulHourTokenIsAcceptedInLocalPath(t *testing.T) {
 	input := strings.Replace(
 		validINIForLoadTest(),
 		"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/",
@@ -421,40 +423,137 @@ func TestMapConfig_RemovedHourTokenIsRejected(t *testing.T) {
 		1,
 	)
 
-	_, _, err := mapConfigForTest(t, input)
-	if err == nil {
-		t.Fatal("removed (HH) token: expected error")
+	cfg, _, err := mapConfigForTest(t, input)
+	if err != nil {
+		t.Fatalf("Seoul-style (HH) in LocalPath must load: %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "HH") {
-		t.Errorf("error does not mention HH: %v", err)
+	var found *CategoryConfig
+	for i := range cfg.Put.Categories {
+		if cfg.Put.Categories[i].Category == domain.CategoryRINEX2Hourly {
+			found = &cfg.Put.Categories[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("RINEX2_HOURLY category not loaded")
 	}
 
-	if !errors.Is(err, ErrBadValue) {
-		t.Errorf("expected ErrBadValue, got: %v", err)
+	if got := found.LocalPath.FileTokens(); !reflect.DeepEqual(got, []string{pathpl.TokenHH}) {
+		t.Errorf("LocalPath.FileTokens() = %v, want [HH]", got)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Seoul-style (HH) in LocalPath must validate: %v", err)
 	}
 }
 
-// TestMapConfig_PutPathFileTokensRejected 는 PUT 경로에 파일명 출처
-// 토큰((SITE)·(HH))이 있으면 LocalPath·RemotePath 어느 쪽이든 시작에서
-// 거부되는지 본다 (DOWNLOAD v3 §7.1, 경로 토큰 커밋 2).
+// 실제 LoadFrom 경로(mapConfig → Validate)에서도 비활성 Daily+(HH)를
+// 거부해야 한다. mapConfig만 시험하면 역할 검증이 빠져 잘못된 설정이
+// 정상처럼 보일 수 있다.
+func TestLoadFrom_DisabledDailyLocalPathWithHourTokenIsRejected(t *testing.T) {
+	input := strings.Replace(
+		validINIForLoadTest(),
+		"LocalPath = /local/rinex4/daily/(YYYY)/(DOY)/",
+		"LocalPath = /local/rinex4/daily/(YYYY)/(DOY)/(HH)/",
+		1,
+	)
+
+	_, err := LoadFrom(
+		strings.NewReader(input),
+		filepath.Join(t.TempDir(), "config.ini"),
+		fakeProtector{},
+	)
+	if err == nil {
+		t.Fatal("disabled RINEX4_DAILY + (HH): expected error")
+	}
+	if !strings.Contains(err.Error(), "[PUT.RINEX4_DAILY]") ||
+		!strings.Contains(err.Error(), "(HH)") ||
+		!strings.Contains(err.Error(), "daily") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestMapConfig_PutLocalPathFileTokensAccepted 는 PUT LocalPath 의 파일
+// 토큰이 위치·표기와 무관하게 로드되는지 본다 (커밋 계획 §1 의 모양들).
+func TestMapConfig_PutLocalPathFileTokensAccepted(t *testing.T) {
+	cases := []struct {
+		name string
+		from string
+		to   string
+		want []string
+	}{
+		{
+			"관측소가 날짜 위",
+			"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/",
+			"LocalPath = /local/(SITE)/(YYYY)/(DOY)/",
+			[]string{pathpl.TokenSITE},
+		},
+		{
+			"관측소가 날짜 아래",
+			"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/",
+			"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/(SITE)/",
+			[]string{pathpl.TokenSITE},
+		},
+		{
+			"폴더 이름 중간, 월일 표기",
+			"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/",
+			"LocalPath = /local/rnx_(SITE)/(YYYY)/(MM)(DD)/",
+			[]string{pathpl.TokenSITE},
+		},
+		{
+			"관측소와 시각",
+			"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/",
+			"LocalPath = /local/(SITE)/(YYYY)/(DOY)/(HH)/",
+			[]string{pathpl.TokenSITE, pathpl.TokenHH},
+		},
+		{
+			"Daily 의 (SITE) 는 정상",
+			"LocalPath = /local/rinex2/daily/(YYYY)/(DOY)/",
+			"LocalPath = /local/rinex2/daily/(YYYY)/(DOY)/(SITE)/",
+			[]string{pathpl.TokenSITE},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := strings.Replace(validINIForLoadTest(), tc.from, tc.to, 1)
+			if input == validINIForLoadTest() {
+				t.Fatalf("test fixture: %q not found", tc.from)
+			}
+
+			cfg, _, err := mapConfigForTest(t, input)
+			if err != nil {
+				t.Fatalf("expected load to succeed: %v", err)
+			}
+
+			var got []string
+			for _, cc := range cfg.Put.Categories {
+				if cc.LocalPath != nil && cc.LocalPath.String() == strings.TrimPrefix(tc.to, "LocalPath = ") {
+					got = cc.LocalPath.FileTokens()
+				}
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("FileTokens() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMapConfig_PutRemotePathFileTokensRejected 는 PUT RemotePath(보내는
+// 쪽 목적지)의 파일 토큰이 시작에서 거부되는지 본다 (커밋 계획 §4.5).
+// put 전송이 배치당 경로 하나를 Expand(When) 으로 만드는 동안은 파일별
+// 값이 들어갈 자리가 없다.
 //
-// 오류 문구는 토큰 이름과 "PUT paths" 를 함께 담아야 한다. 커밋 3 뒤에는
-// 같은 토큰이 DOWNLOAD 목적지에서는 정상이므로, 운영자가 "토큰이 틀렸다"
-// 가 아니라 "이 방향에서는 안 된다" 로 읽을 수 있어야 한다.
-func TestMapConfig_PutPathFileTokensRejected(t *testing.T) {
+// 오류 문구는 토큰 이름과 "PUT RemotePath" 를 함께 담아야 한다. 같은
+// 토큰이 LocalPath 에서는 정상이므로, 운영자가 "토큰이 틀렸다" 가 아니라
+// "이 자리에서는 안 된다" 로 읽어야 한다.
+func TestMapConfig_PutRemotePathFileTokensRejected(t *testing.T) {
 	cases := []struct {
 		name  string
 		from  string
 		to    string
 		token string
 	}{
-		{
-			"LocalPath (SITE)",
-			"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/",
-			"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/(SITE)/",
-			"SITE",
-		},
 		{
 			"RemotePath (SITE)",
 			"RemotePath = /remote/rinex2/hourly/(YYYY)/(DOY)/",
@@ -469,8 +568,8 @@ func TestMapConfig_PutPathFileTokensRejected(t *testing.T) {
 		},
 		{
 			"Daily 카테고리도 같은 정책",
-			"LocalPath = /local/rinex2/daily/(YYYY)/(DOY)/",
-			"LocalPath = /local/rinex2/daily/(YYYY)/(DOY)/(SITE)/",
+			"RemotePath = /remote/rinex2/daily/(YYYY)/(DOY)/",
+			"RemotePath = /remote/rinex2/daily/(YYYY)/(DOY)/(SITE)/",
 			"SITE",
 		},
 		{
@@ -490,7 +589,7 @@ func TestMapConfig_PutPathFileTokensRejected(t *testing.T) {
 
 			_, _, err := mapConfigForTest(t, input)
 			if err == nil {
-				t.Fatalf("file token (%s) in PUT path: expected error", tc.token)
+				t.Fatalf("file token (%s) in PUT RemotePath: expected error", tc.token)
 			}
 
 			if !errors.Is(err, ErrBadValue) {
@@ -502,31 +601,28 @@ func TestMapConfig_PutPathFileTokensRejected(t *testing.T) {
 				t.Errorf("error does not name token (%s): %v", tc.token, err)
 			}
 
-			if !strings.Contains(msg, "PUT paths") {
-				t.Errorf("error does not say the rejection is a PUT-path policy: %v", err)
-			}
-
-			// PUT 만 쓰는 현장 운영자가 "DOWNLOAD 를 켜야 하나" 로
-			// 오독하지 않도록 방향 설명 대신 고칠 방법을 적는다.
-			if strings.Contains(msg, "DOWNLOAD") {
-				t.Errorf("PUT-path error must not mention DOWNLOAD: %v", err)
+			if !strings.Contains(msg, "PUT RemotePath") {
+				t.Errorf("error does not say the rejection is a RemotePath policy: %v", err)
 			}
 
 			if !strings.Contains(msg, forbiddenTokenHints[tc.token]) {
 				t.Errorf("error does not carry the fix hint for (%s): %v", tc.token, err)
 			}
+
+			if strings.Contains(msg, "DOWNLOAD") {
+				t.Errorf("PUT RemotePath error must not mention DOWNLOAD: %v", err)
+			}
 		})
 	}
 }
 
-// TestMapConfig_RemovedHourTokenHint 는 옛 (HH) 가 남은 PUT 현장(서울시형)의
-// 오류가 재배포 절차와 같은 조치 — (HH) 제거, 시간 폴더는 재귀 수집 — 를
-// 알려 주는지 본다 (PATH v3 §7).
-func TestMapConfig_RemovedHourTokenHint(t *testing.T) {
+// TestMapConfig_RemotePathTokenHint 는 RemotePath 에 파일 토큰을 적은
+// 오류가 조치("remove it")와 이유(배치당 전개)를 함께 알려 주는지 본다.
+func TestMapConfig_RemotePathTokenHint(t *testing.T) {
 	input := strings.Replace(
 		validINIForLoadTest(),
-		"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/",
-		"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/(HH)/",
+		"RemotePath = /remote/rinex2/hourly/(YYYY)/(DOY)/",
+		"RemotePath = /remote/rinex2/hourly/(YYYY)/(DOY)/(HH)/",
 		1,
 	)
 
@@ -535,9 +631,9 @@ func TestMapConfig_RemovedHourTokenHint(t *testing.T) {
 		t.Fatal("expected error")
 	}
 
-	for _, want := range []string{"remove it", "recursively"} {
+	for _, want := range []string{"remove it", "per batch"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error does not tell the operator to %q: %v", want, err)
+			t.Errorf("error does not tell the operator %q: %v", want, err)
 		}
 	}
 }
@@ -546,51 +642,40 @@ func TestMapConfig_RemovedHourTokenHint(t *testing.T) {
 // 있는지 고정한다. 목록에 토큰을 추가하고 문구를 빠뜨리면 오류 끝이
 // 빈 문자열이 되어 운영자가 무엇을 할지 알 수 없다.
 func TestForbiddenTokenHints_Complete(t *testing.T) {
-	for _, list := range [][]string{
-		putPathForbiddenTokens,
-		downloadSourceForbiddenTokens,
-	} {
-		for _, name := range list {
-			if forbiddenTokenHints[name] == "" {
-				t.Errorf("token (%s) has no fix hint", name)
-			}
+	for _, name := range putRemoteForbiddenTokens {
+		if forbiddenTokenHints[name] == "" {
+			t.Errorf("token (%s) has no fix hint", name)
 		}
 	}
 }
 
-// TestPathRolePolicies_FileTokens 는 역할별 금지 목록이 파일명 출처 토큰
-// 두 개를 모두 담고 있는지 고정한다. DOWNLOAD 원본 목록은 커밋 2 시점에
-// 호출자가 없으므로, 이 테스트가 그 정책의 유일한 사용처다 — 로더가
-// 생기기 전에 누가 목록을 비우면 여기서 먼저 깨진다.
+// TestPathRolePolicies_FileTokens 는 PUT RemotePath 금지 목록이 파일명
+// 출처 토큰 두 개를 모두 담고 있는지 고정한다. 커밋 6 이후 금지되는
+// 자리는 이 하나뿐이다 — LocalPath 와 DOWNLOAD 양쪽 경로는 허용이다.
 func TestPathRolePolicies_FileTokens(t *testing.T) {
-	for name, list := range map[string][]string{
-		"putPathForbiddenTokens":        putPathForbiddenTokens,
-		"downloadSourceForbiddenTokens": downloadSourceForbiddenTokens,
-	} {
-		for _, want := range []string{"SITE", "HH"} {
-			found := false
-			for _, got := range list {
-				if got == want {
-					found = true
-					break
-				}
+	for _, want := range []string{"SITE", "HH"} {
+		found := false
+		for _, got := range putRemoteForbiddenTokens {
+			if got == want {
+				found = true
+				break
 			}
-			if !found {
-				t.Errorf("%s must forbid (%s)", name, want)
-			}
+		}
+		if !found {
+			t.Errorf("putRemoteForbiddenTokens must forbid (%s)", want)
 		}
 	}
 }
 
 // TestMapConfig_PutPathFileTokenSkipsParseError 는 금지 토큰이 있으면
-// 같은 줄에 대해 문법 오류를 겹쳐 쌓지 않는지 본다. 커밋 2 시점에는
-// pathpl 도 (SITE) 를 모르므로 정책 검사를 건너뛰면 "unknown token" 이
-// 함께 나온다 — 운영자가 두 가지를 고쳐야 하는 줄 알게 된다.
+// 같은 줄에 대해 문법 오류를 겹쳐 쌓지 않는지 본다. 커밋 3 이후 pathpl
+// 은 (SITE) 를 알므로 지금은 겹칠 일이 없지만, 정책 검사가 Parse 앞에
+// 있다는 순서 자체를 고정한다.
 func TestMapConfig_PutPathFileTokenSkipsParseError(t *testing.T) {
 	input := strings.Replace(
 		validINIForLoadTest(),
-		"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/",
-		"LocalPath = /local/rinex2/hourly/(YYYY)/(DOY)/(SITE)/",
+		"RemotePath = /remote/rinex2/hourly/(YYYY)/(DOY)/",
+		"RemotePath = /remote/rinex2/hourly/(YYYY)/(DOY)/(SITE)/",
 		1,
 	)
 

@@ -340,12 +340,19 @@ type CategoryConfig struct {
 	// 시작 시 파싱이 끝난 Path Template 이다.
 	//
 	// 문법 오류를 Scan 도중이 아니라 프로그램 시작 시 발견하고,
-	// 실행 중에는 Parse 를 반복하지 않고 Expand 만 수행한다.
+	// 실행 중에는 Parse 를 반복하지 않는다.
+	// PUT LocalPath(원본)는 Scanner가 날짜마다 Steps로 펼치고,
+	// PUT RemotePath(업로드 목적지)는 배치당 Expand(When) 한 번이다.
 	//
-	// LocalPath 는 날짜 폴더까지만 적는다. 그 아래는 scan 이 재귀로
-	// 수집하므로 시각 토큰이 필요 없다. (HH) 는 pathpl 에서 제거되어
-	// LocalPath·RemotePath 어느 쪽이든 남아 있으면 "알 수 없는 토큰"으로
-	// 로드가 거부된다 (PATH_DESIGN v3 §1).
+	// PUT LocalPath 는 원본 스캔 경로다. 날짜 토큰뿐 아니라 (SITE)·(HH)
+	// 패턴 단을 둘 수 있으며 Scanner가 해당 부모를 나열해 일치하는 실제
+	// 폴더만 따라간다(PATH v4). 서울시의 기존 (YYYY)/(DOY)/(HH) 설정도
+	// 이 방식으로 다시 지원한다. Daily LocalPath의 (HH)는 Validate가
+	// 역할 불일치로 거부한다.
+	//
+	// PUT RemotePath 는 업로드 목적지이며 아직 날짜 토큰만 허용한다.
+	// 전송 단계가 배치당 Expand(When) 한 번만 수행하므로 파일별 (SITE)·(HH)
+	// 값을 채울 수 없고, load 단계의 역할 정책이 두 토큰을 거부한다.
 	//
 	// 두 필드 모두 nil 이 아님이 Load 성공의 조건이다.
 	// Expand 는 포인터 리시버이므로 nil 이면 호출 시점에 panic 이 된다.

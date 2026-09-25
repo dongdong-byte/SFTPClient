@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
+
+	"SFTPClient/internal/pathpl"
 )
 
 // ErrInvalidConfig 는 값은 읽혔으나 그 조합으로 실행할 수 없을 때 반환된다.
@@ -330,6 +332,25 @@ func (c *Config) checkCategories(add addFunc) {
 
 		if cc.RemotePath == nil {
 			add("[PUT.%s] RemotePath is nil", cc.Category)
+		}
+
+		// 비활성 Category 도 경로의 역할 규칙은 검사한다. 나중에 Enabled만
+		// true로 바꿨을 때 그제야 배포가 실패하는 잠복 설정을 남기지 않는다.
+		// nil 오류는 위에서 이미 기록했으므로 HasToken 호출만 방어한다.
+		//
+		// Daily 카테고리의 LocalPath 에 (HH) 가 있으면 거부한다. Daily 파일에는
+		// 시각이 없고 시각 폴더도 없다. 패턴 단이 00~23 폴더를 찾다가 하나도
+		// 못 찾으면 매 회차 파일 0개로 끝나므로 시작에서 선다. Hourly 토큰을
+		// Daily 섹션에 적은 것은 섹션을 잘못 고른 신호다. [판단]
+		if cc.LocalPath != nil &&
+			cc.Category.IsDaily() &&
+			cc.LocalPath.HasToken(pathpl.TokenHH) {
+			add(
+				"[PUT.%s] LocalPath uses (HH) but the category is daily; "+
+					"daily files have no hour folders: %s",
+				cc.Category,
+				cc.LocalPath.String(),
+			)
 		}
 
 		if !cc.Enabled {

@@ -430,6 +430,55 @@ func TestValidate_DuplicateLocalPath(t *testing.T) {
 	}
 }
 
+// Daily 카테고리의 LocalPath 에 (HH) 가 있으면 시작에서 거부한다 (커밋 6).
+// Daily 파일에는 시각 폴더가 없어 패턴 단이 매 회차 파일 0개로 끝난다.
+func TestValidate_DailyLocalPathWithHourToken(t *testing.T) {
+	cfg := validConfigForValidate(t)
+	cfg.Put.Categories[0].LocalPath =
+		mustTemplate(t, "/local/r2d/(YYYY)/(DOY)/(HH)/")
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("daily + (HH): expected error")
+	}
+	if !strings.Contains(err.Error(), "(HH)") ||
+		!strings.Contains(err.Error(), "daily") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// 비활성 섹션도 역할 규칙을 미리 검사한다. 잘못된 Daily+(HH)가 잠복했다가
+// 운영자가 Enabled만 true로 바꾼 배포에서 처음 실패하면 안 된다.
+func TestValidate_DisabledDailyLocalPathWithHourToken(t *testing.T) {
+	cfg := validConfigForValidate(t)
+	cfg.Put.Categories[4].Enabled = false
+	cfg.Put.Categories[4].LocalPath =
+		mustTemplate(t, "/local/r4d/(YYYY)/(DOY)/(HH)/")
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("disabled daily + (HH): expected error")
+	}
+	if !strings.Contains(err.Error(), "[PUT.RINEX4_DAILY]") ||
+		!strings.Contains(err.Error(), "(HH)") ||
+		!strings.Contains(err.Error(), "daily") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// Hourly 카테고리의 (HH), 어느 카테고리든 (SITE) 는 Validate 를 통과한다.
+func TestValidate_FileTokensInLocalPathAreAllowed(t *testing.T) {
+	cfg := validConfigForValidate(t)
+	cfg.Put.Categories[0].LocalPath =
+		mustTemplate(t, "/local/r2d/(SITE)/(YYYY)/(DOY)/")
+	cfg.Put.Categories[1].LocalPath =
+		mustTemplate(t, "/local/r2h/(YYYY)/(DOY)/(HH)/")
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("file tokens in LocalPath must validate: %v", err)
+	}
+}
+
 func TestValidate_LedgerPathEmpty(t *testing.T) {
 	cfg := validConfigForValidate(t)
 	cfg.General.LedgerPath = ""
