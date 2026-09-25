@@ -548,6 +548,32 @@ func TestSFTPLister_ContextPassedThrough(t *testing.T) {
 	}
 }
 
+func TestSFTPLister_ListOrderIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	m := &mapRemote{dirs: map[string][]fs.FileInfo{
+		"/x": {
+			fakeInfo{name: "soch268a.26o.gz", mode: 0o644},
+			fakeInfo{name: "SOCH268A.26O.GZ", mode: 0o644},
+			fakeInfo{name: "palm268a.26o.gz", mode: 0o644},
+		},
+	}}
+
+	entries, err := newSFTPLister(m).List(context.Background(), "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name)
+	}
+	want := []string{"SOCH268A.26O.GZ", "palm268a.26o.gz", "soch268a.26o.gz"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("names = %v, want stable %v", got, want)
+	}
+}
+
 func TestSFTPLister_ContractViolations(t *testing.T) {
 	t.Parallel()
 

@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"sort"
 	"strings"
 
 	"SFTPClient/internal/scan"
@@ -88,6 +89,9 @@ var errNilRemote = errors.New("download: remote fs is nil")
 //
 //   - 빈 이름, ".", "..", '/'·'\'·NUL 포함. 그대로 넘기면 하강 경로나
 //     나중의 로컬 목적지가 다른 곳을 가리킨다.
+//   - Windows 파일 이름에 쓸 수 없는 글자(< > : " | ? *)와 제어 문자.
+//     ':' 는 NTFS 대체 데이터 스트림으로 해석되어 진짜 파일을 영구히 막는다
+//     (isSinglePathElement 주석).
 //   - 끝이 공백·점인 이름. Windows 는 그 글자를 지우고 연다. 원격의
 //     "a.gz." 와 "a.gz" 가 로컬의 같은 파일을 덮어쓴다.
 //   - CON·NUL·COM1 같은 예약 장치 이름(확장자 포함). Windows 는
@@ -128,6 +132,14 @@ func (l sftpLister) List(ctx context.Context, dir string) ([]scan.Entry, error) 
 		entries = append(entries, entryOf(fi))
 	}
 
+	// SFTP READDIR 순서는 서버 구현과 실행마다 달라질 수 있다. Scanner 는
+	// 하위 폴더는 정렬하지만 같은 디렉터리의 Batch.Entries 는 받은 순서를
+	// 유지한다. 대소문자만 다른 두 이름처럼 같은 목적지로 수렴하는 파일의
+	// 승자가 매 회차 바뀌지 않도록 DOWNLOAD 경계에서 이름순으로 고정한다.
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
+
 	return entries, nil
 }
 
@@ -164,6 +176,21 @@ func isSinglePathElement(name string) bool {
 		return false
 	}
 
+	// Windows 파일 이름에 쓸 수 없는 글자와 제어 문자. Linux 원격에서는
+	// 합법이라 서버가 실제로 줄 수 있다. 특히 ':' 는 NTFS 대체 데이터 스트림
+	// 구분자다. 원격 "a.gz:x" 를 받으면 로컬에 0바이트 "a.gz" 가 생기고
+	// 내용은 숨은 스트림에 들어간다. 그 뒤 진짜 "a.gz" 는 크기가 다른 기존
+	// 파일 때문에 매 회차 충돌로 남아 영원히 받지 못한다.
+	if strings.ContainsAny(name, `<>:"|?*`) {
+		return false
+	}
+
+	for _, r := range name {
+		if r < 0x20 {
+			return false
+		}
+	}
+
 	if strings.HasSuffix(name, " ") || strings.HasSuffix(name, ".") {
 		return false
 	}
@@ -183,17 +210,27 @@ func isWindowsReservedName(name string) bool {
 
 	base = strings.TrimRight(base, " ")
 
-	switch strings.ToUpper(base) {
-	case "CON", "PRN", "AUX", "NUL":
+	upper := strings.ToUpper(base)
+
+	switch upper {
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$":
 		return true
 	}
 
-	if len(base) != 4 {
-		return false
+	for _, prefix := range []string{"COM", "LPT"} {
+		if !strings.HasPrefix(upper, prefix) {
+			continue
+		}
+
+		// Windows 는 ASCII 숫자 장치명뿐 아니라 ISO-8859-1의 위첨자
+		// ¹²³도 COM/LPT 장치 별칭으로 인식한다. 0도 일부 Win32 경로에서
+		// 장치로 해석될 수 있어 보수적으로 막는다. RINEX 이름에는 없다.
+		switch strings.TrimPrefix(upper, prefix) {
+		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+			"¹", "²", "³":
+			return true
+		}
 	}
 
-	prefix := strings.ToUpper(base[:3])
-	last := base[3]
-
-	return (prefix == "COM" || prefix == "LPT") && last >= '1' && last <= '9'
+	return false
 }
