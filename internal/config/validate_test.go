@@ -263,6 +263,81 @@ func TestValidate_RepostDownloadedWithoutDownload(t *testing.T) {
 	}
 }
 
+func TestValidate_RepostDownloadedRejectedInDownloadMode(t *testing.T) {
+	ini := strings.Replace(
+		downloadOnlyINI(),
+		"RepostDownloaded = false",
+		"RepostDownloaded = true",
+		1,
+	)
+	cfg, _, mapErr := mapConfigForTest(t, ini)
+	if mapErr != nil {
+		t.Fatalf("mapConfig() unexpected error: %v", mapErr)
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	if !strings.Contains(err.Error(), "does not write origin or use the PUT ledger") {
+		t.Errorf("error does not explain the v3 DOWNLOAD contract: %v", err)
+	}
+}
+
+func TestValidate_BothHasIndependentGate(t *testing.T) {
+	ini := replaceLine(
+		t,
+		validINIForLoadTest()+downloadBlockINI(),
+		"GENERAL",
+		"Mode",
+		"Mode = both",
+	)
+	ini = replaceLine(
+		t,
+		ini,
+		"GENERAL",
+		"LockStaleSeconds",
+		"LockStaleSeconds = 10800\nLockPath = data/rinexclient.lock",
+	)
+	cfg, _, mapErr := mapConfigForTest(t, ini)
+	if mapErr != nil {
+		t.Fatalf("mapConfig() unexpected error: %v", mapErr)
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	if !strings.Contains(err.Error(), "BOTH is not implemented") {
+		t.Errorf("BOTH must have a gate independent from DOWNLOAD: %v", err)
+	}
+}
+
+func TestValidate_BothRequiresExplicitLockPath(t *testing.T) {
+	ini := replaceLine(
+		t,
+		validINIForLoadTest()+downloadBlockINI(),
+		"GENERAL",
+		"Mode",
+		"Mode = both",
+	)
+	cfg, _, mapErr := mapConfigForTest(t, ini)
+	if mapErr != nil {
+		t.Fatalf("mapConfig() unexpected error: %v", mapErr)
+	}
+
+	if got := cfg.LockFile(); got != "" {
+		t.Fatalf("LockFile() = %q, want empty until BOTH has an explicit common lock", got)
+	}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "LockPath is required") {
+		t.Errorf("BOTH without LockPath must be rejected: %v", err)
+	}
+}
+
 func TestValidate_ScanDaysIncludesRecentDays(t *testing.T) {
 	cfg := validConfigForValidate(t)
 

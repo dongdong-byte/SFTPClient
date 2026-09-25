@@ -340,7 +340,7 @@ func run() error {
 	}
 
 	l, err := lock.Acquire(
-		cfg.General.LedgerPath+".lock",
+		cfg.LockFile(),
 		cfg.General.LockStale,
 	)
 	if errors.Is(err, lock.ErrHeld) {

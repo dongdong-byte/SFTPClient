@@ -281,7 +281,7 @@ func resendCmd() error {
 	// 파일마다 attempts 를 태우거나(FAILED 대량 기록) stall 로 끝난다.
 	l, err := acquireLockWithWait(
 		ctx,
-		cfg.General.LedgerPath+".lock",
+		cfg.LockFile(),
 		cfg.General.LockStale,
 	)
 	if err != nil {

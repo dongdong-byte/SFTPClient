@@ -437,7 +437,7 @@ func (l *loader) parseTemplate(
 //	[PUT.*]      RemotePath  목적지 — 금지. put/transfer.go 가 RemotePath.Expand(When)
 //	                         으로 배치당 경로 하나를 만들므로 파일별 값을 채울 수
 //	                         없다. 지원은 후속(결정 문서 §8-3)
-//	[DOWNLOAD.*] RemotePath  원본 — 허용 (DOWNLOAD 로더가 생길 때 그대로 적용)
+//	[DOWNLOAD.*] RemotePath  원본 — 허용. downloadBlock 이 template 으로 읽는다
 //	[DOWNLOAD.*] LocalPath   목적지 — 허용. ExpandFile 로 채운다
 //
 // D1 (커밋 계획 §3): 서울시형 옛 설정 "(YYYY)\(DOY)\(HH)\" 는 다시 받는다.
@@ -608,11 +608,45 @@ func mapConfig(f *iniFile, path string, p Protector) (*Config, error) {
 		strings.TrimSpace(l.str(general, "Transport")),
 	)
 	cfg.General.RepostDownloaded = l.boolVal(general, "RepostDownloaded")
-	cfg.General.LedgerPath = resolvePath(
-		path,
-		l.str(general, "LedgerPath"),
-	)
+
+	mode := cfg.General.Mode
+
+	// LedgerPath 는 PUT 장부의 위치이므로 Mode.DoesPut() 일 때만 필수다.
+	// DOWNLOAD 전용 인스턴스는 장부를 열지 않으므로 키 자체를 요구하지 않는다.
+	// 단 값이 적혀 있으면(예: 템플릿을 복사한 뒤 Mode 만 바꾼 경우)
+	// 있는 대로 읽어 둔다.
+	if mode.DoesPut() {
+		cfg.General.LedgerPath = resolvePath(
+			path,
+			l.str(general, "LedgerPath"),
+		)
+	} else {
+		cfg.General.LedgerPath = resolvePath(
+			path,
+			l.optionalStr(general, "LedgerPath"),
+		)
+	}
+
 	cfg.General.LockStale = l.durationSeconds(general, "LockStaleSeconds")
+
+	// LockPath 는 선택 키다. 부재 시 Config.LockFile 이 호환 규칙을 적용한다.
+	cfg.General.LockPath = resolvePath(
+		path,
+		l.optionalStr(general, "LockPath"),
+	)
+
+	// 방향 블록의 로드 여부 (DOWNLOAD 커밋 1).
+	//
+	// 블록은 (a) 그 방향이 Mode 에 포함되거나 (b) 블록의 섹션이 파일에
+	// 하나라도 있으면 전부 읽는다. (b) 에서 절반만 적힌 블록은 종전 규칙
+	// 그대로 섹션·키 누락 오류가 된다 — 조용한 OFF 로 접으면 운영자는
+	// 설정했다고 믿는데 실제로는 그 방향에 아무 설정도 없는 상태가 된다
+	// ([SET.RINEXx] 머리만 있는 섹션을 거부하는 것과 같은 원칙).
+	//
+	// 둘 다 아니면 건너뛴다. Mode=put 인 기존 config 에는 DOWNLOAD 섹션이
+	// 없으므로 이 분기가 기존 동작을 바꾸지 않는다.
+	loadPut := mode.DoesPut() || l.anySection(putBlockSections())
+	loadDownload := mode.DoesDownload() || l.anySection(downloadBlockSections())
 
 	scan := l.section("SCAN")
 	cfg.Scan.RecentDays = l.intVal(scan, "ScanRecentDays")
@@ -620,75 +654,16 @@ func mapConfig(f *iniFile, path string, p Protector) (*Config, error) {
 	cfg.Scan.DeepScanHour = l.intVal(scan, "DeepScanHour")
 	cfg.Scan.UseDirMtimeSkip = l.boolVal(scan, "UseDirMtimeSkip")
 
-	ingress := l.section("INGRESS")
-	cfg.Ingress.Grace = l.durationSeconds(ingress, "GraceSeconds")
-
-	ledger := l.section("LEDGER")
-	cfg.Ledger.RetentionDays = l.intVal(ledger, "RetentionDays")
-
-	put := l.section("PUT")
-	cfg.Put.MaxWorkers = l.intVal(put, "MaxWorkers")
-	cfg.Put.MaxRetries = l.intVal(put, "MaxRetries")
-	cfg.Put.MaxFilesPerRun = l.intVal(put, "MaxFilesPerRun")
-	cfg.Put.MaxHashBackfillPerRun = l.optionalIntVal(
-		put,
-		"MaxHashBackfillPerRun",
-		DefaultMaxHashBackfillPerRun,
-	)
-
-	sftp := l.section("PUT.SFTP")
-
-	// Log.Level 과 같이 소문자로 정규화한다.
-	// 손으로 쓰는 값이므로 publickey / PublicKey / PUBLICKEY 가 섞인다.
-	// validate.go 는 정규화된 값만 보고 판정한다.
-	cfg.Put.SFTP.AuthMethod = strings.ToLower(l.str(sftp, "AuthMethod"))
-	cfg.Put.SFTP.Host = l.str(sftp, "Host")
-	cfg.Put.SFTP.Port = l.intVal(sftp, "Port")
-	cfg.Put.SFTP.User = l.str(sftp, "User")
-	cfg.Put.SFTP.PrivateKey = resolvePath(
-		path,
-		l.str(sftp, "PrivateKey"),
-	)
-	cfg.Put.SFTP.KnownHosts = resolvePath(
-		path,
-		l.str(sftp, "KnownHosts"),
-	)
-	cfg.Put.SFTP.StallTimeout = l.optionalDurationSeconds(
-		sftp,
-		"StallTimeoutSeconds",
-		DefaultStallTimeoutSeconds*time.Second,
-	)
-
-	// 평문 접속 설정 경고.
-	//
-	// "어떤 키가 기관의 평문 금지 대상인가"라는 정책은 이 매핑부가 안다.
-	// 범용 복호화인 l.value 는 개별 키의 보안 정책을 알지 않는다.
-	//
-	// Transport=sftp 일 때만 경고한다.
-	// mapConfig 는 [PUT.SFTP]를 Transport 분기 없이 읽으므로,
-	// 조건이 없으면 localfs 검증에서도 불필요한 경고가 발생한다.
-	//
-	// settingID 를 사용하므로 [put.sftp], [PUT.SFTP] 같은
-	// 대소문자 차이와 관계없이 같은 설정으로 판정한다.
-	//
-	// 평문을 거부하지 않고 경고만 하는 이유는 개발·테스트 환경에서는
-	// 평문 config 사용을 허용하기 때문이다.
-	if cfg.General.Transport == "sftp" {
-		for _, key := range []string{"Host", "User", "Port"} {
-			if !l.encrypted[settingID("PUT.SFTP", key)] {
-				cfg.Warnings = append(
-					cfg.Warnings,
-					fmt.Sprintf(
-						"[PUT.SFTP] %s 가 평문으로 저장되어 있다 — "+
-							"rinexclient.exe secure-set 으로 암호화를 권장한다",
-						key,
-					),
-				)
-			}
-		}
+	if loadPut {
+		l.putBlock(cfg)
 	}
 
-	cfg.Put.Categories = l.categories()
+	if loadDownload {
+		l.downloadBlock(cfg)
+	}
+
+	// [SET.RINEXx] 는 섹션 부재가 게이트 OFF 이므로 방향과 무관하게 읽는다.
+	// PUT 전용 정책이지만 존재하는 섹션의 오타·절반 설정은 항상 잡는다.
 	cfg.Set = l.setConfig()
 
 	logSec := l.section("LOG")
@@ -731,7 +706,188 @@ func (l *loader) mode(s *iniSection, key string) domain.Mode {
 	return m
 }
 
-// categories 는 [PUT.<CATEGORY>] 섹션을 domain.Categories() 순서대로 읽는다.
+// putBlockSections 는 PUT 블록을 이루는 섹션 이름이다.
+//
+// Mode=download 에서 이 중 하나라도 파일에 있으면 블록 전체를 읽는다.
+// [INGRESS]·[LEDGER] 를 포함하는 이유는 두 섹션의 값이 PUT 전용이기
+// 때문이다 — Ingress 는 로컬 원본 검증, Ledger 는 PUT 장부다.
+func putBlockSections() []string {
+	out := []string{"INGRESS", "LEDGER", "PUT", "PUT.SFTP"}
+
+	for _, cat := range domain.Categories() {
+		out = append(out, "PUT."+cat.String())
+	}
+
+	return out
+}
+
+// downloadBlockSections 는 DOWNLOAD 블록을 이루는 섹션 이름이다.
+func downloadBlockSections() []string {
+	out := []string{"DOWNLOAD", "DOWNLOAD.SFTP"}
+
+	for _, cat := range domain.Categories() {
+		out = append(out, "DOWNLOAD."+cat.String())
+	}
+
+	return out
+}
+
+// anySection 은 이름 목록 중 하나라도 파일에 존재하는지 답한다.
+// 존재하지 않아도 오류를 기록하지 않는다 (l.section 과 다르다).
+func (l *loader) anySection(names []string) bool {
+	for _, name := range names {
+		if _, ok := l.file.section(name); ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// putBlock 은 PUT 블록 전체를 읽어 cfg 에 채운다.
+// 이 함수가 호출되었다는 것 자체가 Put.Present 의 뜻이다.
+func (l *loader) putBlock(cfg *Config) {
+	cfg.Put.Present = true
+
+	ingress := l.section("INGRESS")
+	cfg.Ingress.Grace = l.durationSeconds(ingress, "GraceSeconds")
+
+	ledger := l.section("LEDGER")
+	cfg.Ledger.RetentionDays = l.intVal(ledger, "RetentionDays")
+
+	put := l.section("PUT")
+	cfg.Put.MaxWorkers = l.intVal(put, "MaxWorkers")
+	cfg.Put.MaxRetries = l.intVal(put, "MaxRetries")
+	cfg.Put.MaxFilesPerRun = l.intVal(put, "MaxFilesPerRun")
+	cfg.Put.MaxHashBackfillPerRun = l.optionalIntVal(
+		put,
+		"MaxHashBackfillPerRun",
+		DefaultMaxHashBackfillPerRun,
+	)
+
+	cfg.Put.SFTP = l.sftpSection("PUT.SFTP")
+
+	// DOWNLOAD 블록과 같은 규칙이다. Mode=put 에서는 종전과 똑같이 경고한다.
+	if cfg.General.Mode.DoesPut() {
+		l.warnPlaintext(cfg, "PUT.SFTP")
+	}
+
+	// PUT: 원본 LocalPath 는 파일 토큰 허용, 목적지 RemotePath 는 금지.
+	cfg.Put.Categories = l.categories(
+		"PUT",
+		l.template,
+		l.putRemoteTemplate,
+	)
+}
+
+// downloadBlock 은 DOWNLOAD 블록 전체를 읽어 cfg 에 채운다.
+func (l *loader) downloadBlock(cfg *Config) {
+	cfg.Download.Present = true
+
+	dl := l.section("DOWNLOAD")
+	cfg.Download.Sites = l.siteList(dl, "Sites")
+	cfg.Download.MaxWorkers = l.intVal(dl, "MaxWorkers")
+
+	// GraceSeconds 는 부재와 명시적 0 을 구분한다 (DownloadConfig.Grace 주석).
+	// 부재 판정은 l.value 가 아니라 s.get 으로 한다 — l.value 는 필수 키
+	// 통로라 부재를 missing key 오류로 기록하는데, 이 키의 부재는 Load 가
+	// 아니라 Validate 가 "Mode=download 일 때만" 거부해야 한다.
+	if _, ok := dl.get("GraceSeconds"); ok {
+		cfg.Download.GraceSet = true
+		cfg.Download.Grace = l.durationSeconds(dl, "GraceSeconds")
+	}
+
+	cfg.Download.SFTP = l.sftpSection("DOWNLOAD.SFTP")
+
+	// 평문 경고는 실제로 접속할 방향에만 낸다. 템플릿을 복사한 PUT 전용
+	// 설치처에 DOWNLOAD 블록이 남아 있으면 쓰지도 않는 접속 정보 때문에
+	// 매 회차 WARN 이 세 줄씩 늘어 진짜 경고를 가린다.
+	if cfg.General.Mode.DoesDownload() {
+		l.warnPlaintext(cfg, "DOWNLOAD.SFTP")
+	}
+
+	// DOWNLOAD: 원본 RemotePath 와 목적지 LocalPath 모두 파일 토큰 허용
+	// (PATH v4 §2.3). 원본의 토큰은 scan.Scanner 가 폴더를 나열해 찾고,
+	// 목적지는 ExpandFile 이 채운다. Daily 의 (HH) 는 Validate 가 거부한다.
+	cfg.Download.Categories = l.categories(
+		"DOWNLOAD",
+		l.template,
+		l.template,
+	)
+}
+
+// sftpSection 은 [PUT.SFTP] / [DOWNLOAD.SFTP] 를 같은 규칙으로 읽는다.
+func (l *loader) sftpSection(name string) SFTPConfig {
+	s := l.section(name)
+
+	var out SFTPConfig
+
+	// Log.Level 과 같이 소문자로 정규화한다.
+	// 손으로 쓰는 값이므로 publickey / PublicKey / PUBLICKEY 가 섞인다.
+	// validate.go 는 정규화된 값만 보고 판정한다.
+	out.AuthMethod = strings.ToLower(l.str(s, "AuthMethod"))
+	out.Host = l.str(s, "Host")
+	out.Port = l.intVal(s, "Port")
+	out.User = l.str(s, "User")
+	out.PrivateKey = resolvePath(
+		l.path,
+		l.str(s, "PrivateKey"),
+	)
+	out.KnownHosts = resolvePath(
+		l.path,
+		l.str(s, "KnownHosts"),
+	)
+	out.StallTimeout = l.optionalDurationSeconds(
+		s,
+		"StallTimeoutSeconds",
+		DefaultStallTimeoutSeconds*time.Second,
+	)
+
+	return out
+}
+
+// warnPlaintext 는 접속 섹션의 평문 저장 경고를 cfg.Warnings 에 쌓는다.
+//
+// "어떤 키가 기관의 평문 금지 대상인가"라는 정책은 이 매핑부가 안다.
+// 범용 복호화인 l.value 는 개별 키의 보안 정책을 알지 않는다.
+//
+// Transport=sftp 일 때만 경고한다.
+// mapConfig 는 접속 섹션을 Transport 분기 없이 읽으므로,
+// 조건이 없으면 localfs 검증에서도 불필요한 경고가 발생한다.
+//
+// settingID 를 사용하므로 [put.sftp], [PUT.SFTP] 같은
+// 대소문자 차이와 관계없이 같은 설정으로 판정한다.
+//
+// 평문을 거부하지 않고 경고만 하는 이유는 개발·테스트 환경에서는
+// 평문 config 사용을 허용하기 때문이다.
+func (l *loader) warnPlaintext(cfg *Config, section string) {
+	if cfg.General.Transport != "sftp" {
+		return
+	}
+
+	for _, key := range []string{"Host", "User", "Port"} {
+		if l.encrypted[settingID(section, key)] {
+			continue
+		}
+
+		cfg.Warnings = append(
+			cfg.Warnings,
+			fmt.Sprintf(
+				"[%s] %s 가 평문으로 저장되어 있다 — "+
+					"rinexclient.exe secure-set 으로 암호화를 권장한다",
+				section,
+				key,
+			),
+		)
+	}
+}
+
+// templateReader 는 경로 템플릿 키 하나를 읽는 함수 모양이다.
+// 역할 정책(파일 토큰 허용·금지)이 다른 리더를 categories 에 꽂는다.
+type templateReader func(s *iniSection, key string) *pathpl.Template
+
+// categories 는 [<dir>.<CATEGORY>] 섹션을 domain.Categories() 순서대로 읽는다.
+// dir 은 "PUT" 또는 "DOWNLOAD" 이다.
 //
 // 지원 Category 섹션이 모두 있어야 한다.
 // 빠뜨린 것을 "꺼진 것" 으로 해석하지 않는다.
@@ -740,25 +896,74 @@ func (l *loader) mode(s *iniSection, key string) domain.Mode {
 //
 // Enabled 가 false 여도 경로 템플릿은 파싱한다.
 // 나중에 켤 때 오타가 그때 드러나는 것을 막는다.
-func (l *loader) categories() []CategoryConfig {
+//
+// local·remote 는 각 키의 역할 정책을 가진 리더다. PUT 은 RemotePath 가
+// 목적지라 파일 토큰을 금지하고, DOWNLOAD 는 양쪽 다 허용한다.
+func (l *loader) categories(
+	dir string,
+	local templateReader,
+	remote templateReader,
+) []CategoryConfig {
 	cats := domain.Categories()
 	out := make([]CategoryConfig, 0, len(cats))
 
 	for _, cat := range cats {
-		name := "PUT." + cat.String()
+		name := dir + "." + cat.String()
 		s := l.section(name)
 
 		cc := CategoryConfig{
 			Category:   cat,
 			Enabled:    l.boolVal(s, "Enabled"),
-			LocalPath:  l.template(s, "LocalPath"),
-			RemotePath: l.putRemoteTemplate(s, "RemotePath"),
+			LocalPath:  local(s, "LocalPath"),
+			RemotePath: remote(s, "RemotePath"),
 		}
 
 		out = append(out, cc)
 	}
 
 	return out
+}
+
+// optionalStr 은 선택 문자열 키를 읽는다. 부재는 빈 문자열이며 오류를
+// 기록하지 않는다. 보호 값 해석(l.prot)은 거치지 않는다 — 현재 이 통로를
+// 쓰는 키(LockPath, download 모드의 LedgerPath, Sites)는 경로·관측소
+// 목록이라 암호화 대상이 아니다.
+func (l *loader) optionalStr(s *iniSection, key string) string {
+	v, ok := s.get(key)
+	if !ok {
+		return ""
+	}
+
+	return strings.TrimSpace(v)
+}
+
+// siteList 는 [DOWNLOAD] Sites 를 읽는다.
+//
+// 생략하거나 빈 값이면 nil 을 돌려 "전체 관측소"를 뜻한다. 값이 있으면
+// domain.ParseSiteList 로 검증해 형식 위반(4자리 아님·와일드카드·빈
+// 항목)을 Load 오류로 올린다. 검증 규칙은 PUT resend 의 --site 와 같다
+// (SITE 설계 v1 §1 — 두 방향이 같은 규칙을 공유한다).
+func (l *loader) siteList(s *iniSection, key string) []string {
+	raw := l.optionalStr(s, key)
+	if raw == "" {
+		return nil
+	}
+
+	sites, err := domain.ParseSiteList(raw)
+	if err != nil {
+		l.addf(
+			"%w: line %d: [%s] %s: %v",
+			ErrBadValue,
+			s.lineOf(key),
+			s.name,
+			key,
+			err,
+		)
+
+		return nil
+	}
+
+	return sites
 }
 
 // knownKeys 는 섹션별로 허용되는 키 목록이다.
@@ -900,6 +1105,7 @@ func knownKeys() (map[string][]string, error) {
 			"RepostDownloaded",
 			"LedgerPath",
 			"LockStaleSeconds",
+			"LockPath",
 		},
 		"SCAN": {
 			"ScanRecentDays",
@@ -919,14 +1125,12 @@ func knownKeys() (map[string][]string, error) {
 			"MaxFilesPerRun",
 			"MaxHashBackfillPerRun",
 		},
-		"PUT.SFTP": {
-			"AuthMethod",
-			"Host",
-			"Port",
-			"User",
-			"PrivateKey",
-			"KnownHosts",
-			"StallTimeoutSeconds",
+		"PUT.SFTP":      sftpSectionKeys(),
+		"DOWNLOAD.SFTP": sftpSectionKeys(),
+		"DOWNLOAD": {
+			"Sites",
+			"MaxWorkers",
+			"GraceSeconds",
 		},
 		"LOG": {
 			"Level",
@@ -946,6 +1150,7 @@ func knownKeys() (map[string][]string, error) {
 		// 빠졌으므로 옛 config 에 남아 있으면 ErrUnknownKey 로 시작이
 		// 거부된다 — 별도 거부 코드 없이 기존 장치가 막는다(§2-E).
 		m["PUT."+cat.String()] = keys
+		m["DOWNLOAD."+cat.String()] = keys
 	}
 
 	// Set Completeness Gate 정책 섹션 (버전 단위, §3~§4).
@@ -959,6 +1164,20 @@ func knownKeys() (map[string][]string, error) {
 	}
 
 	return m, nil
+}
+
+// sftpSectionKeys 는 [PUT.SFTP] 와 [DOWNLOAD.SFTP] 가 공유하는 키 목록이다.
+// sftpSection 이 읽는 키와 같아야 한다.
+func sftpSectionKeys() []string {
+	return []string{
+		"AuthMethod",
+		"Host",
+		"Port",
+		"User",
+		"PrivateKey",
+		"KnownHosts",
+		"StallTimeoutSeconds",
+	}
 }
 
 // checkUnknown 은 정의되지 않은 섹션과 키를 오류로 기록한다.

@@ -37,6 +37,13 @@ type Config struct {
 	Put     PutConfig
 	Log     LogConfig
 
+	// Download 는 [DOWNLOAD] 와 그 하위 섹션의 설정이다 (DOWNLOAD 커밋 1).
+	//
+	// 방향 블록은 그 방향이 Mode 에 포함되거나, 블록의 섹션이 파일에 하나라도
+	// 있으면 전부 읽는다. 둘 다 아니면 건너뛰고 Present 가 false 로 남는다.
+	// Mode=put 인 기존 config 에는 이 블록이 없으므로 동작이 바뀌지 않는다.
+	Download DownloadConfig
+
 	// Set 은 [SET.RINEXx] 세트 완성도 정책이다.
 	//
 	// [PUT] 아래가 아니라 최상위에 두는 이유는, 세트 정책이 버전 단위이고
@@ -47,7 +54,7 @@ type Config struct {
 
 	// Warnings 는 실행을 막지는 않지만 운영자가 알아야 하는 사항이다.
 	// main 이 시작 시 [WARN] 으로 기록한다.
-	// 현재 유일한 생산처: [PUT.SFTP] Host/User/Port 의 평문 저장.
+	// 생산처: [PUT.SFTP] / [DOWNLOAD.SFTP] Host/User/Port 의 평문 저장.
 	Warnings []string
 }
 
@@ -58,7 +65,9 @@ type GeneralConfig struct {
 	// domain.Mode 는 PUT / DOWNLOAD / BOTH 를 모두 유효한 도메인 값으로 두지만,
 	// 현재 실행파일에서 실제로 사용할 수 있는 Mode 인지는 validate.go 가 판정한다.
 	//
-	// DOWNLOAD / BOTH 는 MVP3 이므로 현재 실행파일은 PUT 만 허용한다.
+	// DOWNLOAD 는 구현 중이다. 설정 로드·검증은 Mode=download 를 받지만
+	// 실행 게이트(validate.go downloadImplemented)가 열릴 때까지 시작은
+	// 거부된다. BOTH 는 DOWNLOAD 이후 별도 계획으로 개방한다.
 	Mode domain.Mode
 
 	// Transport 는 실행에 사용할 전송 계층이다.
@@ -68,11 +77,11 @@ type GeneralConfig struct {
 	// --transport 가 지정되면 해당 실행에 한해 이 값을 덮어쓴다.
 	Transport string
 
-	// RepostDownloaded 는 DOWNLOAD 로 수신한 파일을 다시 PUT 대상으로 삼을지이다.
+	// RepostDownloaded 는 향후 BOTH 자동 중계 정책을 위한 예약 키다.
 	//
-	// 기본값은 false 이다.
-	// BOTH 중계 구성에서만 true 로 사용할 수 있으며,
-	// 해당 구성의 경로 중첩 검사는 BOTH 구현 시 활성화한다.
+	// DOWNLOAD v3는 origin을 기록하지 않고 PUT 장부도 사용하지 않으므로
+	// 현재 모든 실행 모드에서 false만 허용한다. BOTH의 데이터 계약과
+	// Ping-Pong 정책이 별도로 확정된 뒤에만 true 의미를 연다.
 	RepostDownloaded bool
 
 	// LedgerPath 는 Ledger DB 파일 경로이다.
@@ -83,9 +92,29 @@ type GeneralConfig struct {
 	//
 	// 상대 경로는 load.go 가 config.ini 가 있는 디렉터리를 기준으로 해석하며,
 	// 이 필드에는 해석이 끝난 값이 담긴다.
-	// 호출부가 다시 해석하지 않는다. 네 곳(LedgerPath, PrivateKey, KnownHosts,
-	// Log.Dir)이 같은 규칙을 쓰므로, 해석 시점을 한 곳으로 모아 둔다.
+	// 호출부가 다시 해석하지 않는다. 다섯 곳(LedgerPath, LockPath, PrivateKey,
+	// KnownHosts, Log.Dir)이 같은 규칙을 쓰므로, 해석 시점을 한 곳으로 모아 둔다.
+	//
+	// Mode.DoesPut() 일 때만 필수다 (DOWNLOAD 커밋 계획 §1.2). DOWNLOAD 는
+	// PUT 장부를 읽거나 쓰지 않으므로 Mode=download 는 이 값 없이 시작하며
+	// Ledger DB 파일을 열거나 만들지 않는다.
 	LedgerPath string
+
+	// LockPath 는 중복 실행 방지 lock 디렉터리 경로다 (선택 키).
+	//
+	// 종전에는 lock 이 LedgerPath + ".lock" 으로 장부에 묶여 있었다.
+	// DOWNLOAD 는 장부가 없으므로 lock 경로를 장부에서 분리한다.
+	//
+	//	LockPath 명시         → 그 경로
+	//	생략 + Mode=put      → 종전처럼 LedgerPath + ".lock"
+	//	생략 + download/both → Validate 가 시작 거부
+	//
+	// 호환 규칙의 실제 계산은 Config.LockFile 이 한 곳에서 한다.
+	// 이후 BOTH 가 개방되면 두 방향은 같은 LockPath 하나를 사용한다.
+	//
+	// LedgerPath 와 같은 규칙으로 해석이 끝난 절대 경로가 담기며,
+	// 생략하면 빈 문자열이다.
+	LockPath string
 
 	// LockStale 는 기존 lock 의 owner marker 가 이 나이를 넘으면
 	// 직전 실행의 비정상 종료 잔재로 판정할 수 있게 하는 문턱이다.
@@ -213,6 +242,17 @@ const DefaultStallTimeoutSeconds = 30
 
 // PutConfig 는 [PUT] 과 그 하위 섹션의 설정이다.
 type PutConfig struct {
+	// Present 는 PUT 블록이 config.ini 에 존재해 로드되었는지이다.
+	//
+	// Mode.DoesPut() 이면 항상 true 다. Mode=download 에서는 PUT 블록
+	// ([INGRESS] [LEDGER] [PUT] [PUT.SFTP] [PUT.<CATEGORY>]) 의 섹션이 하나라도
+	// 있을 때만 true 이며, 그때 나머지 필드가 채워진다.
+	//
+	// Validate 는 두 방향이 모두 Present 일 때 Ping-Pong 정적 검사를 한다.
+	// PUT 값 자체의 검증(MaxWorkers 범위 등)은 Present 가 아니라
+	// Mode.DoesPut() 이 기준이다 — 실행하지 않을 방향의 값은 판정하지 않는다.
+	Present bool
+
 	// MaxWorkers 는 PUT 전송 병렬도이다.
 	//
 	// Scan 은 항상 순차로 수행한다.
@@ -279,10 +319,11 @@ type PutConfig struct {
 	Categories []CategoryConfig
 }
 
-// SFTPConfig 는 [PUT.SFTP] 섹션이다.
+// SFTPConfig 는 [PUT.SFTP] 또는 [DOWNLOAD.SFTP] 섹션이다.
 //
 // 접속 정보를 방향([PUT] / [DOWNLOAD]) 아래에 두는 이유는
 // 향후 BOTH 모드에서 송신 서버와 수신 서버가 서로 다를 수 있기 때문이다.
+// 두 섹션은 키 목록·읽기 규칙·검증 규칙이 같으므로 타입 하나를 공유한다.
 type SFTPConfig struct {
 	// AuthMethod 는 인증 방식이다.
 	// publickey 만 허용하며 validate.go 가 그 외를 거부한다.
@@ -324,7 +365,11 @@ type SFTPConfig struct {
 	KnownHosts string
 }
 
-// CategoryConfig 는 [PUT.<CATEGORY>] 섹션 하나의 설정이다.
+// CategoryConfig 는 [PUT.<CATEGORY>] 또는 [DOWNLOAD.<CATEGORY>] 섹션 하나의
+// 설정이다. 두 방향은 키 목록이 같고 원본·목적지 역할만 뒤바뀐다.
+//
+//	PUT       원본 LocalPath  → 목적지 RemotePath
+//	DOWNLOAD  원본 RemotePath → 목적지 LocalPath
 type CategoryConfig struct {
 	// Category 는 이 섹션이 담당하는 RINEX Category 이다.
 	//
@@ -353,6 +398,13 @@ type CategoryConfig struct {
 	// PUT RemotePath 는 업로드 목적지이며 아직 날짜 토큰만 허용한다.
 	// 전송 단계가 배치당 Expand(When) 한 번만 수행하므로 파일별 (SITE)·(HH)
 	// 값을 채울 수 없고, load 단계의 역할 정책이 두 토큰을 거부한다.
+	//
+	// DOWNLOAD RemotePath 는 원격 원본 스캔 경로다. PUT LocalPath 와 같은
+	// 이유로 (SITE)·(HH) 를 허용하며, Template.Expand 로 한 번에 펼치지 않고
+	// scan.Scanner 가 Steps 로 부모를 나열해 실제 폴더를 찾는다 (PATH v4).
+	// DOWNLOAD LocalPath 는 로컬 목적지이며 파일별 ExpandFile 로 채운다.
+	// Daily LocalPath의 (HH)는 파일명에서 값을 꺼낼 수 없어 Validate가
+	// 거부한다. 원본 RemotePath의 (HH)는 폴더 나열 패턴이므로 허용한다.
 	//
 	// 두 필드 모두 nil 이 아님이 Load 성공의 조건이다.
 	// Expand 는 포인터 리시버이므로 nil 이면 호출 시점에 panic 이 된다.
@@ -397,15 +449,7 @@ func LogLevels() []string {
 // 수신자가 PutConfig 인 이유는 이 함수가 Put 밖의 값을 보지 않기 때문이다.
 // Lookup 과 나란히 두어 Category 조회 경로를 한곳에 모은다.
 func (p PutConfig) EnabledCategories() []CategoryConfig {
-	out := make([]CategoryConfig, 0, len(p.Categories))
-
-	for _, cc := range p.Categories {
-		if cc.Enabled {
-			out = append(out, cc)
-		}
-	}
-
-	return out
+	return enabledCategories(p.Categories)
 }
 
 // Lookup 은 해당 Category 의 PUT 설정을 찾는다.
@@ -416,11 +460,114 @@ func (p PutConfig) EnabledCategories() []CategoryConfig {
 // 이름을 Category 로 두지 않는 이유는 CategoryConfig.Category 필드와 섞여
 // 호출부에서 cfg.Put.Category(...).Category 같은 표기가 나오기 때문이다.
 func (p PutConfig) Lookup(cat domain.Category) (CategoryConfig, bool) {
-	for _, cc := range p.Categories {
+	return lookupCategory(p.Categories, cat)
+}
+
+// DownloadConfig 는 [DOWNLOAD] 와 그 하위 섹션의 설정이다.
+//
+// DOWNLOAD 는 PUT 장부·상태 머신을 쓰지 않으므로 [LEDGER]·[INGRESS] 에
+// 해당하는 섹션이 없다. 날짜 탐색 범위([SCAN])는 전송 방향이 아니라
+// 날짜 정책이므로 PUT 과 공유한다 (커밋 계획 §1.2).
+type DownloadConfig struct {
+	// Present 는 DOWNLOAD 블록이 config.ini 에 존재해 로드되었는지이다.
+	// 의미는 PutConfig.Present 와 같다.
+	Present bool
+
+	// Sites 는 수신 대상 관측소 코드(대문자 4자리) 목록이다.
+	//
+	// config.ini 의 [DOWNLOAD] Sites 를 domain.ParseSiteList 로 검증한
+	// 결과이며, 생략하거나 빈 값이면 nil 로 두어 전체 관측소를 뜻한다.
+	// 형식 위반은 Load 가 거부한다.
+	Sites []string
+
+	// MaxWorkers 는 DOWNLOAD 수신 병렬도이다. PUT 과 같은 운영 범위
+	// 1..16 을 Validate 가 강제한다.
+	MaxWorkers int
+
+	// Grace 는 원격 파일의 mtime 이 현재 시각으로부터 이만큼 지난 경우에만
+	// 수신 후보로 인정하기 위한 시간이다. 미래 mtime 판정에도 쓴다.
+	//
+	// PUT 의 [INGRESS] GraceSeconds 를 공유하지 않는다. PUT 은 로컬 파일
+	// 시계, DOWNLOAD 는 원격 서버 시계를 보므로 운영 조건이 다르다.
+	//
+	//	키 없음  → Mode=download 에서 Validate 가 시작 거부 (GraceSet=false)
+	//	0        → Grace·FutureMTime 검사를 명시적으로 끔
+	//	양수     → 해당 시간을 원격 파일 검증에 사용
+	//	음수     → Validate 가 거부
+	//
+	// 부재와 명시적 0 을 구분해야 하므로 GraceSet 을 함께 둔다. PUT 의
+	// MaxHashBackfillPerRun 처럼 부재를 기본값으로 접지 않는 이유는, 원격
+	// 시계 차이는 현장 확인 전에는 안전한 기본값이 없기 때문이다.
+	Grace time.Duration
+
+	// GraceSet 은 [DOWNLOAD] GraceSeconds 키가 파일에 있었는지이다.
+	GraceSet bool
+
+	// SFTP 는 [DOWNLOAD.SFTP] 접속 설정이다.
+	SFTP SFTPConfig
+
+	// Categories 는 DOWNLOAD Category 설정 전체이다.
+	// PutConfig.Categories 와 같은 규칙으로 채운다.
+	Categories []CategoryConfig
+}
+
+// EnabledCategories 는 Enabled 인 DOWNLOAD Category 설정만
+// 선언 순서대로 돌려준다. PutConfig.EnabledCategories 와 같은 이유로 둔다.
+func (d DownloadConfig) EnabledCategories() []CategoryConfig {
+	return enabledCategories(d.Categories)
+}
+
+// Lookup 은 해당 Category 의 DOWNLOAD 설정을 찾는다.
+func (d DownloadConfig) Lookup(cat domain.Category) (CategoryConfig, bool) {
+	return lookupCategory(d.Categories, cat)
+}
+
+// enabledCategories 는 두 방향이 공유하는 Enabled 필터다.
+func enabledCategories(cats []CategoryConfig) []CategoryConfig {
+	out := make([]CategoryConfig, 0, len(cats))
+
+	for _, cc := range cats {
+		if cc.Enabled {
+			out = append(out, cc)
+		}
+	}
+
+	return out
+}
+
+// lookupCategory 는 두 방향이 공유하는 Category 조회다.
+func lookupCategory(
+	cats []CategoryConfig,
+	cat domain.Category,
+) (CategoryConfig, bool) {
+	for _, cc := range cats {
 		if cc.Category == cat {
 			return cc, true
 		}
 	}
 
 	return CategoryConfig{}, false
+}
+
+// LockFile 은 이 실행이 사용할 lock 디렉터리 경로를 돌려준다.
+//
+// [GENERAL] LockPath 의 호환 규칙(GeneralConfig.LockPath 주석)을 계산하는
+// 유일한 자리다. main 과 resend 가 각자 LedgerPath+".lock" 을 조립하면
+// LockPath 키가 한쪽에서만 반영되는 사고가 나므로 여기로 모은다.
+//
+// Mode=download 에서 LockPath 가 없으면 Validate 가 이미 거부했으므로
+// 빈 문자열을 돌려주는 경로는 정상 Load 흐름에서 도달하지 않는다.
+func (c *Config) LockFile() string {
+	if c.General.LockPath != "" {
+		return c.General.LockPath
+	}
+
+	// 호환 fallback은 정확히 PUT 단독 모드에만 적용한다. DOWNLOAD는
+	// 장부와 lock을 결합하지 않으며, BOTH도 두 방향의 공용 LockPath를
+	// 명시해야 한다.
+	if c.General.Mode != domain.ModePut || c.General.LedgerPath == "" {
+		return ""
+	}
+
+	return c.General.LedgerPath + ".lock"
 }
