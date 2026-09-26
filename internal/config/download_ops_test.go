@@ -352,8 +352,8 @@ func assertWarningsOnly(t *testing.T, warnings []string, prefix string, n int) {
 	}
 }
 
-// Mode=download 는 원격 GET 만 한다. Transport=localfs 는 게이트가
-// 열리는 커밋에서 원격 구현 없이 기동하므로 지금 거부한다.
+// Mode=download 는 원격 GET 만 한다. Transport=localfs 는 원격 구현이
+// 없으므로 거부한다 (커밋 계획 §1.3).
 func TestDownload_LocalFSTransportRejected(t *testing.T) {
 	ini := replaceLine(t, downloadOnlyINI(), "GENERAL", "Transport", "Transport = localfs")
 
@@ -364,7 +364,7 @@ func TestDownload_LocalFSTransportRejected(t *testing.T) {
 
 	err = cfg.Validate()
 	mustContain(t, err, "Transport = localfs is not supported when Mode = DOWNLOAD")
-	mustContain(t, err, "DOWNLOAD is not implemented")
+	mustNotContain(t, err, "DOWNLOAD is not implemented")
 }
 
 // PUT 의 localfs 는 그대로다. DOWNLOAD 거부가 기존 전송 선택을 건드리면
@@ -552,5 +552,5 @@ func TestDownload_LocalPathBackslashAllowed(t *testing.T) {
 
 	err = cfg.Validate()
 	mustNotContain(t, err, "uses '\\'")
-	onlyGateError(t, err)
+	mustBeValid(t, err)
 }

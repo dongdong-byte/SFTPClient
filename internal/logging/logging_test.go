@@ -336,6 +336,69 @@ func TestWrite_FailureDegradesOnceAndResumes(t *testing.T) {
 	}
 }
 
+// 파일 전용 로그는 정상일 때 화면에 나오지 않지만, 런타임 파일 쓰기 장애가
+// 나면 원문이 사라지지 않고 fallback으로 간다. 복구 후에는 다시 파일 전용이다.
+// 일반 RotatingWriter.Write에는 fallback을 붙이지 않으므로 기존 MultiWriter
+// 경로의 화면 중복도 없다.
+func TestFallbackWriter_RuntimeFailurePreservesOriginalLine(t *testing.T) {
+	dir := t.TempDir()
+	now := day(2026, 9, 17)
+
+	failWrite := false
+	var warns, fallback bytes.Buffer
+	w, err := newRotatingWriter(dir, 30, &hooks{
+		nowFn:   fixedNow(&now),
+		warnOut: &warns,
+		writeFn: func(f *os.File, p []byte) (int, error) {
+			if failWrite {
+				return 0, errors.New("disk full")
+			}
+			return f.Write(p)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	detail := w.FallbackWriter(&fallback)
+
+	failWrite = true
+	line := "[DOWNLOAD] 목적지중복 원격=/remote/a 로컬=C:/data/a\n"
+	if n, err := detail.Write([]byte(line)); err != nil || n != len(line) {
+		t.Fatalf("detail Write = %d, %v", n, err)
+	}
+	if got := fallback.String(); got != line {
+		t.Fatalf("fallback = %q, want original line %q", got, line)
+	}
+	if !strings.Contains(warns.String(), "file logging failed") {
+		t.Fatalf("failure warning missing: %q", warns.String())
+	}
+
+	// 기존 화면+파일 경로는 호출자가 이미 화면에 썼으므로 RotatingWriter가
+	// 같은 줄을 fallback에 중복하지 않는다.
+	fallback.Reset()
+	if _, err := w.Write([]byte("ordinary line\n")); err != nil {
+		t.Fatal(err)
+	}
+	if fallback.Len() != 0 {
+		t.Fatalf("ordinary Write duplicated to fallback: %q", fallback.String())
+	}
+
+	// 복구되면 파일 전용 줄은 다시 파일에만 남는다.
+	failWrite = false
+	if _, err := detail.Write([]byte("detail recovered\n")); err != nil {
+		t.Fatal(err)
+	}
+	if fallback.Len() != 0 {
+		t.Fatalf("healthy write reached fallback: %q", fallback.String())
+	}
+	content := readFile(t, filepath.Join(dir, "rinexclient_20260917.log"))
+	if !strings.Contains(content, "detail recovered\n") {
+		t.Fatalf("recovered detail missing from file: %q", content)
+	}
+}
+
 // 보조 — retentionDays 계약: 1 미만은 생성자 거부.
 func TestNew_RejectsNonPositiveRetention(t *testing.T) {
 	if _, err := newRotatingWriter(t.TempDir(), 0, &hooks{warnOut: io.Discard}); err == nil {

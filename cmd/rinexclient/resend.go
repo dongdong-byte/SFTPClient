@@ -179,6 +179,12 @@ func resendCmd() error {
 		return err
 	}
 
+	// resend 는 PUT 장부를 쓴다. Mode=download 인스턴스에는 장부가 없고,
+	// 그대로 진행하면 장부 DB 를 새로 만들게 된다 (DOWNLOAD 커밋 7, D12 역방향).
+	if err := requirePutMode(cfg); err != nil {
+		return err
+	}
+
 	logWriter, logErr := logging.NewRotatingWriter(
 		cfg.Log.Dir,
 		cfg.Log.RetentionDays,
@@ -802,4 +808,16 @@ func selectCategories(
 	}
 
 	return out, nil
+}
+
+// requirePutMode 는 resend 를 PUT 이 포함된 Mode 에서만 허용한다.
+func requirePutMode(cfg *config.Config) error {
+	if cfg.General.Mode.DoesPut() {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"resend 는 Mode = %s 에서 쓸 수 없다 (PUT 장부 기능이다)",
+		cfg.General.Mode,
+	)
 }

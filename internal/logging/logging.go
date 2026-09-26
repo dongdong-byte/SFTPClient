@@ -40,6 +40,15 @@ type RotatingWriter struct {
 	warnOut io.Writer
 }
 
+// fallbackWriter는 파일에만 보내려던 줄이 런타임 파일 쓰기 장애로 유실될
+// 때 fallback으로 원문을 보낸다. 정상 파일 기록 때는 fallback에 쓰지 않는다.
+// RotatingWriter.Write의 기존 계약(호출자가 이미 stderr에도 쓴 줄)은 바꾸지
+// 않아, 화면+파일 로그가 장애 시 화면에 두 번 찍히는 것을 피한다.
+type fallbackWriter struct {
+	primary  *RotatingWriter
+	fallback io.Writer
+}
+
 // NewRotatingWriter creates dir, opens today's file immediately, and performs
 // a best-effort retention cleanup. Opening immediately lets the caller decide
 // whether to fall back to stderr before normal work starts.
@@ -114,6 +123,21 @@ func newRotatingWriter(
 // file failures never stop the transfer: stderr has already received the line
 // because main places it first in io.MultiWriter.
 func (w *RotatingWriter) Write(p []byte) (int, error) {
+	return w.write(p, nil)
+}
+
+// FallbackWriter는 w의 파일 기록이 실제로 실패할 때만 fallback으로 원문을
+// 보내는 Writer를 돌려준다. DOWNLOAD처럼 정상 시 파일 전용인 로그에 쓴다.
+// fallback이 nil이면 기존 Write와 같다.
+func (w *RotatingWriter) FallbackWriter(fallback io.Writer) io.Writer {
+	return fallbackWriter{primary: w, fallback: fallback}
+}
+
+func (w fallbackWriter) Write(p []byte) (int, error) {
+	return w.primary.write(p, w.fallback)
+}
+
+func (w *RotatingWriter) write(p []byte, fallback io.Writer) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -126,6 +150,7 @@ func (w *RotatingWriter) Write(p []byte) (int, error) {
 	if w.file == nil {
 		// Close is for tests and tools. The main program intentionally leaves the
 		// descriptor alive so main's final [FATAL] can still reach the file.
+		writeFallback(fallback, p)
 		return len(p), nil
 	}
 
@@ -143,6 +168,8 @@ func (w *RotatingWriter) Write(p []byte) (int, error) {
 			)
 		}
 
+		writeFallback(fallback, p)
+
 		return len(p), nil
 	}
 
@@ -152,6 +179,14 @@ func (w *RotatingWriter) Write(p []byte) (int, error) {
 	}
 
 	return len(p), nil
+}
+
+// writeFallback은 관측 실패가 데이터 전송 실패로 번지지 않게 best-effort로
+// 쓴다. 보통 os.Stderr이며, 그마저 실패하면 복구할 더 낮은 출력 경로가 없다.
+func writeFallback(dst io.Writer, p []byte) {
+	if dst != nil {
+		_, _ = dst.Write(p)
+	}
 }
 
 // rotate switches files only after the new file opens successfully. On

@@ -155,6 +155,47 @@ func run() error {
 		log.Printf("[WARN] %s", w)
 	}
 
+	// DOWNLOAD 는 여기서 갈라진다 (download.go, DOWNLOAD 커밋 7).
+	// 아래는 PUT 경로 그대로다 — Mode=put 은 이 분기를 지나지 않는다.
+	// Mode=both 는 config.Validate 가 이미 거부했다.
+	if cfg.General.Mode == domain.ModeDownload {
+		if err := checkDownloadFlags(*dryRun, *seed, *transportName); err != nil {
+			return err
+		}
+
+		// Ctrl+C 전파는 PUT 과 같다 (아래 PUT 경로의 주석 참고).
+		dctx, dstop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer dstop()
+
+		go func() {
+			<-dctx.Done()
+			dstop()
+		}()
+
+		// 파일 전용 로거 (로그 분리 합의 2026-09-26). 로그 파일을 열지
+		// 못했으면 줄을 버리지 않고 화면+파일 로거(=화면)로 보낸다.
+		detail := log.Default()
+		if logErr == nil {
+			// 정상일 때는 파일에만 남긴다. 실행 중 디스크 full·권한 변경
+			// 등으로 실제 쓰기가 실패하면 해당 원문만 stderr로 보낸다.
+			detail = log.New(
+				logWriter.FallbackWriter(os.Stderr),
+				log.Prefix(),
+				log.Flags(),
+			)
+		}
+
+		return runDownload(
+			dctx,
+			cfg,
+			*deep,
+			time.Now(),
+			dialDownloadSFTP,
+			log.Default(),
+			detail,
+		)
+	}
+
 	if *dryRun && *seed {
 		return fmt.Errorf(
 			"--dry-run 과 --seed 는 함께 쓸 수 없다 " +

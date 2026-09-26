@@ -26,13 +26,14 @@ var ErrEnvironment = errors.New("config: environment not ready")
 
 // downloadImplemented 는 이 빌드가 DOWNLOAD 방향을 수행할 수 있는지이다.
 //
-// PUT 은 완료다. DOWNLOAD 는 커밋 계획(DOWNLOAD_COMMIT_PLAN v1)에 따라
-// 구현 중이며, 커밋 1(설정)부터 6(보고)까지는 이 게이트를 false 로 두고
-// 커밋 7(main 배선)에서 연다. 그동안 Mode=download 의 설정 로드·검증은
-// 이미 동작하되 시작은 이 게이트가 거부한다.
+// DOWNLOAD 커밋 7(main 배선)에서 연다. 커밋 1~6 동안은 false 로 두어
+// 설정 로드·검증만 동작하고 시작은 거부했다.
 //
-// Mode=both 는 DOWNLOAD 개방 이후에도 별도 계획 전까지 계속 거부한다.
-const downloadImplemented = false
+// 다시 닫아야 하면 이 값만 false 로 되돌린다. main 의 DOWNLOAD 분기는
+// Validate 를 통과한 설정에서만 도달하므로 함께 막힌다.
+//
+// Mode=both 는 bothImplemented 가 따로 막는다.
+const downloadImplemented = true
 
 // bothImplemented 는 DOWNLOAD 단독 실행과 별개인 BOTH 운영 게이트다.
 //

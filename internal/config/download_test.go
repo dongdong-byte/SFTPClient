@@ -163,22 +163,15 @@ func replaceLine(t *testing.T, ini, section, key, newLine string) string {
 	return ""
 }
 
-// onlyGateError 는 Validate 오류가 DOWNLOAD 실행 게이트 하나뿐인지 확인한다.
-// 게이트가 열리기 전의 "정상 DOWNLOAD 설정"이 통과해야 하는 기준이다.
-func onlyGateError(t *testing.T, err error) {
+// mustBeValid 는 정상 DOWNLOAD 설정이 Validate 를 오류 없이 통과하는지 본다.
+//
+// 커밋 1~6 동안은 "게이트 오류 하나만 남는다"(onlyGateError)가 기준이었다.
+// 커밋 7 에서 게이트가 열려 기준이 "오류 없음"이 되었다.
+func mustBeValid(t *testing.T, err error) {
 	t.Helper()
 
-	if err == nil {
-		t.Fatal("expected the DOWNLOAD gate error, got nil")
-	}
-
-	lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
-
-	// 첫 줄은 "config: invalid configuration in <path>:" 머리다.
-	body := lines[1:]
-
-	if len(body) != 1 || !strings.Contains(body[0], "DOWNLOAD is not implemented") {
-		t.Fatalf("expected only the gate error, got:\n%v", err)
+	if err != nil {
+		t.Fatalf("expected a valid configuration, got:\n%v", err)
 	}
 }
 
@@ -294,7 +287,7 @@ func TestDownload_LoadsWithoutLedger(t *testing.T) {
 		t.Errorf("LockFile() = %q, want %q", got, want)
 	}
 
-	onlyGateError(t, cfg.Validate())
+	mustBeValid(t, cfg.Validate())
 }
 
 // §2.5-6 DOWNLOAD RemotePath 에 (SITE)·(HH) 가 있어도 로드된다.
@@ -463,7 +456,7 @@ func TestDownload_GraceSeconds(t *testing.T) {
 					t.Errorf("Grace = %v set=%v, want 0 set", cfg.Download.Grace, cfg.Download.GraceSet)
 				}
 
-				onlyGateError(t, err)
+				mustBeValid(t, err)
 				return
 			}
 
@@ -559,7 +552,7 @@ func TestDownload_DailyRemotePathHourTokenAllowed(t *testing.T) {
 		t.Fatalf("mapConfig() unexpected error: %v", err)
 	}
 
-	onlyGateError(t, cfg.Validate())
+	mustBeValid(t, cfg.Validate())
 }
 
 func TestDownload_NoEnabledCategory(t *testing.T) {
@@ -656,7 +649,7 @@ func TestDownload_PutBlockPresentButNotJudged(t *testing.T) {
 		t.Errorf("PUT block values should still be read: MaxWorkers = %d", cfg.Put.MaxWorkers)
 	}
 
-	onlyGateError(t, cfg.Validate())
+	mustBeValid(t, cfg.Validate())
 }
 
 // 알 수 없는 키는 DOWNLOAD 섹션에서도 종전 장치가 잡는다.
