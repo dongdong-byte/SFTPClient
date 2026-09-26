@@ -11,7 +11,7 @@ alwaysApply: true
 - Windows 우선 개발 후 Linux로 확장한다.
 - 폐쇄망 배포를 고려하고 가능하면 CGO_ENABLED=0 빌드를 유지한다.
 - SOLID를 지키되 불필요한 추상화를 만들지 않는다.
-- 실제 개발 순서는 **PUT(MVP1, 완료) → MVP2 보강(DOWNLOAD 로컬 수신 포함, 2026-09-20 편입) → 원격 수신·BOTH/성능 개선(번호 미정)**이다.
+- 실제 개발 순서는 **PUT(MVP1, 완료) → MVP2 보강(DOWNLOAD 원격 SFTP 수신 구현, 2026-09-26, 실서버 검증 전) → BOTH/Retention/성능 개선**이다.
 - 문서 간 충돌이 있으면 최신 문서를 우선한다. MVP 범위가 어긋나면 `SFTPClient_PROJECT_GUIDELINES.md` 상단의 「MVP2 현재 실행 범위」가 이긴다.
 - GUIDELINES 12절과 `SFTPClient_MVP2_CONFIRMED_DECISIONS_v2.md`는 2026-09-10 역사 스냅샷이다. 현재형으로 남아 있어도 현행 지시로 읽지 않는다.
 - 설계안의 `file_id`는 구현에서 `(category, file_name)` 복합키로 개정되었다. `file_name` 단독이 식별자가 아니다.
@@ -29,9 +29,9 @@ alwaysApply: true
 - `utils`, `helper`, `common`처럼 책임이 불명확한 범용 패키지를 만들지 않는다.
 - `internal/sftp` 패키지명은 사용하지 않는다. `github.com/pkg/sftp`와 혼동을 피하기 위해 `transport`를 사용한다.
 - 기관별 차이는 Core 코드의 기관명 조건문이 아니라 `config.ini`와 Path Template으로 처리한다.
-- `HourLayout`과 `(HH)` 토큰은 **제거 완료**(2026-09-22, `docs/path/SFTPClient_PATH_DESIGN_v3.md`). LocalPath는 날짜 폴더까지만 적고 아래는 재귀가 수집한다(파일 먼저 → 하위 폴더 이름순, 폴더 미전달, 링크·junction 미추적·집계). 재도입·재강화하지 않는다 — 잔존 키/토큰은 알 수 없는 키/토큰으로 시작이 거부되며 그것이 설계된 동작이다.
-- 원격은 로컬 하위 구조를 복제하지 않는다. RINEX 버전별 고정 평면 `RemotePath`로 보낸다.
-- `[PUT.SFTP]` Host/User/Port 보호는 `enc:` + DPAPI LocalMachine이다. 인터페이스는 `config.Protector`, 구현은 `internal/security`, 설치는 `secure-set`. 상세는 `docs/SFTPClient_SECURITY_ENC_DESIGN.md`.
+- `HourLayout` 키는 제거된 상태다. 설정에 남아 있으면 알 수 없는 키로 시작이 거부된다. `(SITE)`·`(HH)`는 PATH v4에서 다시 허용된 폴더 토큰이다. 원본 경로는 그 자리의 폴더를 나열하고, 목적지는 `ExpandFile`로 채운다. Daily `LocalPath`의 `(HH)`는 거부한다. PUT `RemotePath`에는 파일 토큰을 두지 않는다.
+- PUT 원격은 로컬 하위 구조를 복제하지 않는다. RINEX 버전별 고정 평면 `RemotePath`로 보낸다. 날짜 폴더 아래 재귀는 파일 먼저, 하위 폴더 이름순이며 폴더는 전달하지 않고 링크·junction은 따라가지 않는다.
+- `[PUT.SFTP]` Host/User/Port 보호는 `enc:` + DPAPI LocalMachine이다. 인터페이스는 `config.Protector`, 구현은 `internal/security`, 설치는 `secure-set`. 상세는 `docs/put/SFTPClient_SECURITY_ENC_DESIGN.md`.
 - Linux 배포·테스트는 MVP2 범위다. Linux 전용 추가 보안·자격증명 보호는 선제 구현하지 않는다. 공식 보안점검에서 구체적인 요구가 나온 경우에만 그 범위에 맞춰 적용한다.
 
 ## Current MVP
@@ -54,14 +54,14 @@ Local Scanner
 MVP2 남은 목표:
 
 - ~~`resend`~~ 완료 (2026-09-22, 커밋 1~8).
-- ~~경로 범용화~~ 완료 (2026-09-22, PATH_DESIGN v3). 깊이 제한 없음(날짜 폴더가 범위 제한), symlink/junction 미추적은 확정됨 — v3 §1·§5.
-- Retention Cleanup 구현·검증 (**우선** — 3개 기관 운영이 30일에 가까움). 지금은 설정과 `RetentionDays > ScanDays` 검증만 있고 실제 삭제는 없다.
-- DOWNLOAD **로컬 수신** + `download_ledger` (2026-09-20 대표 요구로 편입). 기존 저장 경로의 파일을 표준 폴더로 복제하고, PUT은 표준 폴더를 보낸다. 로컬 수신 파일의 origin은 `LOCAL`이다. 설계 원칙은 `docs/path/SFTPClient_PATH_DESIGN_v1.md` §3~§13, v3 §10 우선. 세부는 구현 전 확정하며 임의로 가정하지 않는다.
+- ~~경로 범용화~~ 완료 (2026-09-22, PATH v3, 이후 PATH v4에서 `(SITE)`·`(HH)` 허용). 깊이 제한 없음(날짜 폴더가 범위 제한), symlink/junction 미추적은 확정됨.
+- Retention Cleanup 구현·검증 (**우선** — 3개 기관 운영이 30일에 가까움). 지금은 설정과 `RetentionDays > ScanDays` 검증만 있고 장부 행 삭제는 없다.
+- ~~DOWNLOAD 원격 SFTP → 로컬~~ 구현 (2026-09-26, 커밋 1~8). 장부는 없다. 받을지는 로컬 최종 파일의 존재·크기로 정한다. 기준은 `docs/download/SFTPClient_DOWNLOAD_DESIGN_v4.md`. 실서버 검증(D14)과 `GraceSeconds` 현장 확정은 아직이다.
 - Linux 배포·테스트(전용 추가 보안 제외).
 
 MVP2에서 하지 않는다:
 
-- DOWNLOAD 원격(SFTP) 수신과 `origin=DOWNLOAD` Ping-Pong 제외(후속, 번호 미정).
+- BOTH, `origin=DOWNLOAD`, `RepostDownloaded=true`.
 - Linux 전용 추가 보안(공식 보안점검 요구 시에만).
 - 미완성 세트 보류 리포트, 게이트 활성화 운영 절차, RINEX3 운영 프로파일.
 - 재귀 탐색 경계를 현장 정보 없이 추측해 고정하는 것.
@@ -109,11 +109,11 @@ MVP2에서 하지 않는다:
 
 우선순위:
 1. 최신 `SFTPClient_PROJECT_GUIDELINES.md` 상단 범위(12절 봉인 본문보다 우선)
-2. `docs/SFTPClient_LEDGER_CONCEPT.md`
+2. `docs/put/SFTPClient_LEDGER_CONCEPT.md`
 3. `internal/ledger/schema.sql`
-4. `docs/SFTPClient_SCAN_DESIGN_DECISIONS.md`
-5. `docs/SFTPClient_SET_ATOMICITY_DESIGN.md` (게이트 요약. 상충 시 GUIDELINES 상단)
-6. `docs/SFTPClient_SECURITY_ENC_DESIGN.md`
+4. `docs/put/SFTPClient_SCAN_DESIGN_DECISIONS.md`
+5. `docs/put/SFTPClient_SET_ATOMICITY_DESIGN.md` (게이트 요약. 상충 시 GUIDELINES 상단)
+6. `docs/put/SFTPClient_SECURITY_ENC_DESIGN.md`
 7. `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx`
 
 Ledger 관련 구현에서는 `schema.sql`과 Ledger Concept 문서를 최신 기준으로 사용한다.
