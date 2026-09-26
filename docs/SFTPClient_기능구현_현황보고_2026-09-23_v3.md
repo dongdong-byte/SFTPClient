@@ -280,7 +280,7 @@
 - **실제 전송과 복구:** [파일 전송](../internal/put/transfer.go), [서버 연결](../internal/transport/sftpfs.go), [통신 진행 감시](../internal/transport/progress.go), [중단 자료 정리](../internal/put/recovery.go), [설치 초기 반영](../internal/put/seed.go).
 - **자료 관리대장:** [저장 항목](../internal/ledger/schema.sql), [자료 등록·변경](../internal/ledger/common.go), [기록 조회](../internal/ledger/lookup.go), [전송 상태 저장](../internal/ledger/put.go), [비교 정보 갱신](../internal/ledger/refresh.go), [기록 형식 자동 갱신](../internal/ledger/db.go), [운영 시작일](../internal/ledger/origin.go).
 - **운영 관리:** [설정 읽기](../internal/config/load.go), [설정 검사](../internal/config/validate.go), [중복 실행 방지](../internal/lock/lock.go), [실행 기록](../internal/logging/logging.go), [윈도우 설정값 보호](../internal/security/security_windows.go), [시험용 전송](../internal/transport/localfs.go).
-- **남은 범위:** 실행 코드의 오래된 이력 정리 미구현 표시, 수집·수신 기능의 실행 거부, [최신 프로젝트 지침](<../SFTPClient_PROJECT_GUIDELINES .md>)의 남은 작업을 함께 확인했습니다.
+- **남은 범위:** 실행 코드의 오래된 이력 정리 미구현 표시, 수집·수신 기능의 실행 거부, [최신 프로젝트 지침](../SFTPClient_PROJECT_GUIDELINES.md)의 남은 작업을 함께 확인했습니다.
 
 수정 시각 문제 이후의 다섯 보강은 본문에 각각 포함되어 있습니다. **실행 기록 보관은 8.5, 내용 비교는 3.2, 통신 정지 대응은 6.3, 결과 요약은 8.6, 임시 파일 제외는 3.3**에 해당합니다. 별도 신규 기능으로 다시 합산하지 않았습니다.
 

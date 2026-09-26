@@ -283,7 +283,7 @@ transport는 방향을 모른다는 원칙(지침 §15)은 유지된다. 추가 
 
 ## 8. 과제 1: DB 설계 [결정 2026-09-24]
 
-> **DB 구조(컬럼·타입)는 이 문서에서 정하지 않는다.** 별도 문서 `docs/db/SFTPClient_DB_DESIGN_v1.md`에서
+> **DB 구조(컬럼·타입)는 이 문서에서 정하지 않는다.** 별도 문서 `docs/db/SFTPClient_DB_DESIGN_v1.md`〔저장소에 없음 — v3 에서 DOWNLOAD DB 를 두지 않기로 해 작성되지 않았다〕에서
 > 개념 설계 → 논리 설계 → 물리 설계 순으로 확정하고, 그 전에 구현을 시작하지 않는다.
 
 ### 8.1 배경
@@ -326,7 +326,7 @@ DOWNLOAD 논의에서 드러난 오해의 원인을 문서로 남겨 다시 흔�
 
 ### 8.5 산출물
 
-1. `docs/db/SFTPClient_DB_DESIGN_v1.md`: download 기록의 개념·논리·물리 설계(Q1~Q7), PUT DB 사후 개념 정리(§8.4)
+1. `docs/db/SFTPClient_DB_DESIGN_v1.md`〔저장소에 없음 — v3 에서 DOWNLOAD DB 를 두지 않기로 해 작성되지 않았다〕: download 기록의 개념·논리·물리 설계(Q1~Q7), PUT DB 사후 개념 정리(§8.4)
 2. 이 문서의 수신 기록 관련 서술을 확정값으로 교체
 
 ---

@@ -1,7 +1,10 @@
-# SFTPClient MVP2 — `resend` 설계 v4 (설계 마감본)
+# SFTPClient MVP2 — `resend` 설계 v5 (최종)
+
+> v5 는 v4(`SFTPClient_RESEND_DESIGN_v4.md`, 설계 마감본으로 보존)에 구현 뒤 기록을
+> 덧붙인 판이다. 본문과 절 번호는 v4 그대로다.
 
 > 작성 2026-09-21. MVP2 실행 범위 ② 「`resend` 명령 신설」의 구현 전 설계다.
-> 상위 기준은 [PROJECT_GUIDELINES](../../SFTPClient_PROJECT_GUIDELINES.md)의
+> 상위 기준은 [PROJECT_GUIDELINES](../../../SFTPClient_PROJECT_GUIDELINES.md)의
 > 「MVP2 현재 실행 범위」·「세트 완성도 게이트 — 현행 결정 통합」·9.9절이며,
 > 이 문서는 그중 「MVP2 구현 전 결정 필요」에 남은 resend 항목을 닫는다.
 >
@@ -11,7 +14,7 @@
 > 표기: **[확정]** 사용자 확인 완료 / **[미결]** 이번 범위에서 결정하지 않음.
 > v4로 설계를 마감하면서 v3까지 [제안]이던 항목은 모두 [확정]으로 전환했다.
 >
-> 관측소 선택 공통 규칙은 [SITE 선택 설계 v1](../site/SFTPClient_SITE_DESIGN_v1.md)에서
+> 관측소 선택 공통 규칙은 [SITE 선택 설계 v1](../../site/SFTPClient_SITE_DESIGN_v1.md)에서
 > 관리한다. `--site`의 출처는 대표가 제안한 특정 관측소 다운로드 인자이며,
 > 식별 규칙은 PUT `resend`와 향후 DOWNLOAD가 공유한다. 이 문서로 DOWNLOAD를
 > 구현하지 않는다.
@@ -113,7 +116,7 @@ Retention 한계보다 짧은 기존 현장에도 해당한다.
 | §5.5 우회 관측·절단 | 서술만 | **게이트 이원화**: 보류는 ResendMinKinds, SetKey 새김·경계 절단·`[SET][RESEND]` 는 RequiredKinds 기준 — 전면 우회에서도 절단이 세트를 쪼개지 않는다 (`internal/put/runner.go`) |
 | §4.3 재무장 | attempts 보존 | 후보에 `RetryCeiling = attempts + 1` 을 실어 BeginPut 가드를 한 번 통과 (`Candidate.RetryCeiling`, ledger 계약 불변). dry-run 에도 켠다 — 미리보기와 실제 후보 일치 |
 | §6.3 site 정규화 | SITE 문서 참조 | **대문자 코드**로 통일 — `domain.NormalizeSiteList` 가 정규화의 주인, put 은 Run 입구에서 재통과. 커밋 3 의 소문자 결정 번복 경위와 재론 금지 조건은 SITE v1 개정 이력 참조 |
-| §6.3 선택 0건 | 문서 밖 | **exit 0 + 사유 표시** — 확정 문구·site 별 `site_matched` 관측·site 미발견 exit 1 예외의 잠금은 [메시지 문서](../SFTPClient_MESSAGES_AND_EXIT_CODES.md) §3·§5·§6 이 소유한다 |
+| §6.3 선택 0건 | 문서 밖 | **exit 0 + 사유 표시** — 확정 문구·site 별 `site_matched` 관측·site 미발견 exit 1 예외의 잠금은 [메시지 문서](../message/SFTPClient_MESSAGES_AND_EXIT_CODES_v2.md) §3·§5·§6 이 소유한다 |
 | §8.5 (Q14) | 미결 | 그대로 미결 — `MaxFilesPerRun = 0` 은 ①·② 모두 무제한이며 거부하지 않는다 |
 
 경계 서술 정정: §3.3 의 빈 창 조건은 "**미만**"이다 — `RetentionDays =
@@ -454,7 +457,7 @@ resend 예산 = MaxFilesPerRun − len(①의 kept)
 
 `--site`를 추가하고 `--category`와 함께 사용할 수 있게 한다.
 출처는 대표의 관측소 지정 다운로드 요구이며, 공통 식별은
-[SITE v1](../site/SFTPClient_SITE_DESIGN_v1.md)이 소유한다. 이번 구현은
+[SITE v1](../../site/SFTPClient_SITE_DESIGN_v1.md)이 소유한다. 이번 구현은
 **송신 `resend` CLI**에만 `--site`를 붙인다. 일반 정시 PUT에 `--site`를 노출하지
 않고, DOWNLOAD CLI 전체 형태는 **[미결]**이다.
 
@@ -517,7 +520,7 @@ Lock(같은 경로, stale = 설정 LockStaleSeconds)
   `[RESEND] lock held — waiting` 후 재시도한다. 대기 상한은 설정 `LockStaleSeconds`를
   넘기지 않는다. 상한을 넘기면 오류로 끝나고 운영자가 다시 실행한다.
   재시도 간격은 **10초**, 반복 안내는 **5분**이다. 첫 대기 안내는 즉시 한 번이다.
-  문구와 종료 코드는 [메시지 문서](../SFTPClient_MESSAGES_AND_EXIT_CODES.md) §3·§7.
+  문구와 종료 코드는 [메시지 문서](../message/SFTPClient_MESSAGES_AND_EXIT_CODES_v2.md) §3·§7.
 - 정상 탐색의 선택 0건은 exit 0과 사유 표시다. 지정 site 자료 미발견을 exit 1로
   보는 예외는 메시지 문서 §3-6이며, 겹침 규칙(같은 문서 §6)을 닫기 전에는
   구현하지 않는다.

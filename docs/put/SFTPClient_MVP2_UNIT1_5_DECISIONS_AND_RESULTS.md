@@ -4,7 +4,7 @@
 - 기준: 사용자 최종 완료 전달, 아래 설계·계획 문서, 정리 시점의 작업 트리.
 - 상태: **유닛 1~5 구현 반영 완료. 현장 배포·장애 재현 완료를 뜻하지 않는다.**
 - 용도: 새 담당자와 새 세션이 결정·결과·남은 한계를 한 문서에서 확인하는 기준점.
-- 지속 개발 규칙은 [프로젝트 가이드라인](../SFTPClient_PROJECT_GUIDELINES.md)의
+- 지속 개발 규칙은 [프로젝트 가이드라인](../../SFTPClient_PROJECT_GUIDELINES.md)의
   「MVP2 인시던트 후속 유닛 1~5 — 최종 결정」을 따른다.
 
 ## 1. 범위와 자료의 우선순위
@@ -18,15 +18,15 @@
 
 참조 문서:
 
-- [후속 계획 v2](SFTPClient_MVP2_INCIDENT_FOLLOWUP_PLAN_v2.md): 최초 분해와 관측 재해석, 순서 변경.
-- [후속 계획 v3](SFTPClient_MVP2_INCIDENT_FOLLOWUP_PLAN_v3.md): 유닛 5 종결과 가드 비대칭 기록.
-- [유닛 1](SFTPClient_UNIT1_LOGGING_DESIGN.md): 파일 로깅의 채택·기각 근거.
-- [유닛 2 v3](SFTPClient_UNIT2_HASH_DESIGN_v3.md): 해시 판정·schema v6·백필.
-- [유닛 3 v1](SFTPClient_UNIT3_STALL_DESIGN_v1.md),
-  [v2](SFTPClient_UNIT3_STALL_DESIGN_v2.md),
-  [최종 v3](SFTPClient_UNIT3_STALL_DESIGN_v3.md): 스톨 방어 축소·정정·구현 결과.
-- [유닛 4 최종 v2](SFTPClient_UNIT4_OBSERVABILITY_DESIGN_v2.md): 관측 모집단과 기존 요약 확장.
-- [유닛 5](SFTPClient_UNIT5_FILEPART_DESIGN.md): 임시 입력 제외와 식별자 유지.
+- [후속 계획 v2](mtime_incident/SFTPClient_MVP2_INCIDENT_FOLLOWUP_PLAN_v2.md): 최초 분해와 관측 재해석, 순서 변경.
+- [후속 계획 v3](mtime_incident/SFTPClient_MVP2_INCIDENT_FOLLOWUP_PLAN_v3.md): 유닛 5 종결과 가드 비대칭 기록.
+- [유닛 1](mtime_incident/SFTPClient_UNIT1_LOGGING_DESIGN.md): 파일 로깅의 채택·기각 근거.
+- [유닛 2 v3](mtime_incident/SFTPClient_UNIT2_HASH_DESIGN_v3.md): 해시 판정·schema v6·백필.
+- [유닛 3 v1](mtime_incident/SFTPClient_UNIT3_STALL_DESIGN_v1.md),
+  [v2](mtime_incident/SFTPClient_UNIT3_STALL_DESIGN_v2.md),
+  [최종 v3](mtime_incident/SFTPClient_UNIT3_STALL_DESIGN_v3.md): 스톨 방어 축소·정정·구현 결과.
+- [유닛 4 최종 v2](mtime_incident/SFTPClient_UNIT4_OBSERVABILITY_DESIGN_v2.md): 관측 모집단과 기존 요약 확장.
+- [유닛 5](mtime_incident/SFTPClient_UNIT5_FILEPART_DESIGN.md): 임시 입력 제외와 식별자 유지.
 
 계획 v2·v3의 2/5·3/5 및 “미착수” 표기는 당시 진행 상태다. 현재 상태는
 이 종합본을 본다. 초기 제안보다 이후 사용자 결정과 구현 결과를 우선하며,

@@ -10,7 +10,7 @@
 - **최종 갱신:** 2026-09-18 — §6 신설(관측 재해석 3건 + 기각 가설 기록),
   §1.1 정정 주석, §2 구 순서 유닛 번호 표기 정정, 대시보드·§5 갱신,
   §6.2 후속 관측(일단위 재개·QC 수정 추정) 및 9/14 확인 위치 확정
-- **선행 문서:** `SFTPClient_INCIDENT_MTIME_RETRANSMIT (2).md` (2026-09-16 인시던트 기록)
+- **선행 문서:** `SFTPClient_INCIDENT_MTIME_RETRANSMIT_v2.md` (2026-09-16 인시던트 기록)
 - **성격:** 인시던트 §7 반영 항목의 유닛 분해·순서·핵심 설계 확정. 교차검증(GPT)
   4개 지적의 검수 판정 포함. 각 유닛의 상세 설계 확정문은 착수 시 별도 작성한다.
 - **표기:** `[확정]`(코드 실물 대조 완료) · `[관측-미검증]`(구두/기억 기반) ·
@@ -443,7 +443,7 @@ attempts를 올리는 것은 아니며, 미착수 작업까지 일괄 차감한�
 
 **완료 근거:**
 
-- 설계: 리포지토리 `docs/SFTPClient_UNIT5_FILEPART_DESIGN.md` (기각안 포함).
+- 설계: 리포지토리 `docs/put/mtime_incident/SFTPClient_UNIT5_FILEPART_DESIGN.md` (기각안 포함).
 - 구현: `domain.tempSuffixes = [".part", ".filepart"]` + `IsPartFile` 확장.
   **`NormalizeName`·`IdentityRule`(`FILENAME_V1`)은 불변** — 확장 시 운영
   3개 기관 DB가 `ErrIdentityRuleMismatch`로 시작 거부되고 기존

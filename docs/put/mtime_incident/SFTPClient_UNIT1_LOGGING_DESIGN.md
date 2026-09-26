@@ -1,7 +1,7 @@
 # SFTPClient — 유닛 1 설계 확정문: internal/logging
 
 - **작성일:** 2026-09-17
-- **선행 문서:** `SFTPClient_MVP2_INCIDENT_FOLLOWUP_PLAN.md` §3 순서 1,
+- **선행 문서:** `SFTPClient_MVP2_INCIDENT_FOLLOWUP_PLAN.md`〔첫 판은 저장소에 없음 — 남은 판은 `_v2.md`·`_v3.md`〕 §3 순서 1,
   설계안 14 (로그 정책), 인시던트 §7-1
 - **범위:** 파일 로깅 신설과 배선. 로그 **내용**(어떤 이벤트를 어떤 수준으로
   남길지)의 확장은 이 유닛의 범위가 아니다 — 기존 출력을 파일에 보존하는

@@ -23,7 +23,7 @@
 >
 > 본 문서는 다음 두 문서를 **대체**한다. 두 문서는 폐기한다.
 > - `SFTPClient_SET_ATOMICITY_DESIGN.md` (Claude 초안 — kind 표기 `mo.crx` 등 본 문서와 상충)
-> - `SFTPClient_MVP2_CONFIRMED_DECISIONS_2026-09-09.md` (v1 — §5 카테고리→버전 매핑이 v2에서 번복됨)
+> - `SFTPClient_MVP2_CONFIRMED_DECISIONS_2026-09-09.md`〔저장소에 없음〕 (v1 — §5 카테고리→버전 매핑이 v2에서 번복됨)
 
 ---
 

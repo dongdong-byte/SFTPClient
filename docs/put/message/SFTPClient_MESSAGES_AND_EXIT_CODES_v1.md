@@ -2,8 +2,8 @@
 
 > 작성: 2026-09-22.
 > 목적: 운영자가 보는 안내·경고·오류의 발생 조건, 문구, 종료 코드를 함께 관리한다.
-> 기준: [resend 설계 v4](resend/SFTPClient_RESEND_DESIGN_v4.md),
-> [SITE 설계 v1](site/SFTPClient_SITE_DESIGN_v1.md), 사용자와의 후속 결정.
+> 기준: [resend 설계 v4](../resend/SFTPClient_RESEND_DESIGN_v4.md),
+> [SITE 설계 v1](../../site/SFTPClient_SITE_DESIGN_v1.md), 사용자와의 후속 결정.
 > 이번 작업은 문서 작성뿐이다. 아래 정책과 현재 구현의 차이를 자동으로 수정하지 않는다.
 > 현재 구현은 작성 시점 작업 트리 기준이며, 미커밋된 커밋 7·8 작업도 포함한다.
 
@@ -371,12 +371,12 @@ VERIFIED, 보류, 예산 절단은 서로 다른 원인이다. 여러 카테고�
 
 ## 12. 구현 근거
 
-- [main.go](../cmd/rinexclient/main.go): 종료 1 처리, 정시 lock 양보, 자동 resend 배선.
-- [resend.go](../cmd/rinexclient/resend.go): 수동 인자·대기·0건 안내·전송 결과 처리.
-- [scan.go](../internal/scan/scan.go): dirs/missing/errs와 Failures 수집.
-- [runner.go](../internal/put/runner.go): site 제외·게이트·후보 판정.
-- [transfer.go](../internal/put/transfer.go): 파일별 실패 집계와 fatal 오류 구분.
-- [autoresend_operations_test.go](../cmd/rinexclient/autoresend_operations_test.go): 정시 운영 시나리오의 현재 기대 동작.
+- [main.go](../../../cmd/rinexclient/main.go): 종료 1 처리, 정시 lock 양보, 자동 resend 배선.
+- [resend.go](../../../cmd/rinexclient/resend.go): 수동 인자·대기·0건 안내·전송 결과 처리.
+- [scan.go](../../../internal/scan/scan.go): dirs/missing/errs와 Failures 수집.
+- [runner.go](../../../internal/put/runner.go): site 제외·게이트·후보 판정.
+- [transfer.go](../../../internal/put/transfer.go): 파일별 실패 집계와 fatal 오류 구분.
+- [autoresend_operations_test.go](../../../cmd/rinexclient/autoresend_operations_test.go): 정시 운영 시나리오의 현재 기대 동작.
 
 현재 구현 설명은 작성 시점의 관찰이다. 후속 커밋에서 동작을 바꾸면 해당 항목의
 상태와 테스트를 함께 갱신하고, 제안만으로 기존 정책을 덮어쓰지 않는다.

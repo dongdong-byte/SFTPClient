@@ -1,7 +1,7 @@
 # SFTPClient — Unit 3 결정 기록 v2: SFTP 무응답(스톨)
 
 - **작성일:** 2026-09-21
-- **선행 초안:** `docs/SFTPClient_UNIT3_STALL_DESIGN_v1.md` (2026-09-18, 초안)
+- **선행 초안:** `docs/put/mtime_incident/SFTPClient_UNIT3_STALL_DESIGN_v1.md` (2026-09-18, 초안)
 - **관련:** FOLLOWUP_PLAN v2 §1.1·§1.2·§2.4·§6.1·§6.4·§6.6~§6.8,
   UNIT2_HASH_DESIGN_v3 §6.1 (전송 실패 ≠ revision 사건)
 - **상태:** **결정 기록 · 교차검증 투입물.** 확정 지시서가 아니다.

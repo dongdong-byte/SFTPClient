@@ -1,7 +1,7 @@
 # SFTPClient Ledger 개념 · 논리 모델
 
 > 대상 산출물: `internal/ledger/schema.sql` (**schema_version = 5**, 개정 이력 v8)
-> 기준 문서: `../../../../../Downloads/Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx` 9절
+> 기준 문서: `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx`(저장소 밖 문서) 9절
 > 함께 읽을 것: `SFTPClient_SCAN_DESIGN_DECISIONS.md` (Scan 범위·복구 전략 결정 경위)
 > 이 문서는 스키마의 **근거**를 남긴다. 스키마 자체는 SQL 파일이 원본이다.
 > 두 파일은 항상 함께 갱신한다. 한쪽만 바뀌면 근거를 잃은 스키마가 된다.

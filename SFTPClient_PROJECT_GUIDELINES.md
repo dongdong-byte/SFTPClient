@@ -2,11 +2,11 @@
 
 > 이 문서는 SFTPClient 개발 시 ChatGPT, Claude Code, Cursor가 공통으로 따라야 하는 최종 개발 기준이다.
 > `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx`의 설계 내용은 기준 문서로 유지한다.
-> 단, 현재 개발 순서는 원문과 달리 **PUT(MVP1) → MVP2 보강(DOWNLOAD 로컬 수신 포함) → 원격 수신·BOTH/성능 개선 재검토**로 진행한다.
+> 단, 현재 개발 순서는 원문과 달리 **PUT(MVP1) → MVP2 보강 및 DOWNLOAD 원격 수신 → BOTH/성능 개선 재검토**로 진행한다.
 > MVP2 보강 범위는 세트 원자성, `resend`, 경로 범용화, Linux 배포·테스트,
-> Retention Cleanup 구현·검증, **DOWNLOAD 로컬 수신**이다. DOWNLOAD는 2026-09-20 대표
-> 요구로 MVP2에 편입됐다. MVP2의 DOWNLOAD는 원격 SFTP 수신이 아니라, 기관마다 제각각인
-> 기존 저장 경로의 파일을 PUT이 보내기 쉬운 표준 폴더로 복제하는 **로컬 수신**이다.
+> Retention Cleanup 구현·검증, **DOWNLOAD 원격 SFTP → 로컬 수신**이다. DOWNLOAD는
+> 2026-09-20 대표 요구로 MVP2에 편입됐고, 최초의 로컬 복제+`download_ledger`
+> 계획은 DOWNLOAD 설계 v3에서 **원격 SFTP 수신·장부 없음**으로 바뀌었다.
 > Linux 배포에는 Linux 전용 보안 기능 개발을 포함하지 않는다. 공식 보안점검에서
 > 구체적인 보안 요구가 나온 경우에만 요구 범위에 맞춰 별도 설계·구현한다.
 > 이 개발 순서의 차이 외에 원문 요구사항을 임의로 삭제·축소·대체하지 않는다.
@@ -15,9 +15,10 @@
 
 | 일자 | 내용 |
 |---|---|
+| **2026-09-26** | **DOWNLOAD 구현(커밋 1~8)과 PATH v4 반영, 문서 참조 정리.** Linux 는 2026-09-24 실행·전송 확인(배포 정리 남음)으로 고쳤다. 「MVP2 현재 실행 범위」 6행과 진행 표의 DOWNLOAD 를 "미구현"에서 구현(실서버 검증 전)으로 고치고, 실제 구현이 원래 계획(로컬 수신 + `download_ledger`)과 다르다는 점을 적었다(원격 SFTP → 로컬, 장부 없음 — DOWNLOAD 설계 v3·v4). 이 파일 이름의 공백(`GUIDELINES .md`)을 없애 문서들의 참조가 맞게 했고, `docs/` 하위 폴더로 옮겨진 문서의 경로를 고쳤다. |
 | **2026-09-23** | **MVP2 범위 문서 정합.** 2026-09-20 DOWNLOAD 편입 결정을 상단·「MVP2 현재 실행 범위」·5절·9.6·18절에 반영. 5절의 `resend` 상태(완료) 현행화. Linux 전용 보안은 공식 보안점검 요구 시에만 진행한다는 기존 결정 유지. |
 | **2026-09-20** | **DOWNLOAD MVP2 편입 (대표 요구).** 범위는 **로컬 수신** — 기존 저장 경로(기관별 제각각)의 파일을 파일명 관측일 기준 표준 폴더로 복제하고 `download_ledger`에 기록, PUT은 표준 폴더를 보낸다. 설계 원칙은 `docs/path/SFTPClient_PATH_DESIGN_v1.md` §3~§13을 승계하되 v3 §10이 우선. 원격 SFTP 수신은 후속 단계. 2026-09-15의 "DOWNLOAD MVP3 연기"를 대체한다. |
-| **2026-09-22** | **resend 기능 완성 (커밋 1~8) + 메시지·종료 코드 정책 통합.** 자동 ②(정시 2순위)와 수동 `resend` 명령, 운영 시작일 하한, site 필터, 소진 재무장. 결정 전문은 아래 「resend — 최종 결정」 절과 [resend v4](docs/resend/SFTPClient_RESEND_DESIGN_v4.md)·[SITE v1](docs/site/SFTPClient_SITE_DESIGN_v1.md)·[메시지·종료 코드](docs/SFTPClient_MESSAGES_AND_EXIT_CODES.md). 9.9절 대체. |
+| **2026-09-22** | **resend 기능 완성 (커밋 1~8) + 메시지·종료 코드 정책 통합.** 자동 ②(정시 2순위)와 수동 `resend` 명령, 운영 시작일 하한, site 필터, 소진 재무장. 결정 전문은 아래 「resend — 최종 결정」 절과 [resend v4](docs/put/resend/SFTPClient_RESEND_DESIGN_v4.md)·[SITE v1](docs/site/SFTPClient_SITE_DESIGN_v1.md)·[메시지·종료 코드](docs/put/message/SFTPClient_MESSAGES_AND_EXIT_CODES_v2.md). 9.9절 대체. |
 | **2026-09-21** | **CONFIRMED_DECISIONS v2 통합 확인·현행 요약 추가.** 원문 1~19절은 기존 12절에 보존하고, 상단에 세트 게이트·명령 책임·설정·파싱·Ledger의 유효 결정을 정리. 원본 파일 보존, 이후 제외된 리포트·운영 절차는 재도입하지 않음. |
 | **2026-09-21** | **인시던트 후속 유닛 1~5 최종 결정 통합.** 로그 보존, schema v6·해시 판정, 임시 입력 제외, 30초 SFTP 무진행 감시·취소 종료, 기존 요약의 비율·모집단 표시. 임계 경보는 선택 사항. 아래 최종 결정 절과 종합 결과 문서 참조. |
 | 2026-08-25 | 병렬 처리 방침 정정 — Scan은 순차, 전송은 MVP 1부터 `MaxWorkers=4` 병렬. 기존 "worker=1 순차" 표기를 전면 수정 (4·5절) |
@@ -65,7 +66,7 @@
 후속 보강 **1 → 2 → 5 → 3 → 4 구현이 반영됐다.** 이 번호는 아래의 기존
 MVP2 다섯 목표와 별개이며, 전체 MVP2·현장 배포 완료를 뜻하지 않는다.
 결정 이유·구현 위치·검증 이력·잔여 사항은
-[종합 결정 및 결과](docs/SFTPClient_MVP2_UNIT1_5_DECISIONS_AND_RESULTS.md)를 본다.
+[종합 결정 및 결과](docs/put/SFTPClient_MVP2_UNIT1_5_DECISIONS_AND_RESULTS.md)를 본다.
 기존 본문과 후속 계획 v2·v3의 오래된 미착수·초안 설명이 충돌하면 이 절을
 우선한다. 관련 없는 기존 MVP2 범위를 확대하거나 축소하지 않는다.
 
@@ -137,9 +138,9 @@ MVP2 다섯 목표와 별개이며, 전체 MVP2·현장 배포 완료를 뜻하�
 
 ### resend — 최종 결정 (2026-09-22, 커밋 1~8 구현 완료)
 
-설계 원문은 [resend v4](docs/resend/SFTPClient_RESEND_DESIGN_v4.md)·
+설계 원문은 [resend v4](docs/put/resend/SFTPClient_RESEND_DESIGN_v4.md)·
 [SITE v1](docs/site/SFTPClient_SITE_DESIGN_v1.md)이고, 메시지·종료 코드는
-[별도 문서](docs/SFTPClient_MESSAGES_AND_EXIT_CODES.md)가 소유한다.
+[별도 문서](docs/put/message/SFTPClient_MESSAGES_AND_EXIT_CODES_v2.md)가 소유한다.
 **구현과 문서가 다르면 코드가 사실의 주인이다** — 아래는 코드에서 읽어
 확정한 최종 상태다.
 
@@ -241,13 +242,14 @@ MVP2 다섯 목표와 별개이며, 전체 MVP2·현장 배포 완료를 뜻하�
 | 1 | 세트 원자성 | **완료.** 12절의 Set Completeness Gate 구현을 유지한다. |
 | 2 | `resend` 명령 신설 | **완료 (2026-09-22, 커밋 1~8).** 자동 ②(정시 2순위) + 수동 명령. 게이트는 무조건 우회가 아니라 `ResendMinKinds` 조건 우회다. 위 「resend — 최종 결정」 참조. |
 | 3 | 경로 범용화 | **완료 (2026-09-22, 커밋 1~4).** `HourLayout`·`(HH)` 토큰 삭제, LocalPath는 날짜 폴더까지 → 아래 전체 재귀(파일 먼저 → 하위 폴더 이름순, 폴더 미전달, 링크·junction 건너뛰고 집계). 확정 설계·기각 이력은 `docs/path/SFTPClient_PATH_DESIGN_v3.md`. 옛 config 의 (HH)/HourLayout 잔존은 시작 거부 — 배포 시 바이너리·config 동시 교체(§v3 7). |
-| 4 | Linux 배포·테스트 | **미구현.** Linux 빌드, 실행환경·경로·스케줄러·SFTPGo 연동과 통합 테스트를 포함한다. Linux 전용 추가 보안은 포함하지 않으며 공식 보안점검에서 요구가 나온 경우에만 별도 진행한다. |
+| 4 | Linux 배포·테스트 | **실행 확인 (2026-09-24) — 배포 정리 남음.** Linux 에서 실행과 실제 파일 전송을 확인했다(24일 오후, 착수 약 1시간 만에 전송 성공). 배포는 급하게 진행해 절차·설정·스케줄러 등록을 갈무리해야 한다. 〔원래 범위:〕 Linux 빌드, 실행환경·경로·스케줄러·SFTPGo 연동과 통합 테스트를 포함한다. Linux 전용 추가 보안은 포함하지 않으며 공식 보안점검에서 요구가 나온 경우에만 별도 진행한다. |
 | 5 | Retention Cleanup | **미구현 — 우선.** Ledger 30일 보존 설정이 실제 DB 행 삭제로 이어지도록 구현하고 경계·FK cascade·재전송 방지 테스트를 수행한다. 3개 기관 운영이 30일에 가까워지고 있어 운영 장부가 보존 한계에 닿기 전에 마친다. |
-| 6 | DOWNLOAD 로컬 수신 | **미구현 (2026-09-20 편입).** 기존 저장 경로를 재귀 탐색 → 파일명에서 관측일(`ObservationDate`, PATH v3 §2-B) 추출 → 표준 폴더로 `.part` 복사·Size(·해시) 검증·Rename → `download_ledger` VERIFIED. PUT은 표준 폴더를 보낸다. 로컬 수신 파일의 origin은 `LOCAL` 그대로다. 설계 원칙은 PATH v1 §3~§13 승계, v3 §10 우선. 세부는 DOWNLOAD 설계 문서에서 확정한다. |
+| 6 | DOWNLOAD 수신 | **구현 완료 (2026-09-26, DOWNLOAD 커밋 1~8) — 실서버 검증(D14)·`GraceSeconds` 현장 확정 전.** 실제 구현은 아래 원래 계획과 다르다: **원격 SFTP → 로컬** 수신이며 **장부(`download_ledger`)를 두지 않는다.** 받을지 여부는 로컬 최종 파일의 존재·크기로 정하고, `.part` → 크기 검증 → Rename 한다. 기준은 `docs/download/SFTPClient_DOWNLOAD_DESIGN_v4.md`(v3 정정판). 〔원래 계획(2026-09-20), DOWNLOAD 설계 v3 에서 바뀜:〕 기존 저장 경로를 재귀 탐색 → 파일명에서 관측일(`ObservationDate`, PATH v3 §2-B) 추출 → 표준 폴더로 `.part` 복사·Size(·해시) 검증·Rename → `download_ledger` VERIFIED. PUT은 표준 폴더를 보낸다. 로컬 수신 파일의 origin은 `LOCAL` 그대로다. 설계 원칙은 PATH v1 §3~§13 승계, v3 §10 우선. 세부는 DOWNLOAD 설계 문서에서 확정한다. |
 
 이번 MVP2에서 명시적으로 제외하는 항목:
 
-- DOWNLOAD **원격(SFTP) 수신**과 `origin=DOWNLOAD` Ping-Pong 제외 규칙: 로컬 수신 이후 단계로 둔다. BOTH의 후속 MVP 번호는 아직 정하지 않는다.
+- BOTH 자동 중계(DOWNLOAD → PUT), `origin=DOWNLOAD`·`RepostDownloaded=true`
+  의미론과 DOWNLOAD Retention: 후속으로 둔다. DOWNLOAD 단독 원격 SFTP 수신은 구현됐다.
 - Linux 전용 추가 보안(자격증명 암호화·키 권한 강제 등): 공식 보안점검에서 구체적인 요구가 나온 경우에만 별도 진행한다.
 - 미완성 세트 보류 리포트: 대표 확인 결과 보안 취약점 우려가 있어 구현하지 않는다.
 - 게이트 활성화 운영 절차: 이번 MVP2의 개발 산출물에서 제외한다. 기존 안전 전제 기록은 역사적 설계 근거로만 보존한다.
@@ -269,7 +271,7 @@ MVP2 다섯 목표와 별개이며, 전체 MVP2·현장 배포 완료를 뜻하�
   재전송, `download`는 원격→로컬 수신이다. 기간 재전송에 recovery라는
   이름을 쓰지 않는다. resend는 세트 게이트를 우회하도록 설계한다.
 - resend의 Ledger 의미론·인자는 2026-09-22 확정·구현됐다(위 「resend — 최종 결정」).
-  DOWNLOAD 로컬 수신은 2026-09-20부터 MVP2 범위다.
+  DOWNLOAD 원격 SFTP → 로컬 수신은 구현됐고 장부를 사용하지 않는다.
   `--deep`은 자동 스캔 범위를 넓히는 기능이며 강제 재전송 명령을 대신하지 않는다.
 
 **세트 의미론과 후보 선정**
@@ -345,11 +347,11 @@ MVP2 다섯 목표와 별개이며, 전체 MVP2·현장 배포 완료를 뜻하�
 
 | 문서 | 역할 |
 |---|---|
-| `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx` | 설계 기준 문서 |
+| `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx` | 설계 기준 문서 (저장소 밖 문서) |
 | 본 문서 | 개발 지침 |
 | `internal/ledger/schema.sql` | Ledger 물리 스키마 **원본** |
-| `docs/SFTPClient_LEDGER_CONCEPT.md` | Ledger 개념·논리 모델과 결정 근거 |
-| `docs/SFTPClient_SCAN_DESIGN_DECISIONS.md` | Scan 범위·복구 전략의 결정 경위와 **기각 목록** |
+| `docs/put/SFTPClient_LEDGER_CONCEPT.md` | Ledger 개념·논리 모델과 결정 근거 |
+| `docs/put/SFTPClient_SCAN_DESIGN_DECISIONS.md` | Scan 범위·복구 전략의 결정 경위와 **기각 목록** |
 | `config.example.ini` | 설정 템플릿. 커밋 대상. `config.ini` 는 `.gitignore` |
 
 **용어 대응 — 설계안의 `file_id` ↔ 구현의 `(category, file_name)`.**
@@ -491,7 +493,7 @@ SFTPClient/
 │   │                           put/download를 모른다. 방향을 알지 못하고 파일만 옮긴다.
 │   │                           계약 테스트: localfs 10종 + sftpfs 오프라인 6종·실서버 10종.
 │   │
-│   ├─ logging/       [미구현]  log/slog 설정. 출력 대상, 레벨, 보존 정책. (설계안 14)
+│   ├─ logging/          [완료] 날짜별 파일 회전·보존과 stderr 강등. 표준 log 사용.
 │   │                           성공은 집계, 실패·재시도는 상세 원인 기록.
 │   │
 │   ├─ put/              [완료] 송신 흐름 조립 (GUIDELINES 5절).
@@ -503,7 +505,7 @@ SFTPClient/
 │   │                           별도 internal/pipeline 패키지 계획은 폐기하고 PUT Worker Pool을
 │   │                           internal/put/transfer.go에 통합했다. Global Limiter는 BOTH 착수 시 재검토한다.
 │   │
-│   ├─ ledger/                  common/put/download Ledger. (설계안 9)
+│   ├─ ledger/                  PUT용 common/put Ledger. DOWNLOAD는 장부를 쓰지 않는다.
 │   │                           schema.sql — 물리 스키마 원본. go:embed로 실행파일에 포함하고
 │   │                                        시작 시 실행한다. 스키마는 이 파일이 유일한 원본이며
 │   │                                        Go 코드에 CREATE TABLE 문자열을 중복해 두지 않는다.
@@ -525,11 +527,11 @@ SFTPClient/
 │   │                           SetMaxOpenConns(1)이 쓰기를 직렬화하므로 MaxWorkers>1 에서도
 │   │                           정합성은 안전하다. 단일 Writer 고루틴 + 배치 커밋은
 │   │                           처리량 최적화이며 MVP 4 범위이다. (CONCEPT 4.8)
-│   │                           [MVP 2] download Ledger까지 확장 (2026-09-20 편입).
 │   │
-│   ├─ download/       [MVP 2] 로컬 수신 흐름 조립 (기존 저장 경로 → 표준 폴더).
-│   │                           로컬 수신은 origin=LOCAL 유지. Origin=DOWNLOAD 기록과
-│   │                           Ping-Pong 방지는 원격 수신 단계에서 관여. (설계안 9.1)
+│   ├─ download/          [완료] 원격 SFTP → 로컬 수신 흐름 조립.
+│   │                           Scanner → 판정 → .part 수신 → 크기 검증 → Rename.
+│   │                           로컬 최종 파일 존재·크기로 재실행을 수렴시키며
+│   │                           PUT Ledger·origin은 읽거나 쓰지 않는다.
 │   │
 │   └─ security/ [Windows 완료] 자격증명 및 설정값 보호. (설계안 15.1)
 │                               security.go         — 인터페이스 및 enc: 접두어 처리
@@ -572,7 +574,7 @@ SFTPClient/
 
 - `internal/ledger/schema.sql`이 스키마의 유일한 원본이다. DB 파일은 그로부터 파생된 산출물로 취급한다.
 - 스키마를 변경할 때는 `schema.sql`을 먼저 수정하고, 파일 상단의 개정 이력에 한 줄을 추가한다.
-- 스키마 변경과 `docs/SFTPClient_LEDGER_CONCEPT.md` 갱신은 같은 커밋에서 처리한다.
+- 스키마 변경과 `docs/put/SFTPClient_LEDGER_CONCEPT.md` 갱신은 같은 커밋에서 처리한다.
   근거 없이 바뀐 스키마는 시간이 지나면 사고가 된다.
 - `ALTER TABLE` 수행 시 SQLite가 저장된 `CREATE` 문을 재작성하면서 주석이 손실될 수 있으므로,
   DB 파일을 직접 고치지 않는다.
@@ -661,17 +663,21 @@ ledger  이미 보냈는가                              (기록)
 
 원문 설계안의 개발 순서는 DOWNLOAD → PUT이지만, 실제 개발은 아래 순서로 진행한다.
 MVP2의 범위는 2026-09-15 운영 우선순위에 따라 재정의했고,
-2026-09-20 대표 요구로 DOWNLOAD 로컬 수신을 MVP2에 편입했다.
+2026-09-20 대표 요구로 DOWNLOAD를 MVP2에 편입했고, 이후 실제 범위는
+원격 SFTP → 로컬 수신(장부 없음)으로 확정·구현했다.
 
 ```text
 MVP 1: PUT                                             ✅ 완료 (3개 기관 배포)
 MVP 2: · 세트 원자성(Set Completeness Gate)            ✅ 완료 (2026-09-10, 12절)
        · resend — 기간·대상 지정 재전송                 ✅ 완료 (2026-09-22, 커밋 1~8)
-       · 경로 범용화 — HourLayout·(HH) 제거 + 날짜 폴더 아래 재귀  ✅ 완료 (2026-09-22, PATH_DESIGN v3)
+       · 경로 범용화 — HourLayout 제거 + 날짜 폴더 아래 재귀  ✅ 완료 (2026-09-22, PATH_DESIGN v3)
+         + 경로 어디든 (SITE)·(HH) 패턴 폴더 (옛 (HH) 재허용)   ✅ 완료 (2026-09-25, PATH v4)
        · Retention Cleanup + 경계 테스트                미구현 (3개 기관 30일 도달 전 우선)
-       · DOWNLOAD 로컬 수신 + download_ledger           미구현 (2026-09-20 편입)
-       · Linux 배포 + 테스트                            미구현 (전용 추가 보안 제외)
-후속:  DOWNLOAD 원격(SFTP) 수신, BOTH 및 PUT 성능 개선 — MVP 번호·일정 미정
+       · DOWNLOAD 수신 (원격 SFTP → 로컬, 장부 없음)     ✅ 구현 (2026-09-26, 커밋 1~8) — 실서버 검증(D14) 전
+         〔원래 계획 "로컬 수신 + download_ledger"는 DOWNLOAD 설계 v3 에서 바뀜〕
+       · Linux 배포 + 테스트                            ✅ 실행·전송 확인 (2026-09-24) — 배포 절차 정리 남음
+                                                        (전용 추가 보안 제외)
+후속:  BOTH(DOWNLOAD → PUT 중계), DOWNLOAD Retention, PUT 성능 개선 — MVP 번호·일정 미정
 ```
 
 MVP2는 현재 운영에서 확인된 문제(세트 결손, 수동 재전송, 기관별 경로 차이,
@@ -1216,8 +1222,8 @@ UTC 로 둘 경우 `4` 는 KST 13시(한낮)가 되므로 값과 주석이 어�
 ### 9.9 자동 Scan·자동 resend·운영자 resend — 세 갈래 (2026-09-22 대체)
 
 > 이 절은 resend 구현 완료(커밋 1~8)로 전면 대체되었다. 결정 전문은
-> 상단 「resend — 최종 결정」과 [resend v4](docs/resend/SFTPClient_RESEND_DESIGN_v4.md),
-> 종료 코드·문구는 [메시지 문서](docs/SFTPClient_MESSAGES_AND_EXIT_CODES.md).
+> 상단 「resend — 최종 결정」과 [resend v4](docs/put/resend/SFTPClient_RESEND_DESIGN_v4.md),
+> 종료 코드·문구는 [메시지 문서](docs/put/message/SFTPClient_MESSAGES_AND_EXIT_CODES_v2.md).
 
 ```text
 [자동 · 정시 회차 하나 (락 하나)]
@@ -1915,7 +1921,7 @@ Benchmark 축 — Worker 수 × 데이터셋 유형(12.2)
 >
 > 본 문서는 다음 두 문서를 **대체**한다. 두 문서는 폐기한다.
 > - `SFTPClient_SET_ATOMICITY_DESIGN.md` (Claude 초안 — kind 표기 `mo.crx` 등 본 문서와 상충)
-> - `SFTPClient_MVP2_CONFIRMED_DECISIONS_2026-09-09.md` (v1 — §5 카테고리→버전 매핑이 v2에서 번복됨)
+> - `SFTPClient_MVP2_CONFIRMED_DECISIONS_2026-09-09.md`〔저장소에 없음〕 (v1 — §5 카테고리→버전 매핑이 v2에서 번복됨)
 
 ---
 
@@ -2269,14 +2275,15 @@ RequiredKinds = false
 - **MVP2 남은 목표 2:** ~~경로 범용화~~ → **완료 (2026-09-22).** 세부는
   `docs/path/SFTPClient_PATH_DESIGN_v3.md`. 원격은 RINEX 버전별 고정 평면
   경로 유지.
-- **MVP2 남은 목표 3:** Linux 배포 준비와 테스트. Linux 전용 추가 보안은 범위에서 제외하며,
+- **MVP2 남은 목표 3:** Linux 배포 정리. 실행과 파일 전송은 2026-09-24 확인했고, 급하게 진행한
+  배포의 절차·설정·스케줄러 등록을 갈무리한다. Linux 전용 추가 보안은 범위에서 제외하며,
   공식 보안점검에서 구체적인 요구가 나온 경우에만 별도 설계·구현한다.
 - **MVP2 남은 목표 4:** Ledger Retention Cleanup 구현 및 30일 경계·FK cascade·
   오래된 파일 재전송 방지 테스트. 현재는 설정과 불변식 검증만 있고 실제 삭제는 없다.
   3개 기관 운영이 30일에 가까워지므로 우선 진행한다.
-- **MVP2 남은 목표 5 (2026-09-20 편입):** DOWNLOAD 로컬 수신 및 `download_ledger`.
-  기존 저장 경로 → 표준 폴더 복제, PUT은 표준 폴더를 보낸다. 상단 범위 표 6번 참조.
-- **후속(번호 미정):** DOWNLOAD 원격(SFTP) 수신, BOTH.
+- **MVP2 목표 5 (2026-09-20 편입):** ~~DOWNLOAD 수신~~ → **구현 완료
+  (2026-09-26).** 원격 SFTP → 로컬, 장부 없음. 실서버 D14·Grace 현장 확정은 남았다.
+- **후속(번호 미정):** BOTH 자동 중계와 DOWNLOAD Retention.
 - **구현 제외:** 미완성 세트 보류 리포트(보안 취약점 우려), 게이트 활성화 운영 절차,
   RINEX3 첫 운영 프로파일.
 - `MaxHoldDays`는 기존 조건부 미구현 결정을 유지하며 MVP2 범위에 넣지 않는다.

@@ -1,7 +1,7 @@
 # SFTPClient MVP2 — `resend` 설계 v4 (설계 마감본)
 
 > 작성 2026-09-21. MVP2 실행 범위 ② 「`resend` 명령 신설」의 구현 전 설계다.
-> 상위 기준은 [PROJECT_GUIDELINES](../../SFTPClient_PROJECT_GUIDELINES.md)의
+> 상위 기준은 [PROJECT_GUIDELINES](../../../SFTPClient_PROJECT_GUIDELINES.md)의
 > 「MVP2 현재 실행 범위」·「세트 완성도 게이트 — 현행 결정 통합」·9.9절이며,
 > 이 문서는 그중 「MVP2 구현 전 결정 필요」에 남은 resend 항목을 닫는다.
 >
@@ -11,7 +11,7 @@
 > 표기: **[확정]** 사용자 확인 완료 / **[미결]** 이번 범위에서 결정하지 않음.
 > v4로 설계를 마감하면서 v3까지 [제안]이던 항목은 모두 [확정]으로 전환했다.
 >
-> 관측소 선택 공통 규칙은 [SITE 선택 설계 v1](../site/SFTPClient_SITE_DESIGN_v1.md)에서
+> 관측소 선택 공통 규칙은 [SITE 선택 설계 v1](../../site/SFTPClient_SITE_DESIGN_v1.md)에서
 > 관리한다. `--site`의 출처는 대표가 제안한 특정 관측소 다운로드 인자이며,
 > 식별 규칙은 PUT `resend`와 향후 DOWNLOAD가 공유한다. 이 문서로 DOWNLOAD를
 > 구현하지 않는다.
@@ -432,7 +432,7 @@ resend 예산 = MaxFilesPerRun − len(①의 kept)
 
 `--site`를 추가하고 `--category`와 함께 사용할 수 있게 한다.
 출처는 대표의 관측소 지정 다운로드 요구이며, 공통 식별은
-[SITE v1](../site/SFTPClient_SITE_DESIGN_v1.md)이 소유한다. 이번 구현은
+[SITE v1](../../site/SFTPClient_SITE_DESIGN_v1.md)이 소유한다. 이번 구현은
 **송신 `resend` CLI**에만 `--site`를 붙인다. 일반 정시 PUT에 `--site`를 노출하지
 않고, DOWNLOAD CLI 전체 형태는 **[미결]**이다.
 
@@ -495,7 +495,7 @@ Lock(같은 경로, stale = 설정 LockStaleSeconds)
   `[RESEND] lock held — waiting` 후 재시도한다. 대기 상한은 설정 `LockStaleSeconds`를
   넘기지 않는다. 상한을 넘기면 오류로 끝나고 운영자가 다시 실행한다.
   재시도 간격은 **10초**, 반복 안내는 **5분**이다. 첫 대기 안내는 즉시 한 번이다.
-  문구와 종료 코드는 [메시지 문서](../SFTPClient_MESSAGES_AND_EXIT_CODES.md) §3·§7.
+  문구와 종료 코드는 [메시지 문서](../message/SFTPClient_MESSAGES_AND_EXIT_CODES_v2.md) §3·§7.
 - 정상 탐색의 선택 0건은 exit 0과 사유 표시다. 지정 site 자료 미발견을 exit 1로
   보는 예외는 메시지 문서 §3-6이며, 겹침 규칙(같은 문서 §6)을 닫기 전에는
   구현하지 않는다.

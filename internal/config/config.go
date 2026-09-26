@@ -423,7 +423,8 @@ type LogConfig struct {
 
 	// RetentionDays 는 로그 파일 보존기간(일)이다.
 	// Ledger.RetentionDays 와는 별개의 값이다.
-	// 현재 저장소에는 로그 파일을 지우는 구현이 없다.
+	// logging.RotatingWriter 가 시작 시 rinexclient_YYYYMMDD.log 중
+	// 이 일수보다 오래된 파일만 지운다.
 	RetentionDays int
 }
 

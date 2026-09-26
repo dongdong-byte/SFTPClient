@@ -3,8 +3,8 @@
 > 작성 2026-09-22. MVP2 실행 범위 ③ 「`HourLayout` 제거와 범위 제한 재귀 탐색 기반
 > 경로 범용화」의 구현 전 설계 초안이다.
 > 상위 기준은 [PROJECT_GUIDELINES](../../SFTPClient_PROJECT_GUIDELINES.md)의
-> 「MVP2 현재 실행 범위」와 [SCAN_DESIGN_DECISIONS](../SFTPClient_SCAN_DESIGN_DECISIONS.md),
-> 원 설계는 `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx` 8.2·9절이다.
+> 「MVP2 현재 실행 범위」와 [SCAN_DESIGN_DECISIONS](../put/SFTPClient_SCAN_DESIGN_DECISIONS.md),
+> 원 설계는 `Go_RINEX_SFTP_통합_프로그램_설계안_Rev1.6.docx`(저장소 밖 문서) 8.2·9절이다.
 >
 > 표기: **[확정]** 사용자 확인 완료 / **[제안]** 초안 권고, 확인 필요 /
 > **[미결]** 이번 초안에서 결정하지 않음.
@@ -46,7 +46,7 @@ MVP2에서 제거하고 범위 제한 재귀 탐색으로 바꾸기로 2026-09-1
 
 ### 1.2 현장 경로는 규칙이 없다
 
-`GNSS Server&Client 관련 정보 - 260527.docx`에 적힌 기관별 RINEX 경로다.
+`GNSS Server&Client 관련 정보 - 260527.docx`(저장소 밖 문서)에 적힌 기관별 RINEX 경로다.
 
 | 기관 | 경로 예 | 특징 |
 |---|---|---|
@@ -448,8 +448,8 @@ RemotePath = /RINEX2Outgoing/Daily/(YYYY)/(DOY)/
 | `SFTPClient_PROJECT_GUIDELINES.md` | MVP2 범위에 로컬 수신(download 장부 앞당김) 추가, MVP3 DOWNLOAD 정의 갱신 |
 | `.cursor/rules/project-core.mdc` | 흐름도(download → put → audit), MVP3 정의 |
 | `internal/ledger/schema.sql` | download_ledger 추가, origin 주석, v7 마이그레이션 |
-| `docs/SFTPClient_LEDGER_CONCEPT.md` | 3관측자·대사·불변식 I1~I5 |
-| `docs/SFTPClient_SCAN_DESIGN_DECISIONS.md` | 경로 방향을 표준 폴더 수신으로 갱신 |
+| `docs/put/SFTPClient_LEDGER_CONCEPT.md` | 3관측자·대사·불변식 I1~I5 |
+| `docs/put/SFTPClient_SCAN_DESIGN_DECISIONS.md` | 경로 방향을 표준 폴더 수신으로 갱신 |
 | `internal/config/hourlayout.go` 외 | `HourLayout` 제거 |
 | `internal/verify` | 파일명 기반 주기 판정 추가(현재는 config 기대값 전제) |
 | `internal/domain/origin.go` | origin 의미 정리(§10) |

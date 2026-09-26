@@ -183,7 +183,7 @@
 
 본문은 기술 용어 대신 업무 기준으로 설명했습니다. 아래는 개발 내용 확인을 위한 자료입니다.
 
-- 기준: 2026년 9월 22일 최종 저장 기록 `edeb0d9`와 현재 코드, 9월 23일자 수정 내용이 포함된 [프로젝트 지침](<../SFTPClient_PROJECT_GUIDELINES .md>).
+- 기준: 2026년 9월 22일 최종 저장 기록 `edeb0d9`와 현재 코드, 9월 23일자 수정 내용이 포함된 [프로젝트 지침](../SFTPClient_PROJECT_GUIDELINES.md).
 - 재전송·관측소 선택: `cd52ed1`, `dcfe2b4`, `81fa7af`, `64cc1d4`, `547a7fb`, `8d05ca5` 및 [재전송 정리](put/resend/SFTPClient_RESEND_DESIGN_Final_v5.md), [관측소 선택 설계](site/SFTPClient_SITE_DESIGN_v2.md).
 - 기관별 폴더 대응: `dd441e3`, `0a52fb1`, `cd6a7ff`, `edeb0d9` 및 [폴더 탐색 설계](path/SFTPClient_PATH_DESIGN_v3.md).
 - 기록 형식 자동 갱신: `403f15d`, `0c93b7f`와 [기록 관리 구현](../internal/ledger/db.go). 현재 지원하는 두 단계의 자동 변경과 적용 결과 기록을 확인했습니다.

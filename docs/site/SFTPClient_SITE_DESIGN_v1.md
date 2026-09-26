@@ -5,7 +5,7 @@
 > 개정 2026-09-22 — 복수 site 선택을 resend와 향후 DOWNLOAD의 공통 요구로 명시.
 > **[확정]** 사용자 요구 / **[제안]** 구현 전 결정할 설계안 / **[미결]** 후속 설계 항목.
 > 이 문서는 구현 완료 기록이 아니다.
-> 관련: [resend 설계 v4 §6.3](../resend/SFTPClient_RESEND_DESIGN_v4.md#63-수동-명령과---site),
+> 관련: [resend 설계 v4 §6.3](../put/resend/SFTPClient_RESEND_DESIGN_v4.md#63-수동-명령과---site),
 > [프로젝트 지침](../../SFTPClient_PROJECT_GUIDELINES.md).
 > resend 구현 기준은 v4다. v1~v3의 경위는 v4 「개정 이력」에 있다.
 
@@ -121,7 +121,7 @@ DOWNLOAD의 복수 선택도 site 목록 안에서는 OR, 다른 선택 조건�
   전체 합계나 최종 전송 후보 수로 대신하지 않는다. 이미 완료됐거나 검증에서
   보류된 파일도 “발견했으나 미전송”과 “미발견”을 구분한다.
 - resend의 안내·종료 정책과 미결 우선순위는
-  [메시지와 종료 코드](../SFTPClient_MESSAGES_AND_EXIT_CODES.md) §5·§6을 따른다.
+  [메시지와 종료 코드](../put/message/SFTPClient_MESSAGES_AND_EXIT_CODES_v2.md) §5·§6을 따른다.
 - 별도 site 전용 로그 파일은 요구하지 않는다. 각 명령의 기존 로그·요약을 사용한다.
 
 ## 6. 구현·검증 계획 [제안]
@@ -156,7 +156,7 @@ resend 계획에서 공통 추출·매칭과 Ledger 등록 전 필터를 하나�
 5. ~~선택 0건의 종료 코드~~ — **resend는 확정.** 정상 탐색의 선택 0건은
    exit 0과 사유 표시다. 지정 site 자료 미발견은 exit 1로 정했으나, 겹침
    우선순위를 닫기 전에는 구현하지 않고 exit 0과 `site_matched=`로 남긴다.
-   문구와 미결은 [메시지 문서](../SFTPClient_MESSAGES_AND_EXIT_CODES.md) §3·§5·§6.
+   문구와 미결은 [메시지 문서](../put/message/SFTPClient_MESSAGES_AND_EXIT_CODES_v2.md) §3·§5·§6.
 
 일반 자동 PUT 실행에 `--site`를 노출할지와 DOWNLOAD의 전체 CLI 형태는
 **[미결]**이다. 이번 문서로 자동 실행 범위나 DOWNLOAD 구현 시기를 변경하지 않는다.

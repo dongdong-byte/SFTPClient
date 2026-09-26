@@ -1436,7 +1436,7 @@ Scan 설계와 직접 관련은 없으나, 같은 날 확정된 운영 규칙의
 문서 간 표기 어긋남을 막기 위해 위치를 남긴다.
 
 원본: `SFTPClient_PROJECT_GUIDELINES.md` 5절 「2026-08-30 확정」
-요약: `docs/SFTPClient_LEDGER_CONCEPT.md` 9절
+요약: `docs/put/SFTPClient_LEDGER_CONCEPT.md` 9절
 
 | 결정 | 요지 |
 |---|---|
