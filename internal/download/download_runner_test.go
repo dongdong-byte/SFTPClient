@@ -44,6 +44,11 @@ type fileRemote struct {
 	after func(remote, part string)
 	// shrink 가 true 면 마지막 1바이트를 빼고 쓴다 (크기 불일치 재현).
 	shrink bool
+
+	// listErr 가 디렉터리에 대해 오류를 주면 그 나열은 실패한다.
+	// 없는 폴더(fs.ErrNotExist)와 다른, 권한 오류 같은 실패를 재현한다.
+	// Run 전에만 설정한다.
+	listErr func(dir string) error
 }
 
 func newFileRemote(t *testing.T) *fileRemote {
@@ -55,6 +60,12 @@ func (r *fileRemote) localOf(remote string) string {
 }
 
 func (r *fileRemote) ReadDir(ctx context.Context, dir string) ([]fs.FileInfo, error) {
+	if r.listErr != nil {
+		if err := r.listErr(dir); err != nil {
+			return nil, err
+		}
+	}
+
 	return (&osRemote{root: r.root}).ReadDir(ctx, dir)
 }
 

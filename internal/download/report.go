@@ -15,19 +15,29 @@ const (
 
 // Report 는 DOWNLOAD 회차 한 번의 집계다.
 //
-// 이 커밋(5)은 숫자와 상세만 모은다. 사람이 읽는 한 줄 요약의 형식(한국어
-// 필드명, 0 생략, 대상없음, 고정 순서)은 커밋 6 의 몫이다.
+// 숫자와 상세만 담는다. 사람이 읽는 형식(한국어 필드명, 0 생략, 대상없음,
+// 고정 순서)은 report_print.go 의 Print 가 정한다.
 type Report struct {
 	Categories []CategoryReport
 	Duration   time.Duration
+
+	// Range 는 이번 회차의 범위 종류다 (RangeHot·RangeDeep). 러너는 받은
+	// scan.Range 만 알고 그 이름은 모르므로 main 이 채운다 — PUT 의
+	// RunReport.Range 와 같은 방식. Print 가 "범위=" 로 쓴다.
+	Range Range
 }
 
-// Failed 는 회차 전체의 실패 수다. 1 이상이면 main 이 부분 실패 종료 코드를
-// 쓴다 (DOWNLOAD v3 §10.3).
+// Failed 는 종료 판단에 쓰는 회차 전체의 운영 실패 수다. 파일 수신 실패와
+// 원격 나열 실패를 함께 센다. 나열 실패는 일부 경로를 읽지 못해 요청 범위를
+// 완전히 확인하지 못한 상태이므로, 후보가 0이어도 성공 종료로 위장하면 안 된다.
+//
+// Category 요약의 "실패="는 c.Failed(파일 실패)만 표시하고, 나열 실패는
+// 별도의 "나열경고 … 나열실패=" 줄로 표시한다. 두 숫자를 합쳐 출력하지 않아
+// 현장에서 실패 종류를 구분할 수 있다.
 func (r Report) Failed() int {
 	n := 0
 	for _, c := range r.Categories {
-		n += c.Failed
+		n += c.Failed + c.Scan.Errs
 	}
 
 	return n
@@ -53,6 +63,12 @@ type CategoryReport struct {
 
 	// Downloaded 는 최종 Rename 까지 성공한 수다 (수신).
 	Downloaded int
+
+	// UnknownKind 는 Downloaded 가운데 파일명으로 Category 를 알 수 없었던
+	// 수다 (종류미상). Downloaded 의 부분집합이며 별도 결과가 아니다.
+	// 이번 회차에 새로 받은 것만 센다 — 이미 받아 둔 파일(기존)까지 매시간
+	// 세면 기관 쪽 잡파일 하나가 고객 화면에 영구히 뜬다.
+	UnknownKind int
 
 	// Reasons 는 받지 않은 사유별 건수다. 제외(임시파일·유예중 등)와
 	// 목적지 판정(기존·충돌·비정상대상·목적지중복)이 함께 들어간다.
@@ -98,6 +114,10 @@ func (c *CategoryReport) add(o outcome) {
 	switch {
 	case o.downloaded:
 		c.Downloaded++
+
+		if o.unknownKind {
+			c.UnknownKind++
+		}
 
 	case o.notStarted:
 		c.NotStarted++

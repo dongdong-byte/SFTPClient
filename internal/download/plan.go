@@ -137,6 +137,13 @@ type Candidate struct {
 	// LocalDir 은 목적지 디렉터리, LocalPath 는 최종 경로다.
 	LocalDir  string
 	LocalPath string
+
+	// UnknownKind 는 파일명만으로 Category 를 확정할 수 없었다는 뜻이다
+	// (domain.CategoryMatchUnknown). verify 는 이런 이름을 통과시키므로
+	// 수신은 그대로 한다 — 기관 경로를 미리 알 수 없어, 이름이 특이한 진짜
+	// RINEX 를 놓치는 쪽이 잡파일 몇 개보다 위험하다 (2026-09-25 결정).
+	// 대신 보고에 종류미상으로 드러낸다 (report_print.go).
+	UnknownKind bool
 }
 
 // PartPath 는 이 후보의 로컬 임시 경로다. 최종 경로와 같은 디렉터리의
@@ -309,13 +316,14 @@ func (p *planner) evaluate(dir string, e scan.Entry, when time.Time) (Candidate,
 	}
 
 	return Candidate{
-		Category:   p.category,
-		RemotePath: remoteJoin(dir, raw),
-		Name:       raw,
-		Size:       e.Size,
-		MTime:      e.MTime,
-		LocalDir:   localDir,
-		LocalPath:  p.join(localDir, raw),
+		Category:    p.category,
+		RemotePath:  remoteJoin(dir, raw),
+		Name:        raw,
+		Size:        e.Size,
+		MTime:       e.MTime,
+		LocalDir:    localDir,
+		LocalPath:   p.join(localDir, raw),
+		UnknownKind: p.category.MatchesName(raw) == domain.CategoryMatchUnknown,
 	}, "", nil
 }
 

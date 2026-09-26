@@ -44,9 +44,17 @@ type Options struct {
 	// DefaultCleanupTimeout.
 	CleanupTimeout time.Duration
 
-	// Logger 는 파일별 실패·충돌 로그에 쓴다. nil 이면 log.Default().
-	// 회차 요약 줄은 여기서 쓰지 않는다 (커밋 6).
+	// Logger 는 파일별 로그 중 현장에서 조치할 수 있는 것(실패·충돌·
+	// 비정상대상·임시파일정리실패)에 쓴다. main 은 화면+파일 로거를 넣는다.
+	// nil 이면 log.Default(). 회차 요약 줄은 여기서 쓰지 않는다 —
+	// Report.Print 의 몫이다.
 	Logger *log.Logger
+
+	// DetailLogger 는 원격(기관) 구조에서 나와 우리 쪽에서 고칠 수 없는
+	// 파일별 로그(목적지중복)에 쓴다. main 은 파일 전용 로거를 넣어 고객
+	// 화면에 띄우지 않는다 (Report.Print 의 console/detail 과 같은 기준,
+	// 2026-09-26 확정). nil 이면 Logger 로 보낸다 — 줄을 버리지 않는다.
+	DetailLogger *log.Logger
 
 	// Now 는 Grace 판정의 현재 시각이다. nil 이면 time.Now.
 	Now func() time.Time
@@ -74,6 +82,10 @@ type outcome struct {
 	notStarted bool
 	reason     Reason
 	err        error
+
+	// unknownKind 는 받은 파일의 이름으로 Category 를 알 수 없었다는 뜻이다
+	// (Candidate.UnknownKind). downloaded 일 때만 집계한다.
+	unknownKind bool
 }
 
 // Run 은 jobs 를 순서대로 실행하고 집계를 돌려준다.
@@ -150,6 +162,14 @@ func (r *Runner) logger() *log.Logger {
 	}
 
 	return r.Opts.Logger
+}
+
+func (r *Runner) detailLogger() *log.Logger {
+	if r.Opts.DetailLogger == nil {
+		return r.logger()
+	}
+
+	return r.Opts.DetailLogger
 }
 
 func (r *Runner) cleanupTimeout() time.Duration {
@@ -232,7 +252,8 @@ func (r *Runner) runCategory(
 			}
 
 			if ok, winner := dests.claim(c); !ok {
-				r.logf("목적지중복 원격=%s 로컬=%s 먼저배정=%s", c.RemotePath, c.LocalPath, winner)
+				// 원격에 같은 파일이 여러 곳 있는 기관 구조다. 파일에만 남긴다.
+				r.detailf("목적지중복 원격=%s 로컬=%s 먼저배정=%s", c.RemotePath, c.LocalPath, winner)
 				results <- outcome{remote: c.RemotePath, local: c.LocalPath, reason: ReasonDuplicate}
 
 				continue
@@ -277,8 +298,14 @@ func (r *Runner) runCategory(
 	return cr, nil
 }
 
+// logf 는 현장에서 조치할 수 있는 파일별 로그다 (화면+파일).
 func (r *Runner) logf(format string, args ...any) {
 	r.logger().Printf("[DOWNLOAD] "+format, args...)
+}
+
+// detailf 는 원격 구조에서 나온 파일별 로그다 (파일 전용).
+func (r *Runner) detailf(format string, args ...any) {
+	r.detailLogger().Printf("[DOWNLOAD] "+format, args...)
 }
 
 // fetch 는 후보 하나를 받는다 (§6.2).
@@ -372,6 +399,14 @@ func (r *Runner) fetch(ctx context.Context, c Candidate) outcome {
 	}
 
 	base.downloaded = true
+
+	if c.UnknownKind {
+		// 원격에 RINEX 가 아닐 수 있는 파일이 있다는 관찰이다. 기관 쪽 구조라
+		// 파일에만 남긴다. 건수는 요약 줄의 종류미상으로 화면에도 나온다.
+		base.unknownKind = true
+		r.detailf("종류미상 원격=%s 로컬=%s (파일명으로 종류를 알 수 없음, 수신함)",
+			c.RemotePath, c.LocalPath)
+	}
 
 	return base
 }
